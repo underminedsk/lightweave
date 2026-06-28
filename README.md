@@ -38,6 +38,15 @@ pio device monitor                    # watch sync diagnostics
 pio test -e native                    # host unit tests — no hardware needed
 ```
 
+### Visual sync proof with no LED wiring
+
+The built-in board LED (GPIO2) blinks at 1 Hz on the synced beat, so two bare
+boards blink in unison the moment they're in sync — a zero-wiring bring-up check.
+Disable later with `-D HEARTBEAT_LED=0`; if your board's LED is inverted, set
+`HEARTBEAT_ACTIVE_LOW` in `include/config.h`.
+
+### Unit tests
+
 The sync core (`include/sync.h`) and pattern math (`include/pattern_math.h`) are
 dependency-free and unit-tested on the host. Those tests cover the subtle,
 silently-failing logic — clock offset, free-run-on-missed-beacon, seq-gap

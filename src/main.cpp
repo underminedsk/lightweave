@@ -138,6 +138,10 @@ void setup() {
 
   syncInit(g_sync);
 
+#if HEARTBEAT_LED
+  pinMode(HEARTBEAT_LED_PIN, OUTPUT);
+#endif
+
   strip.Begin();
   strip.Show();  // clear
 
@@ -170,6 +174,11 @@ void loop() {
 #endif
   patterns::render(strip, b, render_us, g_x, g_y);
   strip.Show();
+
+#if HEARTBEAT_LED
+  bool on = pmath::heartbeatOn(render_us, HEARTBEAT_HALF_US);
+  digitalWrite(HEARTBEAT_LED_PIN, (on != HEARTBEAT_ACTIVE_LOW) ? HIGH : LOW);
+#endif
 
   static int64_t next_diag = 0;
   if (t >= next_diag) {

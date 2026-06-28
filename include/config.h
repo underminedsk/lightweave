@@ -21,6 +21,17 @@
 static constexpr uint16_t LED_COUNT = 16;
 static constexpr uint8_t  LED_PIN   = 18;
 
+// ---- Onboard heartbeat LED (bring-up aid) ------------------------------------
+// Blinks the board's built-in LED on the synced beat so two bare boards can be
+// seen blinking in unison — a visual sync proof with no ring wiring. Drop it
+// later by building with -D HEARTBEAT_LED=0.
+#ifndef HEARTBEAT_LED
+#define HEARTBEAT_LED 1
+#endif
+static constexpr uint8_t HEARTBEAT_LED_PIN = 2;       // built-in LED on most DevKitCs
+static constexpr bool    HEARTBEAT_ACTIVE_LOW = false;  // set true if your LED is inverted
+static constexpr int64_t HEARTBEAT_HALF_US = 500000;  // 500ms on / 500ms off => 1 Hz
+
 // ---- Sensors (Milestone 3 — declared now so pins are never reused) -----------
 // ADC1 ONLY. ADC2 silently dies whenever the radio is active.
 static constexpr uint8_t PIN_LDR      = 34;  // dusk sensor, ADC1

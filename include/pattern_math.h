@@ -27,4 +27,19 @@ inline float pulseIntensity(int64_t synced_us, float period_s, float spatial) {
   return 0.5f * (1.0f - cosf(2.0f * kPi * p));
 }
 
+// Floored division: rounds toward negative infinity (unlike C's truncation), so
+// the heartbeat parity is correct even if synced time briefly goes negative.
+inline int64_t floorDiv(int64_t a, int64_t b) {
+  int64_t q = a / b;
+  if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
+  return q;
+}
+
+// Square-wave heartbeat: ON for the first half_period_us of each full cycle, OFF
+// for the second. Driven by synced time, so every node that agrees on the clock
+// agrees on the blink — two boards blink in unison iff they are in sync.
+inline bool heartbeatOn(int64_t synced_us, int64_t half_period_us) {
+  return (floorDiv(synced_us, half_period_us) % 2) == 0;
+}
+
 }  // namespace pmath

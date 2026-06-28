@@ -148,6 +148,38 @@ void test_pulse_continuous_across_wrap() {
   TEST_ASSERT_FLOAT_WITHIN(0.01f, before, after);
 }
 
+// ---- Heartbeat: synced square wave ------------------------------------------
+
+void test_heartbeat_square_wave() {
+  const int64_t half = 500'000;
+  TEST_ASSERT_TRUE(pmath::heartbeatOn(0, half));            // on at cycle start
+  TEST_ASSERT_TRUE(pmath::heartbeatOn(499'999, half));      // still on
+  TEST_ASSERT_FALSE(pmath::heartbeatOn(500'000, half));     // off in 2nd half
+  TEST_ASSERT_FALSE(pmath::heartbeatOn(999'999, half));     // still off
+  TEST_ASSERT_TRUE(pmath::heartbeatOn(1'000'000, half));    // on again next cycle
+}
+
+void test_heartbeat_agrees_across_boards_in_sync() {
+  // Two boards with different boot times but the SAME synced time must blink
+  // identically — that is the whole point of the visual proof.
+  const int64_t half = 500'000;
+  int64_t synced = 7'250'000;  // arbitrary shared synced instant
+  bool boardA = pmath::heartbeatOn(synced, half);
+  bool boardB = pmath::heartbeatOn(synced, half);
+  TEST_ASSERT_EQUAL(boardA, boardB);
+}
+
+void test_heartbeat_handles_negative_synced_time() {
+  // Floored division keeps the square wave continuous through 0 if synced time
+  // briefly goes negative (no glitch at the boundary). Bins are [k*half,(k+1)*half),
+  // ON when k is even.
+  const int64_t half = 500'000;
+  TEST_ASSERT_FALSE(pmath::heartbeatOn(-1, half));          // k=-1 (odd): off
+  TEST_ASSERT_FALSE(pmath::heartbeatOn(-500'000, half));    // k=-1 (odd): off
+  TEST_ASSERT_TRUE(pmath::heartbeatOn(-750'000, half));     // k=-2 (even): on
+  TEST_ASSERT_TRUE(pmath::heartbeatOn(-1'000'000, half));   // k=-2 (even): on
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -166,5 +198,8 @@ int main(int, char**) {
   RUN_TEST(test_phase_handles_large_time_no_overflow);
   RUN_TEST(test_pulse_intensity_bounds_and_endpoints);
   RUN_TEST(test_pulse_continuous_across_wrap);
+  RUN_TEST(test_heartbeat_square_wave);
+  RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
+  RUN_TEST(test_heartbeat_handles_negative_synced_time);
   return UNITY_END();
 }
