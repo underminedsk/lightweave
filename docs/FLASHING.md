@@ -15,16 +15,19 @@ pio device list                      # look for the CP2102 / usbserial entry
 # 2. ONE-TIME full erase (new boards ship with factory firmware — see below)
 ~/.platformio/packages/tool-esptoolpy/esptool.py --port /dev/cu.usbserial-XXXX erase_flash
 
-# 3. Flash the role you want
-pio run -e devkitc-performer -t upload --upload-port /dev/cu.usbserial-XXXX
-#   or devkitc-conductor for the one conductor
+# 3. Flash the one firmware image (role is set at runtime, not at build)
+pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 
-# 4. Watch it run
+# 4. Provision + watch it run
 pio device monitor -p /dev/cu.usbserial-XXXX -b 115200   # Ctrl-A then K to quit
+#   then type:  role performer   (or 'role conductor' for the one conductor)
+#               id 1 / pos 0 0   as needed
 ```
 
-A healthy performer prints `LOCKED ... gaps=0` within ~1 s; a conductor prints
-`[conductor] ... seq=` climbing once per second.
+Every node runs the **same image**; role lives in NVS (default performer) and is
+set over serial with `role conductor|performer`. A healthy performer prints
+`LOCKED ... gaps=0` within ~1 s; a conductor prints `[conductor] ... seq=` climbing
+once per second.
 
 ---
 
@@ -68,8 +71,9 @@ Consequences:
   (this is how we ended up with a board still on factory firmware).
 
 ### 3. Exactly ONE conductor
-The firmware role is a build flag: `devkitc-conductor` vs `devkitc-performer`.
-There must be **only one conductor** powered at a time.
+Role is a runtime NVS value (set over serial with `role conductor|performer`),
+not a build flag — every node runs the same image. There must be **only one
+conductor** powered at a time.
 
 Symptom of two conductors: a performer shows **`gaps ≈ rx`** (almost every
 beacon counted as a gap) and its `offset`/`seq` jump between two very different
@@ -129,13 +133,14 @@ and a flashed board still blinks its GPIO2 LED.
 
 ---
 
-## Board roles & build environments
+## Build environments
 
-| Env | Board | Role |
-|---|---|---|
-| `devkitc-conductor` | DOIT DevKit V1 (`esp32dev`) | conductor |
-| `devkitc-performer` | DOIT DevKit V1 (`esp32dev`) | performer |
-| `firebeetle-conductor` / `firebeetle-performer` | FireBeetle 2 ESP32-E | same roles |
-| `native` | host | unit tests (`pio test -e native`) |
+| Env | Target |
+|---|---|
+| `devkitc` | DOIT ESP32 DevKit V1 (`esp32dev`) |
+| `firebeetle` | FireBeetle 2 ESP32-E |
+| `native` | host unit tests (`pio test -e native`) |
 
-Multi-board setup = **one** `devkitc-conductor` + the rest `devkitc-performer`.
+One image per board; **role is set at runtime** over serial (`role
+conductor|performer`, default performer). Multi-board setup = flash everywhere,
+then set exactly one node to `role conductor`.

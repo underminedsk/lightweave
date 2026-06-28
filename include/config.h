@@ -8,13 +8,12 @@
 #include <stdint.h>
 
 // ---- Role --------------------------------------------------------------------
-// Provided as a build flag (see platformio.ini). 0 = performer, 1 = conductor.
-#ifndef NODE_ROLE
-#define NODE_ROLE 0
-#endif
-#define ROLE_PERFORMER 0
-#define ROLE_CONDUCTOR 1
-#define IS_CONDUCTOR (NODE_ROLE == ROLE_CONDUCTOR)
+// Every node runs identical firmware; role is a runtime value stored in NVS and
+// set once over serial (`role conductor|performer`). Default is performer so a
+// fresh board never accidentally becomes a second conductor. See src/main.cpp.
+static constexpr uint8_t ROLE_PERFORMER = 0;
+static constexpr uint8_t ROLE_CONDUCTOR = 1;
+static constexpr uint8_t DEFAULT_ROLE   = ROLE_PERFORMER;
 
 // ---- LEDs --------------------------------------------------------------------
 // 16x SK6812 RGBW ring data line (through a 470R series resistor).

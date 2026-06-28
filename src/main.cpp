@@ -1,14 +1,17 @@
-// Do Baskets Dream — node firmware.
+// Do Baskets Dream — node firmware (single image for every node).
 //
-// Milestone 1: prove sync. One conductor broadcasts a clock beacon over ESP-NOW;
-// performers lock to it and render a synchronized slow pulse. A performer that
-// misses a beacon keeps free-running on its last known offset and re-locks on the
-// next one — a dropped packet causes at most slight drift, never a blackout.
+// One conductor broadcasts a clock beacon over ESP-NOW; performers lock to it and
+// render against synced time. A performer that misses a beacon keeps free-running
+// on its last known offset and re-locks on the next one — a dropped packet causes
+// at most slight drift, never a blackout.
 //
-// The sync logic itself lives in include/sync.h (dependency-free, unit-tested).
-// This file is the on-device glue: radio, LEDs, and the render loop.
+// Every board runs THIS SAME binary. Role (conductor/performer) is a runtime
+// value stored in NVS, default performer, set once over serial with `role …`.
+// So you flash one image everywhere, then provision role/id/pos per board; each
+// node then boots into its role unattended (important for battery field nodes).
 //
-// Role is chosen at build time via NODE_ROLE (see platformio.ini).
+// The sync logic lives in include/sync.h (dependency-free, unit-tested); this
+// file is the on-device glue: radio, LEDs, NVS config, serial, and the render loop.
 
 #include <Arduino.h>
 #include <NeoPixelBus.h>
@@ -29,15 +32,19 @@ NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method> strip(LED_COUNT, LED_PIN);
 
 static const uint8_t BROADCAST_ADDR[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// ---- Node identity (stored in NVS; set once over serial) ---------------------
+// ---- Node config in NVS (role + identity; set once over serial) --------------
 static Preferences  g_prefs;
-static NodeIdentity g_id = {0, 0.0f, 0.0f};
+static NodeIdentity g_id   = {0, 0.0f, 0.0f};
+static uint8_t      g_role = DEFAULT_ROLE;
 
-static void identityLoad() {
+static inline bool isConductor() { return g_role == ROLE_CONDUCTOR; }
+
+static void configLoad() {
   g_prefs.begin("node", /*readonly*/ true);
   g_id.id = g_prefs.getUShort("id", 0);
   g_id.x = g_prefs.getFloat("x", 0.0f);
   g_id.y = g_prefs.getFloat("y", 0.0f);
+  g_role = g_prefs.getUChar("role", DEFAULT_ROLE);
   g_prefs.end();
 }
 
@@ -49,19 +56,26 @@ static void identitySave() {
   g_prefs.end();
 }
 
+static void roleSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putUChar("role", g_role);
+  g_prefs.end();
+}
+
 // ---- Sync state --------------------------------------------------------------
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
 // so 64-bit fields can't tear across the two contexts.
 static SyncState g_sync;
-static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::PULSE, /*brightness*/ 48,
+static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, {0, 0, 0, 0}, 0};
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
 
-// ---- ESP-NOW receive (performer) ---------------------------------------------
-// The recv callback signature changed in Arduino-ESP32 3.x. Support both.
-#if !IS_CONDUCTOR
+// ---- ESP-NOW receive ---------------------------------------------------------
+// Registered on every node. A conductor renders against its own clock and ignores
+// the sync state, so receiving here is harmless for it. The recv callback
+// signature changed in Arduino-ESP32 3.x — support both.
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
 void onBeacon(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
 #else
@@ -71,6 +85,7 @@ void onBeacon(const uint8_t* mac, const uint8_t* data, int len) {
   Beacon b;
   memcpy(&b, data, sizeof(b));
   if (b.magic != BEACON_MAGIC) return;
+  if (isConductor()) return;  // a conductor doesn't follow anyone
 
   int64_t local = now_us();
   portENTER_CRITICAL(&g_sync_mux);
@@ -78,7 +93,6 @@ void onBeacon(const uint8_t* mac, const uint8_t* data, int len) {
   g_beacon = b;
   portEXIT_CRITICAL(&g_sync_mux);
 }
-#endif
 
 // ---- Radio setup -------------------------------------------------------------
 static void radioBegin() {
@@ -105,12 +119,9 @@ static void radioBegin() {
   peer.encrypt = false;
   esp_now_add_peer(&peer);
 
-#if !IS_CONDUCTOR
-  esp_now_register_recv_cb(onBeacon);
-#endif
+  esp_now_register_recv_cb(onBeacon);  // every node; conductor ignores in cb
 }
 
-#if IS_CONDUCTOR
 static uint32_t g_tx_seq = 0;
 static void broadcastBeacon() {
   Beacon b = g_beacon;
@@ -119,17 +130,17 @@ static void broadcastBeacon() {
   b.seq = g_tx_seq++;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
-#endif
 
 // ---- Diagnostics -------------------------------------------------------------
-// Prints a one-line sync status so boards can be range-walked to find where sync
-// drops (brief, Milestone 1).
+// One-line status per second so boards can be range-walked to find where sync
+// drops.
 static void printDiag() {
-#if IS_CONDUCTOR
-  Serial.printf("[conductor] t=%lld us  seq=%lu  pat=%u  bri=%u\n",
-                (long long)now_us(), (unsigned long)g_tx_seq, g_beacon.pattern_id,
-                g_beacon.brightness);
-#else
+  if (isConductor()) {
+    Serial.printf("[conductor] t=%lld us  seq=%lu  pat=%u  bri=%u\n",
+                  (long long)now_us(), (unsigned long)g_tx_seq, g_beacon.pattern_id,
+                  g_beacon.brightness);
+    return;
+  }
   SyncState s;
   portENTER_CRITICAL(&g_sync_mux);
   s = g_sync;
@@ -143,26 +154,24 @@ static void printDiag() {
       stale ? "FREE-RUN" : "LOCKED  ", (long long)s.offset_us,
       (long long)(age < 0 ? -1 : age / 1000), (unsigned long)s.beacons_rx,
       (unsigned long)s.seq_gaps, (unsigned long)s.last_seq);
-#endif
 }
 
 // ---- Serial command interface ------------------------------------------------
 // Flash identical firmware to every board, then provision each over serial:
-//   info                 print role + identity (+ pattern state on conductor)
+//   info                 print role + identity + pattern state
+//   role <conductor|performer>   set this node's role and save to NVS
 //   id <n>               set this node's id and save to NVS
 //   pos <x> <y>          set this node's (x,y) coordinate and save to NVS
-// Conductor-only (change what all nodes render, broadcast live):
-//   pattern <n>          0=pulse 2=sweep
+// Pattern controls (only the conductor's take effect field-wide; it broadcasts):
+//   pattern <n>          0 = uniform pulse, 2 = sweep
 //   bri <n>              brightness 0-255
-//   param <i> <v>        set params[i] (i=0..3) — e.g. sweep period_ms / wavelength*100
+//   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100
 static void printInfo() {
   Serial.printf("role=%s  id=%u  x=%.2f  y=%.2f\n",
-                IS_CONDUCTOR ? "CONDUCTOR" : "PERFORMER", g_id.id, g_id.x, g_id.y);
-#if IS_CONDUCTOR
+                isConductor() ? "CONDUCTOR" : "PERFORMER", g_id.id, g_id.x, g_id.y);
   Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
                 g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
                 g_beacon.params[2], g_beacon.params[3]);
-#endif
 }
 
 static void handleCommand(char* line) {
@@ -171,6 +180,15 @@ static void handleCommand(char* line) {
 
   if (!strcmp(cmd, "info")) {
     printInfo();
+  } else if (!strcmp(cmd, "role")) {
+    char* a = strtok(nullptr, " \t");
+    if (a) {
+      if (!strcmp(a, "conductor") || !strcmp(a, "1")) g_role = ROLE_CONDUCTOR;
+      else if (!strcmp(a, "performer") || !strcmp(a, "0")) g_role = ROLE_PERFORMER;
+      else { Serial.println("? role conductor|performer"); return; }
+      roleSave();
+      printInfo();
+    }
   } else if (!strcmp(cmd, "id")) {
     char* a = strtok(nullptr, " \t");
     if (a) { g_id.id = (uint16_t)atoi(a); identitySave(); printInfo(); }
@@ -178,7 +196,6 @@ static void handleCommand(char* line) {
     char* ax = strtok(nullptr, " \t");
     char* ay = strtok(nullptr, " \t");
     if (ax && ay) { g_id.x = atof(ax); g_id.y = atof(ay); identitySave(); printInfo(); }
-#if IS_CONDUCTOR
   } else if (!strcmp(cmd, "pattern")) {
     char* a = strtok(nullptr, " \t");
     if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); printInfo(); }
@@ -192,7 +209,6 @@ static void handleCommand(char* line) {
       int i = atoi(ai);
       if (i >= 0 && i < 4) { g_beacon.params[i] = (uint16_t)atoi(av); printInfo(); }
     }
-#endif
   } else {
     Serial.printf("? unknown command: %s\n", cmd);
   }
@@ -217,18 +233,11 @@ void setup() {
   setCpuFrequencyMhz(CPU_FREQ_MHZ);
   Serial.begin(115200);
   delay(200);
-  Serial.printf("\nDo Baskets Dream — role: %s  channel: %u\n",
-                IS_CONDUCTOR ? "CONDUCTOR" : "PERFORMER", WIFI_CHANNEL);
+  Serial.printf("\nDo Baskets Dream — channel %u\n", WIFI_CHANNEL);
 
-#if IS_CONDUCTOR
-  // Milestone 2: drive the position-aware sweep by default so the pulse visibly
-  // travels across the field. Switch live with the serial 'pattern' command.
-  g_beacon.pattern_id = patterns::SWEEP;
-#endif
-
-  identityLoad();
+  configLoad();
   if (!identityProvisioned(g_id))
-    Serial.println("  (unprovisioned — set 'id <n>' and 'pos <x> <y>' over serial)");
+    Serial.println("  (unprovisioned — set 'role …', 'id <n>', 'pos <x> <y>')");
   printInfo();
 
   syncInit(g_sync);
@@ -248,15 +257,15 @@ void loop() {
 
   pollSerialCommands();
 
-#if IS_CONDUCTOR
-  static int64_t next_beacon = 0;
-  if (t >= next_beacon) {
-    broadcastBeacon();
-    next_beacon = t + BEACON_INTERVAL_US;
+  if (isConductor()) {
+    static int64_t next_beacon = 0;
+    if (t >= next_beacon) {
+      broadcastBeacon();
+      next_beacon = t + BEACON_INTERVAL_US;
+    }
   }
-#endif
 
-  // Snapshot sync + beacon together, then render against synced time.
+  // Snapshot sync + beacon together, then render against the right clock.
   SyncState s;
   Beacon b;
   portENTER_CRITICAL(&g_sync_mux);
@@ -264,11 +273,9 @@ void loop() {
   b = g_beacon;
   portEXIT_CRITICAL(&g_sync_mux);
 
-#if IS_CONDUCTOR
-  int64_t render_us = t;  // conductor renders against its own clock
-#else
-  int64_t render_us = syncedTime(s, t);
-#endif
+  // Conductor renders against its own clock; a performer against synced time
+  // (which free-runs on the last offset when no beacon arrives).
+  int64_t render_us = isConductor() ? t : syncedTime(s, t);
   patterns::render(strip, b, render_us, g_id.x, g_id.y);
   strip.Show();
 

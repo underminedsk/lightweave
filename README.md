@@ -18,7 +18,9 @@ Verified board: DOIT ESP32 DevKit V1 (CP2102, GPIO2 user LED present). LED data
 on GPIO13 (`D13`), powered from USB 5V.
 
 See [`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md) for the
-full project brief.
+full project brief, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
+system design (parametric field, roles, MAC identity, layout table, and the
+drone + computer-vision auto-calibration plan).
 
 ## Hardware (per node)
 
@@ -35,11 +37,12 @@ full project brief.
 
 ## Build & test
 
+One firmware image runs every node; role is set at runtime over serial (below).
+
 ```bash
-pio run -e devkitc-conductor          # build conductor firmware
-pio run -e devkitc-performer          # build performer firmware
-pio run -e devkitc-conductor -t upload --upload-port /dev/cu.usbserial-XXXX
-pio device monitor                    # watch sync diagnostics
+pio run -e devkitc                    # build (DevKitC); use -e firebeetle for FireBeetle 2
+pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
+pio device monitor                    # provision + watch diagnostics
 pio test -e native                    # host unit tests — no hardware needed
 ```
 
@@ -62,19 +65,21 @@ silently-failing logic — clock offset, free-run-on-missed-beacon, seq-gap
 detection across `uint32` wrap, phase continuity. They do **not** cover radio
 range, real packet loss, or on-chip timing; those require field testing.
 
-## Provisioning a node (Milestone 2)
+## Provisioning a node
 
-Flash the *same* firmware to every node, then give each its identity over serial
-(`pio device monitor`, type the command + Enter). Values persist in NVS, so a
-node remembers who/where it is across reboots and battery swaps.
+Flash the *same* image to every node, then provision each over serial
+(`pio device monitor`, type the command + Enter). Values persist in NVS, so a node
+remembers its role/identity/position across reboots and battery swaps. Default role
+is **performer**, so a fresh board never accidentally becomes a second conductor.
 
 ```
-info            # print role + id + (x,y)   [+ pattern state on the conductor]
-id <n>          # set this node's unique id (1,2,3,…) and save
-pos <x> <y>     # set this node's field coordinate and save
+info                       # print role + id + (x,y) + pattern state
+role conductor|performer   # set this node's role and save (exactly one conductor)
+id <n>                     # set this node's id label and save
+pos <x> <y>                # set this node's field coordinate and save
 ```
 
-On the **conductor** you can also change what the whole field renders, live:
+On the **conductor**, change what the whole field renders, live (it broadcasts):
 
 ```
 pattern <n>     # 0 = uniform pulse, 2 = position-aware sweep (default)
