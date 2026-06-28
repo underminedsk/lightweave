@@ -52,6 +52,10 @@ Disable later with `-D HEARTBEAT_LED=0`; if your board's LED is inverted, set
 
 ### Unit tests
 
+See [`docs/FLASHING.md`](docs/FLASHING.md) for the flashing/bring-up runbook —
+including the one-time `erase_flash` every factory-fresh board needs, the
+duplicate-serial-port gotcha, and how to read the sync diagnostics.
+
 The sync core (`include/sync.h`) and pattern math (`include/pattern_math.h`) are
 dependency-free and unit-tested on the host. Those tests cover the subtle,
 silently-failing logic — clock offset, free-run-on-missed-beacon, seq-gap
