@@ -70,17 +70,29 @@ Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
 Pure pattern math lives in `include/pattern_math.h` (host-unit-tested); the
 LED-library binding is in `include/patterns.h`.
 
+### 4.1 Show program (pattern scheduling) **[planned]**
+
+Beyond a single live recipe, the conductor holds a **show program** in NVS — a
+schedule of *what plays when* (e.g. pattern A for a while, then B; calmer/dimmer
+late; brightness ramps). The conductor walks the program against its clock and
+**broadcasts the current recipe each beacon**; nodes render whatever arrives and
+stay dumb. So scheduling lives entirely on the conductor and needs no per-node
+logic. Open considerations: smooth **transitions/crossfades** between patterns
+(would need a blend factor in the recipe), and the schedule's **time base**
+(uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
+
 ## 5. Layout table — conductor-authoritative `MAC → (x,y)` **[planned]**
 
 The conductor holds the authoritative field map and broadcasts it; each node finds
 its own MAC, adopts its `(x,y)`, and **caches it in NVS**. Edit one table to
 re-arrange the whole field.
 
+- **The conductor is authoritative and stores the table in its own NVS.** The
+  field runs with **no laptop present** — the conductor is the coordination point
+  for the table just as it is for the clock and the pattern recipe.
 - Resilient: a node needs to hear the table only once, then survives on the cache.
-- Cheap: ~14 bytes/node → ~4 ESP-NOW packets for 60 nodes, sent occasionally
-  (positions are static, not per-frame).
-- Authority model (open decision): conductor-authoritative with NVS cache on nodes.
-  Where the master table lives — conductor NVS/SD vs. laptop-relayed — is TBD.
+- Cheap: ~14 bytes/node → ~840 bytes for 60 nodes → fits NVS easily and ~4 ESP-NOW
+  packets, sent occasionally (positions are static, not per-frame).
 
 Manual `pos x y` over serial remains as a fallback/override for tests and
 stragglers.
@@ -101,6 +113,31 @@ No drone, no re-fly — a single swap is one command. Getting the new MAC: read 
 from the spare's serial `info`, or label spares with their MAC, or let the
 conductor surface "new unknown MAC seen." Only worth a full re-calibration if many
 nodes move at once.
+
+### 5.2 Control plane — operator/admin interface **[planned]**
+
+The conductor stores the authoritative **routing table** (§5) *and* **show
+program** (§4.1) in NVS and runs the field with **no laptop present**. The laptop
+is a **transient admin tool**, plugged into the conductor over USB serial only
+when you want to *change something*:
+
+- **Routing table edits:** reposition nodes (new `(x,y)`), or replace a node
+  (§5.1) — i.e. change *where* the light is.
+- **Show program edits:** pattern selection, appearance (brightness, sweep
+  speed/wavelength, palette), and schedule (what runs when) — i.e. change *what*
+  the light does.
+- It is also the host that runs the **calibration CV** (§6).
+
+The conductor persists every pushed change to NVS, then executes/broadcasts it —
+so the laptop can walk away and the field keeps running the new config. Likely
+form: a **local web UI** (laptop server + browser) over a structured serial
+command/response protocol (§7) — chosen because the table/map editor, live pattern
+controls, and calibration wizard are far better visually than a CLI. The protocol
+must support **bulk table transfer** (60 rows won't fit a typed line) and clean
+acks/errors so a program can drive the conductor reliably.
+
+**Not a runtime dependency:** unplug the laptop and the conductor + field continue
+on their stored table and program.
 
 ## 6. Auto-calibration — drone + computer vision **[planned]**
 
@@ -179,9 +216,15 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 📐 planned |
 
-## 10. Open decisions
+## 10. Resolved & open decisions
 
-- Master layout table location: conductor NVS/SD vs. laptop-authoritative relay.
+Resolved:
+- **Master table & show program: conductor-authoritative, stored in conductor
+  NVS.** Field runs laptop-free; the laptop is a transient editor only (§5, §5.2).
+
+Open:
 - 2-D pattern parameter encoding (how to pack angle/center into `params[4]`).
-- Position authority: always-take-conductor vs. node-cache-with-override.
-- Temporal-coded calibration as a later speed upgrade.
+- Pattern transitions/crossfades, and the show-program time base (uptime vs.
+  dusk-relative vs. wall-clock) (§4.1).
+- Admin UI form: local web UI (current lean) vs. CLI-first.
+- Temporal-coded calibration as a later speed upgrade (§6).
