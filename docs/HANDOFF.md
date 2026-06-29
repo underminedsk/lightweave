@@ -8,7 +8,7 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`do_baskets_firmware_brief.md`](do_baskets_firmware_brief.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · everything is committed
-and pushed; `pio test -e native` (20 pass) and `pio run -e devkitc` build clean.
+and pushed; `pio test -e native` (25 pass) and `pio run -e devkitc` build clean.
 
 ---
 
@@ -21,10 +21,14 @@ and pushed; `pio test -e native` (20 pass) and `pio run -e devkitc` build clean.
 - **Sync:** conductor broadcasts a clock beacon; performers lock an offset and
   render against synced time; **free-run on missed beacon** (no blackout), re-lock
   on return. Verified: `LOCKED`, stable offset ~±100 µs, `gaps=0`.
-- **Patterns** (`f(x,y,t)`): `PULSE` (uniform breathing) and `SWEEP` (1-D
-  traveling wave). Conductor broadcasts the recipe (`pattern_id`/`brightness`/
-  `params[4]`); performers render it.
+- **Patterns** (`f(x,y,t)`): `PULSE` (uniform breathing), `PALETTE_DRIFT` (smooth
+  rainbow hue cycle; `params[0]`=period ms, `params[1]`=spatial hue offset ×100 so
+  the rainbow travels or runs in unison), and `SWEEP` (1-D traveling wave).
+  Conductor broadcasts the recipe (`pattern_id`/`brightness`/`params[4]`);
+  performers render it.
 - **NVS identity:** `id` + `(x,y)` persist across reboot; set over serial.
+- **Pattern config persists** too: `pattern_id`/`brightness`/`params` survive a
+  power-cycle (keys `pat`/`bri`/`p0`..`p3` in the `"node"` namespace).
 - **GPIO2 heartbeat** blinks on the synced beat (zero-wiring sync check).
 - **Serial commands:** `info`, `role conductor|performer`, `id <n>`,
   `pos <x> <y>`, `pattern <n>`, `bri <n>`, `param <i> <v>`.
@@ -35,10 +39,9 @@ packet), `sync.h` (clock core, tested), `pattern_math.h` (pure pattern fns,
 tested), `patterns.h` (LED binding), `identity.h` (NodeIdentity). `src/main.cpp`
 is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`).
 
-**Not built yet:** pattern-config persistence (next), MAC identity, the layout
-table, multi-message/bidirectional protocol, auto-calibration, show program /
-scheduling, the Pi web UI, power management (modem-sleep is on, but no
-deep-sleep/LDR/ADC), OTA.
+**Not built yet:** MAC identity, the layout table, multi-message/bidirectional
+protocol (next), auto-calibration, show program / scheduling, the Pi web UI,
+power management (modem-sleep is on, but no deep-sleep/LDR/ADC), OTA.
 
 ## Hardware state
 
@@ -55,7 +58,7 @@ deep-sleep/LDR/ADC), OTA.
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 20 host tests
+pio test -e native                                  # 25 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -65,26 +68,14 @@ Reading serial without resetting the board: see the pyserial snippet in
 
 ---
 
-## Next task (small): pattern-config NVS persistence
+**⚠ NVS pattern-config pitfall (for future edits to `main.cpp`):** `configLoad()`
+is defined *above* `g_beacon`, so it can't touch it. The pattern recipe is
+loaded/saved by separate `patternConfigLoad()` / `patternConfigSave()` defined
+*after* `g_beacon` (called from `setup()` and the `pattern`/`bri`/`param`
+handlers). Don't move pattern loads into `configLoad()` or forward-declare
+`g_beacon` — a prior attempt broke the build that way.
 
-**Why:** the conductor's `pattern_id`/`brightness`/`params` live only in RAM, so a
-reset/power-cycle reverts to defaults (SWEEP, bri 48, params 0) — tuning is lost.
-Persist them like `id`/`pos`. This also seeds the show-program storage later.
-
-**Do:**
-- Add NVS load of `pattern_id` (default `patterns::SWEEP`), `brightness`
-  (default 48), `params[0..3]` (default 0) from the `"node"` namespace, plus a
-  `patternConfigSave()`.
-- Call save in the `pattern` / `bri` / `param` serial handlers.
-- Suggested keys: `pat` (UShort), `bri` (UChar), `p0`..`p3` (UShort).
-
-**⚠ Pitfall (already hit once):** `configLoad()` is defined *above* `g_beacon` in
-`main.cpp`, so it can't touch `g_beacon`. Don't add pattern loads there. Instead
-add a separate `patternConfigLoad()` / `patternConfigSave()` defined *after*
-`g_beacon`, and call `patternConfigLoad()` from `setup()`. (A prior attempt broke
-the build by forward-declaring `g_beacon`; avoid that.)
-
-## Then (big): protocol foundation
+## Next task (big): protocol foundation
 
 The substrate for calibration, node replacement, and the web UI. See
 `ARCHITECTURE.md` §3, §5, §7 for the why. Concrete plan:

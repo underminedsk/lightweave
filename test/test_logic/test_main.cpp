@@ -181,6 +181,71 @@ void test_sweep_nodes_differ_in_phase() {
   TEST_ASSERT_TRUE(fabsf(a - b) > 0.9f);
 }
 
+// ---- Palette drift: rainbow hue cycle + HSV ---------------------------------
+
+void test_hsv_primary_hues() {
+  float r, g, b;
+  pmath::hsvToRgb(0.0f, 1, 1, r, g, b);  // red
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1, r);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, g);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, b);
+  pmath::hsvToRgb(1.0f / 3, 1, 1, r, g, b);  // green
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, r);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1, g);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, b);
+  pmath::hsvToRgb(2.0f / 3, 1, 1, r, g, b);  // blue
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, r);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0, g);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1, b);
+}
+
+void test_hsv_red_to_yellow_passes_through_orange() {
+  // The asked-for gradient: red -> orange -> yellow must be smooth. Halfway from
+  // red (h=0) to yellow (h=1/6) is h=1/12, where green is ramping through ~0.5
+  // with red full and blue zero == orange.
+  float r, g, b;
+  pmath::hsvToRgb(1.0f / 12, 1, 1, r, g, b);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1.0f, r);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.5f, g);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, b);
+}
+
+void test_hsv_wraps_and_stays_in_gamut() {
+  // Any hue (including negative / >1) yields in-range RGB.
+  for (float h = -1.0f; h <= 2.0f; h += 0.013f) {
+    float r, g, b;
+    pmath::hsvToRgb(h, 1, 1, r, g, b);
+    TEST_ASSERT_TRUE(r >= -1e-4f && r <= 1.0f + 1e-4f);
+    TEST_ASSERT_TRUE(g >= -1e-4f && g <= 1.0f + 1e-4f);
+    TEST_ASSERT_TRUE(b >= -1e-4f && b <= 1.0f + 1e-4f);
+  }
+  // h and h+1 are the same color (the wheel wraps).
+  float r0, g0, b0, r1, g1, b1;
+  pmath::hsvToRgb(0.2f, 1, 1, r0, g0, b0);
+  pmath::hsvToRgb(1.2f, 1, 1, r1, g1, b1);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, r0, r1);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, g0, g1);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, b0, b1);
+}
+
+void test_drift_hue_cycles_in_range() {
+  for (int64_t us = 0; us < 8'000'000; us += 53'000) {
+    float h = pmath::driftHue(us, 0.0f, 8.0f, 0.0f);
+    TEST_ASSERT_TRUE(h >= 0.0f && h < 1.0f);
+  }
+}
+
+void test_drift_hue_unison_by_default_but_travels_with_spatial() {
+  // spatial=0: position is irrelevant, every node shares one hue.
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, pmath::driftHue(1'000'000, 0.0f, 8.0f, 0.0f),
+                           pmath::driftHue(1'000'000, 5.0f, 8.0f, 0.0f));
+  // spatial>0: hue is offset by position -> a traveling rainbow. x=1 is a
+  // quarter-wheel ahead of x=0 when spatial=0.25.
+  float at0 = pmath::driftHue(0, 0.0f, 8.0f, 0.25f);
+  float at1 = pmath::driftHue(0, 1.0f, 8.0f, 0.25f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.25f, at1 - at0);
+}
+
 // ---- Heartbeat: synced square wave ------------------------------------------
 
 void test_heartbeat_square_wave() {
@@ -234,6 +299,11 @@ int main(int, char**) {
   RUN_TEST(test_sweep_bounds);
   RUN_TEST(test_sweep_travels_with_position);
   RUN_TEST(test_sweep_nodes_differ_in_phase);
+  RUN_TEST(test_hsv_primary_hues);
+  RUN_TEST(test_hsv_red_to_yellow_passes_through_orange);
+  RUN_TEST(test_hsv_wraps_and_stays_in_gamut);
+  RUN_TEST(test_drift_hue_cycles_in_range);
+  RUN_TEST(test_drift_hue_unison_by_default_but_travels_with_spatial);
   RUN_TEST(test_heartbeat_square_wave);
   RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
   RUN_TEST(test_heartbeat_handles_negative_synced_time);

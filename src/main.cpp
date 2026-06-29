@@ -72,6 +72,33 @@ static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
 
+// ---- Pattern config in NVS (the broadcast recipe; tweaked live over serial) ---
+// Defined here, *after* g_beacon, so it can touch it — configLoad() above can't
+// (it's defined before g_beacon). Only the conductor's recipe drives the field,
+// but every node persists/restores it so a conductor survives a power-cycle with
+// its tuning intact, and this seeds the show-program storage later.
+static void patternConfigLoad() {
+  g_prefs.begin("node", /*readonly*/ true);
+  g_beacon.pattern_id = g_prefs.getUShort("pat", patterns::SWEEP);
+  g_beacon.brightness = g_prefs.getUChar("bri", 48);
+  g_beacon.params[0] = g_prefs.getUShort("p0", 0);
+  g_beacon.params[1] = g_prefs.getUShort("p1", 0);
+  g_beacon.params[2] = g_prefs.getUShort("p2", 0);
+  g_beacon.params[3] = g_prefs.getUShort("p3", 0);
+  g_prefs.end();
+}
+
+static void patternConfigSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putUShort("pat", g_beacon.pattern_id);
+  g_prefs.putUChar("bri", g_beacon.brightness);
+  g_prefs.putUShort("p0", g_beacon.params[0]);
+  g_prefs.putUShort("p1", g_beacon.params[1]);
+  g_prefs.putUShort("p2", g_beacon.params[2]);
+  g_prefs.putUShort("p3", g_beacon.params[3]);
+  g_prefs.end();
+}
+
 // ---- ESP-NOW receive ---------------------------------------------------------
 // Registered on every node. A conductor renders against its own clock and ignores
 // the sync state, so receiving here is harmless for it. The recv callback
@@ -163,7 +190,7 @@ static void printDiag() {
 //   id <n>               set this node's id and save to NVS
 //   pos <x> <y>          set this node's (x,y) coordinate and save to NVS
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
-//   pattern <n>          0 = uniform pulse, 2 = sweep
+//   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep
 //   bri <n>              brightness 0-255
 //   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100
 static void printInfo() {
@@ -198,16 +225,20 @@ static void handleCommand(char* line) {
     if (ax && ay) { g_id.x = atof(ax); g_id.y = atof(ay); identitySave(); printInfo(); }
   } else if (!strcmp(cmd, "pattern")) {
     char* a = strtok(nullptr, " \t");
-    if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); printInfo(); }
+    if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); patternConfigSave(); printInfo(); }
   } else if (!strcmp(cmd, "bri")) {
     char* a = strtok(nullptr, " \t");
-    if (a) { g_beacon.brightness = (uint8_t)atoi(a); printInfo(); }
+    if (a) { g_beacon.brightness = (uint8_t)atoi(a); patternConfigSave(); printInfo(); }
   } else if (!strcmp(cmd, "param")) {
     char* ai = strtok(nullptr, " \t");
     char* av = strtok(nullptr, " \t");
     if (ai && av) {
       int i = atoi(ai);
-      if (i >= 0 && i < 4) { g_beacon.params[i] = (uint16_t)atoi(av); printInfo(); }
+      if (i >= 0 && i < 4) {
+        g_beacon.params[i] = (uint16_t)atoi(av);
+        patternConfigSave();
+        printInfo();
+      }
     }
   } else {
     Serial.printf("? unknown command: %s\n", cmd);
@@ -236,6 +267,7 @@ void setup() {
   Serial.printf("\nDo Baskets Dream — channel %u\n", WIFI_CHANNEL);
 
   configLoad();
+  patternConfigLoad();
   if (!identityProvisioned(g_id))
     Serial.println("  (unprovisioned — set 'role …', 'id <n>', 'pos <x> <y>')");
   printInfo();

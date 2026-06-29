@@ -60,12 +60,16 @@ Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
 
 - `params` are pattern-specific knobs for live tuning (e.g. sweep period in ms,
   wavelength ×100). Persisted in NVS on the conductor so a power-cycle keeps the
-  tuned look. **[wip]**
+  tuned look. **[done]** (every node persists/restores the recipe; keys
+  `pat`/`bri`/`p0`..`p3` in the `"node"` namespace.)
 - Patterns are `f(x, y, t)`:
   - `PULSE` — uniform breathing, all nodes in unison. **[done]**
+  - `PALETTE_DRIFT` — smooth rainbow hue cycle; `params[0]` = cycle period in ms,
+    `params[1]` = spatial hue offset (×100 cycles per x unit) so the rainbow can
+    travel across the field or run in unison (0). **[done]**
   - `SWEEP` — traveling wave across `x`. **[done]** (1-D today.)
   - **[planned]** true 2-D: plane wave at an arbitrary **angle**, **radial ripple**
-    from a center point, slow 2-D color drift. `params` encode direction/center.
+    from a center point. `params` encode direction/center.
 
 Pure pattern math lives in `include/pattern_math.h` (host-unit-tested); the
 LED-library binding is in `include/patterns.h`.
@@ -222,7 +226,7 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 |---|---|
 | 1 — sync proof (conductor + performers) | ✅ done, hardware-verified |
 | 2 — NVS identity + position-aware sweep | ✅ done, hardware-verified |
-| Refactor — symmetric runtime role + NVS pattern persistence | 🔧 wip |
+| Refactor — symmetric runtime role + NVS pattern persistence + rainbow drift pattern | ✅ done, hardware-verified |
 | Protocol foundation — message types, bidirectional ESP-NOW, MAC identity, layout-table broadcast + cache | 📐 planned (next) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
 | 3 — power management (modem-sleep, dusk deep-sleep, LDR/battery ADC) | 📐 planned |
