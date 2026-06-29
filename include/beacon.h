@@ -55,3 +55,26 @@ typedef struct __attribute__((packed)) {
   uint16_t  id;      // human label (0 if unprovisioned)
   uint8_t   fw;      // sender's PROTO_VERSION (firmware/protocol marker)
 } RegisterMsg;
+
+// One row of the layout table on the wire: a node's MAC and its (x,y) position.
+typedef struct __attribute__((packed)) {
+  uint8_t mac[6];
+  float   x;
+  float   y;
+} TableRow;  // 14 bytes
+
+// Rows per MSG_TABLE packet. ESP-NOW caps the payload at 250 B; the header + chunk
+// fields are 9 B, so (250 - 9) / 14 = 17 rows fit (a 247 B packet at full).
+static constexpr uint8_t TABLE_ROWS_PER_MSG = 17;
+
+// type = MSG_TABLE. The conductor's authoritative MAC->(x,y) map, broadcast in
+// chunks (a 60-node table won't fit one packet). A node scans every chunk for its
+// own MAC and adopts + caches its (x,y). `chunk`/`chunks` let a receiver tell how
+// much of the table it has seen; positions are static, so it is sent occasionally.
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+  uint8_t   chunk;   // this chunk's index, 0..chunks-1
+  uint8_t   chunks;  // total chunks in the table this round
+  uint8_t   n;       // rows present in this packet (<= TABLE_ROWS_PER_MSG)
+  TableRow  rows[TABLE_ROWS_PER_MSG];
+} TableMsg;

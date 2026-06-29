@@ -66,6 +66,11 @@ static constexpr int64_t BEACON_STALE_US = 2000000;  // 2s
 // capacity ROSTER_MAX live in the dependency-free, host-tested include/roster.h.)
 static constexpr int64_t REGISTER_INTERVAL_US = 10000000;  // 10s
 
+// The conductor re-broadcasts the layout table this often. Positions are static,
+// so this is occasional, not per-frame; a node needs to hear it only once, then
+// survives on its NVS cache.
+static constexpr int64_t TABLE_INTERVAL_US = 5000000;  // 5s
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s

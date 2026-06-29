@@ -28,6 +28,9 @@
 #include "patterns.h"
 #include "roster.h"
 #include "sync.h"
+#include "table.h"
+
+#include <stddef.h>  // offsetof (table chunk sizing)
 
 // 16x SK6812 RGBW ring. RMT channel 0 with SK6812 timing.
 NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method> strip(LED_COUNT, LED_PIN);
@@ -39,6 +42,12 @@ static Preferences  g_prefs;
 static NodeIdentity g_id   = {0, 0.0f, 0.0f};
 static uint8_t      g_role = DEFAULT_ROLE;
 static uint8_t      g_mac[6] = {0};  // this node's WiFi STA MAC — stable identity
+
+// Conductor's authoritative layout table (table.h logic, host-tested). Declared
+// here so the NVS load/save below can reach it; edited only over serial on the
+// conductor and read by the broadcast — both in loop() — so it needs no spinlock
+// (unlike the roster, which the recv callback writes).
+static LayoutTable  g_table;
 
 static inline bool isConductor() { return g_role == ROLE_CONDUCTOR; }
 
@@ -72,6 +81,34 @@ static void roleSave() {
   g_prefs.end();
 }
 
+// The conductor's layout table persists as a single NVS blob, so it survives a
+// power-cycle and the field runs with no laptop. (Performers don't broadcast, so
+// an empty/absent blob just means "no table to advertise".)
+static void tableLoad() {
+  g_prefs.begin("node", /*readonly*/ true);
+  size_t got = g_prefs.getBytes("table", &g_table, sizeof(g_table));
+  g_prefs.end();
+  if (got != sizeof(g_table) || g_table.count > TABLE_MAX) tableInit(g_table);
+}
+
+static void tableSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBytes("table", &g_table, sizeof(g_table));
+  g_prefs.end();
+}
+
+// Parse "AA:BB:CC:DD:EE:FF" (any case) into 6 bytes. Returns false on malformed.
+static bool parseMac(const char* s, uint8_t out[6]) {
+  unsigned v[6];
+  if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+    return false;
+  for (int i = 0; i < 6; i++) {
+    if (v[i] > 255) return false;
+    out[i] = (uint8_t)v[i];
+  }
+  return true;
+}
+
 // ---- Sync state --------------------------------------------------------------
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
 // so 64-bit fields can't tear across the two contexts.
@@ -96,6 +133,13 @@ static int64_t  g_next_register_us = 0;
 // command). The lock wraps each access, mirroring g_sync_mux around syncOnBeacon.
 static Roster       g_roster;
 static portMUX_TYPE g_roster_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Performer position adopted from a MSG_TABLE row. The recv callback can't write
+// flash, so it stashes the new (x,y) here (under g_sync_mux) and loop() applies +
+// caches it to NVS.
+static bool  g_pos_pending = false;
+static float g_pos_pending_x = 0.0f;
+static float g_pos_pending_y = 0.0f;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
 
@@ -165,6 +209,27 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       portENTER_CRITICAL(&g_roster_mux);
       rosterUpsert(g_roster, r.mac, r.id, r.fw, now_us());
       portEXIT_CRITICAL(&g_roster_mux);
+      break;
+    }
+    case MSG_TABLE: {
+      if (isConductor()) return;  // conductor is the source, never adopts
+      if (len < (int)offsetof(TableMsg, rows) || len > (int)sizeof(TableMsg)) return;
+      TableMsg m;
+      memcpy(&m, data, len);
+      if (m.n > TABLE_ROWS_PER_MSG) return;
+      if (len != (int)(offsetof(TableMsg, rows) + (size_t)m.n * sizeof(TableRow)))
+        return;
+      // Find our own row; stash the position for loop() to adopt + persist.
+      for (uint8_t i = 0; i < m.n; i++) {
+        if (memcmp(m.rows[i].mac, g_mac, 6) == 0) {
+          portENTER_CRITICAL(&g_sync_mux);
+          g_pos_pending = true;
+          g_pos_pending_x = m.rows[i].x;
+          g_pos_pending_y = m.rows[i].y;
+          portEXIT_CRITICAL(&g_sync_mux);
+          break;
+        }
+      }
       break;
     }
     default:
@@ -241,6 +306,52 @@ static void maybeRegister(int64_t t) {
   esp_now_send(cmac, (const uint8_t*)&r, sizeof(r));
 }
 
+// Conductor: broadcast the authoritative layout table, split into chunks that fit
+// one ESP-NOW payload. Sent occasionally (positions are static); a node hears it,
+// adopts its own row, and caches to NVS.
+static void broadcastTable() {
+  if (g_table.count == 0) return;  // nothing to advertise
+  uint8_t chunks = (g_table.count + TABLE_ROWS_PER_MSG - 1) / TABLE_ROWS_PER_MSG;
+  for (uint8_t c = 0; c < chunks; c++) {
+    TableMsg m;
+    m.hdr.magic = BEACON_MAGIC;
+    m.hdr.version = PROTO_VERSION;
+    m.hdr.type = MSG_TABLE;
+    m.chunk = c;
+    m.chunks = chunks;
+    uint8_t start = c * TABLE_ROWS_PER_MSG;
+    uint8_t n = g_table.count - start;
+    if (n > TABLE_ROWS_PER_MSG) n = TABLE_ROWS_PER_MSG;
+    m.n = n;
+    for (uint8_t i = 0; i < n; i++) {
+      memcpy(m.rows[i].mac, g_table.entries[start + i].mac, 6);
+      m.rows[i].x = g_table.entries[start + i].x;
+      m.rows[i].y = g_table.entries[start + i].y;
+    }
+    size_t len = offsetof(TableMsg, rows) + (size_t)n * sizeof(TableRow);
+    esp_now_send(BROADCAST_ADDR, (const uint8_t*)&m, len);
+  }
+}
+
+// Performer: apply a position handed down by the conductor's table (stashed in the
+// recv callback). Saves to NVS so the node keeps its spot across a reboot without
+// hearing the table again — the "field runs with no laptop" guarantee.
+static void maybeAdoptPosition() {
+  bool pending;
+  float px, py;
+  portENTER_CRITICAL(&g_sync_mux);
+  pending = g_pos_pending;
+  px = g_pos_pending_x;
+  py = g_pos_pending_y;
+  g_pos_pending = false;
+  portEXIT_CRITICAL(&g_sync_mux);
+  if (!pending || (px == g_id.x && py == g_id.y)) return;  // unchanged: no write
+  g_id.x = px;
+  g_id.y = py;
+  identitySave();
+  Serial.printf("[table] adopted position x=%.2f y=%.2f from conductor\n", px, py);
+}
+
 // ---- Diagnostics -------------------------------------------------------------
 // One-line status per second so boards can be range-walked to find where sync
 // drops.
@@ -270,9 +381,12 @@ static void printDiag() {
 // Flash identical firmware to every board, then provision each over serial:
 //   info                 print role + identity (incl. MAC) + pattern state
 //   roster               (conductor) list nodes that have registered (MAC/id/fw)
+//   table                (conductor) print the authoritative MAC->(x,y) table
+//   assign <mac> <x> <y> (conductor) set a node's position by MAC; saved+broadcast
+//   forget <mac>         (conductor) drop a node from the table (node replacement)
 //   role <conductor|performer>   set this node's role and save to NVS
 //   id <n>               set this node's id and save to NVS
-//   pos <x> <y>          set this node's (x,y) coordinate and save to NVS
+//   pos <x> <y>          set this node's own (x,y) coordinate and save to NVS
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
 //   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep
 //   bri <n>              brightness 0-255
@@ -310,6 +424,21 @@ static void printRoster() {
   }
 }
 
+// Conductor-only: print the authoritative layout table.
+static void printTable() {
+  if (!isConductor()) {
+    Serial.println("(table lives on the conductor)");
+    return;
+  }
+  Serial.printf("table: %u row(s)\n", g_table.count);
+  for (uint8_t i = 0; i < g_table.count; i++) {
+    char mac[18];
+    Serial.printf("  [%u] %s  x=%.2f  y=%.2f\n", i,
+                  macStr(g_table.entries[i].mac, mac), g_table.entries[i].x,
+                  g_table.entries[i].y);
+  }
+}
+
 static void handleCommand(char* line) {
   char* cmd = strtok(line, " \t");
   if (!cmd) return;
@@ -318,6 +447,37 @@ static void handleCommand(char* line) {
     printInfo();
   } else if (!strcmp(cmd, "roster")) {
     printRoster();
+  } else if (!strcmp(cmd, "table")) {
+    printTable();
+  } else if (!strcmp(cmd, "assign")) {
+    char* am = strtok(nullptr, " \t");
+    char* ax = strtok(nullptr, " \t");
+    char* ay = strtok(nullptr, " \t");
+    uint8_t mac[6];
+    if (!isConductor()) {
+      Serial.println("? assign is conductor-only");
+    } else if (am && ax && ay && parseMac(am, mac)) {
+      if (tableSet(g_table, mac, atof(ax), atof(ay))) {
+        tableSave();
+        broadcastTable();  // push the change immediately, then on the usual cadence
+        printTable();
+      } else {
+        Serial.println("? table full");
+      }
+    } else {
+      Serial.println("? assign <mac> <x> <y>");
+    }
+  } else if (!strcmp(cmd, "forget")) {
+    char* am = strtok(nullptr, " \t");
+    uint8_t mac[6];
+    if (!isConductor()) {
+      Serial.println("? forget is conductor-only");
+    } else if (am && parseMac(am, mac)) {
+      if (tableRemove(g_table, mac)) { tableSave(); printTable(); }
+      else Serial.println("? no such mac in table");
+    } else {
+      Serial.println("? forget <mac>");
+    }
   } else if (!strcmp(cmd, "role")) {
     char* a = strtok(nullptr, " \t");
     if (a) {
@@ -381,6 +541,7 @@ void setup() {
   patternConfigLoad();
   esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
   rosterInit(g_roster);
+  tableLoad();
   if (!identityProvisioned(g_id))
     Serial.println("  (unprovisioned — set 'role …', 'id <n>', 'pos <x> <y>')");
   printInfo();
@@ -408,8 +569,14 @@ void loop() {
       broadcastBeacon();
       next_beacon = t + BEACON_INTERVAL_US;
     }
+    static int64_t next_table = 0;
+    if (t >= next_table) {
+      broadcastTable();
+      next_table = t + TABLE_INTERVAL_US;
+    }
   } else {
-    maybeRegister(t);  // announce ourselves to the conductor periodically
+    maybeRegister(t);      // announce ourselves to the conductor periodically
+    maybeAdoptPosition();  // adopt + cache any position the table assigned us
   }
 
   // Snapshot sync + beacon together, then render against the right clock.

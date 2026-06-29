@@ -8,7 +8,7 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`do_baskets_firmware_brief.md`](do_baskets_firmware_brief.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · everything is committed
-and pushed; `pio test -e native` (25 pass) and `pio run -e devkitc` build clean.
+and pushed; `pio test -e native` (33 pass) and `pio run -e devkitc` build clean.
 
 ---
 
@@ -34,20 +34,28 @@ and pushed; `pio test -e native` (25 pass) and `pio run -e devkitc` build clean.
   shown in `info`; **bidirectional ESP-NOW** — performers unicast `REGISTER`
   every 10 s and the conductor builds a **MAC-keyed roster** (`roster` command).
   Sync hot path unchanged (still `LOCKED gaps` flat after the rework).
+- **Protocol foundation Half 2** (hardware-verified): **conductor-authoritative
+  `MAC→(x,y)` layout table** in NVS, broadcast as chunked `MSG_TABLE`; a node finds
+  its row, adopts its `(x,y)`, and caches it (survives reboot, no laptop needed).
+  Conductor edits it with `assign <mac> <x> <y>` / `table` / `forget <mac>`.
+  Verified: a node took a position set only on the conductor, no serial to it.
 - **GPIO2 heartbeat** blinks on the synced beat (zero-wiring sync check).
-- **Serial commands:** `info`, `roster` (conductor), `role conductor|performer`,
-  `id <n>`, `pos <x> <y>`, `pattern <n>`, `bri <n>`, `param <i> <v>`.
-- **Host unit tests** for the sync core + pattern math (`test/test_logic/`).
+- **Serial commands:** `info`, `roster` / `table` / `assign` / `forget`
+  (conductor), `role conductor|performer`, `id <n>`, `pos <x> <y>`,
+  `pattern <n>`, `bri <n>`, `param <i> <v>`.
+- **Host unit tests** (`test/test_logic/`, 33): sync core, pattern math, roster,
+  layout table.
 
 **Code layout:** `include/` — `config.h` (pins/constants), `beacon.h` (wire
-packet), `sync.h` (clock core, tested), `pattern_math.h` (pure pattern fns,
-tested), `patterns.h` (LED binding), `identity.h` (NodeIdentity). `src/main.cpp`
-is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`).
+packets), `sync.h` (clock core, tested), `pattern_math.h` (pure pattern fns,
+tested), `patterns.h` (LED binding), `roster.h` + `table.h` (pure, tested),
+`identity.h` (NodeIdentity). `src/main.cpp`
+is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
+`pat`/`bri`/`p0`..`p3` for the recipe, `table` blob on the conductor).
 
-**Not built yet:** the layout table (`MAC→(x,y)` broadcast + NVS cache) and
-structured Pi↔conductor serial (Half 2, next), auto-calibration, show program /
-scheduling, the Pi web UI, power management (modem-sleep is on, but no
-deep-sleep/LDR/ADC), OTA.
+**Not built yet:** structured machine Pi↔conductor serial (lands with the Pi UI),
+auto-calibration, show program / scheduling, the Pi web UI, power management
+(modem-sleep is on, but no deep-sleep/LDR/ADC), OTA.
 
 ## Hardware state
 
@@ -77,7 +85,7 @@ under a 10-night event. Full math in the `power-budget-go-no-go` memory.
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 25 host tests
+pio test -e native                                  # 33 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -87,31 +95,28 @@ Reading serial without resetting the board: see the pyserial snippet in
 
 ---
 
-**⚠ NVS pattern-config pitfall (for future edits to `main.cpp`):** `configLoad()`
-is defined *above* `g_beacon`, so it can't touch it. The pattern recipe is
-loaded/saved by separate `patternConfigLoad()` / `patternConfigSave()` defined
-*after* `g_beacon` (called from `setup()` and the `pattern`/`bri`/`param`
-handlers). Don't move pattern loads into `configLoad()` or forward-declare
-`g_beacon` — a prior attempt broke the build that way.
+**⚠ `main.cpp` global-ordering pitfall (for future edits):** NVS helpers must be
+defined *below* the global they touch. `patternConfigLoad/Save` sit *after*
+`g_beacon`; `tableLoad/Save` need `g_table`, which is declared up top with the
+other config globals for exactly this reason. Don't move these loads into
+`configLoad()` or forward-declare the globals — a prior attempt broke the build.
 
-## Next task (big): protocol foundation — Half 2
+## Where to go next — pick one
 
-Half 1 (typed header, MAC identity, bidirectional registration + roster) is **done
-and hardware-verified** — see the status list above. The wire substrate now exists
-(`beacon.h`: `MsgHeader` + `MsgType`; `MSG_ROSTER`/`MSG_TABLE`/`MSG_ACK` reserved
-but unused). Half 2 builds the layout table on top. See `ARCHITECTURE.md` §5, §5.2.
+The protocol foundation (both halves) is **done and hardware-verified**. Candidate
+next milestones, see `ARCHITECTURE.md` for each:
 
-1. **Routing table in conductor NVS.** Store as a blob of `{uint8 mac[6]; float x;
-   float y;}` rows. Broadcast as `MSG_TABLE` chunks (≤~250 B → ~17 rows/packet),
-   occasionally. Each node scans for its MAC and caches `(x,y)` to NVS, so it
-   adopts its position with no serial. Conductor is authoritative; field runs with
-   no laptop. The roster (`g_roster`, MAC-keyed) is the natural seed for the table.
-2. **Structured serial protocol (Pi↔conductor).** Beyond the human commands, add a
-   machine protocol with bulk **table get/set** (60 rows won't fit a typed line),
-   show-program get/set, and calibration control, with clean acks/errors.
-
-**Verify like Half 1:** set a node's `(x,y)` by MAC from the conductor and watch
-the node adopt + cache it without ever talking to that node directly.
+- **Auto-calibration** (§6) — build the `MAC→(x,y)` table by survey (drone + CV)
+  instead of by hand. The table plumbing it feeds into now exists. Biggest payoff
+  for a real 60-node deploy; biggest effort (off-board CV).
+- **Pi web UI / control plane** (§5.2) — the laptop-free operator surface. Needs
+  the **structured machine Pi↔conductor serial** (bulk `table` get/set, show
+  program), which was deliberately deferred to land here.
+- **Show program / scheduling** (§4.1) — conductor walks a schedule and broadcasts
+  the current recipe; nodes stay dumb. Pure-on-conductor, modest scope.
+- **Milestone 3 — power management** — modem-sleep does nothing for connectionless
+  ESP-NOW (see the power note above); the real lever is **scheduled light-sleep
+  between beacons**. Gates the battery-vs-wired go/no-go (Milestone 4).
 
 ## After that
 

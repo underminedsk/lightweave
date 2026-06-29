@@ -86,7 +86,7 @@ logic. Open considerations: smooth **transitions/crossfades** between patterns
 (would need a blend factor in the recipe), and the schedule's **time base**
 (uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
 
-## 5. Layout table — conductor-authoritative `MAC → (x,y)` **[planned]**
+## 5. Layout table — conductor-authoritative `MAC → (x,y)` **[done]**
 
 The conductor holds the authoritative field map and broadcasts it; each node finds
 its own MAC, adopts its `(x,y)`, and **caches it in NVS**. Edit one table to
@@ -96,22 +96,30 @@ re-arrange the whole field.
   field runs with **no laptop present** — the conductor is the coordination point
   for the table just as it is for the clock and the pattern recipe.
 - Resilient: a node needs to hear the table only once, then survives on the cache.
-- Cheap: ~14 bytes/node → ~840 bytes for 60 nodes → fits NVS easily and ~4 ESP-NOW
-  packets, sent occasionally (positions are static, not per-frame).
+- Cheap: 14 B/node on the wire (`TableRow`) → ~840 B for 60 nodes → ~4 `MSG_TABLE`
+  packets (17 rows each), sent every `TABLE_INTERVAL_US` (positions are static).
 
-Manual `pos x y` over serial remains as a fallback/override for tests and
-stragglers.
+Implementation: the table logic is the dependency-free, host-tested
+`include/table.h` (`tableSet`/`tableLookup`/`tableRemove`); `main.cpp` owns the NVS
+blob, the chunked broadcast, and the node-side adoption. The conductor edits it
+over serial — `assign <mac> <x> <y>`, `table`, `forget <mac>` — and pushes the
+change immediately. A node stashes its row in the recv callback and applies +
+`identitySave()`s it from `loop()` (no flash write in the callback). Verified on
+hardware: a node adopts a position set only on the conductor, with no serial to
+that node, and keeps it across a reboot. Manual `pos x y` over serial remains as a
+fallback/override for tests and stragglers.
 
-### 5.1 Node replacement **[planned]**
+### 5.1 Node replacement **[done via assign + forget]**
 
 A dead lamp's spare has a new MAC, so replacement is a **table edit**, not a
 re-calibration — because positions are MAC-keyed and the table is
 conductor-authoritative. Physically drop the spare into the dead one's spot, then
 transfer the position from the old MAC to the new one:
 
-1. Spare boots as a performer (default), registers, and is now a known MAC.
-2. Operator issues a conductor command — `replace <oldMAC> <newMAC>` (copy the old
-   entry's `(x,y)` to the new MAC, drop the old) or `assign <newMAC> <x> <y>`.
+1. Spare boots as a performer (default), registers, and shows in the `roster`.
+2. Operator runs `assign <newMAC> <x> <y>` then `forget <oldMAC>` on the conductor
+   (a single `replace <oldMAC> <newMAC>` convenience command is a possible later
+   nicety, but the two existing commands already cover it).
 3. Conductor rebroadcasts; the spare caches its `(x,y)` to NVS and joins the field.
 
 No drone, no re-fly — a single swap is one command. Getting the new MAC: read it
@@ -207,22 +215,26 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 
 - **[done]** Common header `MsgHeader {uint32 magic; uint8 version; uint8 type;}`
   on every packet; receiver validates magic+version then dispatches on `type`.
-  Types: `MSG_BEACON` (hot path), `MSG_REGISTER` (live); `MSG_ROSTER`/`MSG_TABLE`/
-  `MSG_ACK` reserved for Half 2. `PROTO_VERSION` is rejected on mismatch.
+  Types: `MSG_BEACON` (hot path), `MSG_REGISTER`, `MSG_TABLE` (live);
+  `MSG_ROSTER`/`MSG_ACK` reserved. `PROTO_VERSION` is rejected on mismatch.
 - **[done]** `MSG_BEACON` (clock + recipe) broadcast on a fixed channel to
   `FF:FF:FF:FF:FF:FF`, `WIFI_STA`. The hot path (sync.h) reads `epoch_us`+`seq`.
 - **[done]** Bidirectional ESP-NOW: a performer learns the conductor's MAC from the
   recv-info, adds it as a peer, and unicasts `MSG_REGISTER {mac, id, fw}` every 10 s;
   the conductor builds a MAC-keyed roster (`roster` serial command).
-- **[planned]** `MSG_TABLE` layout broadcast + `MSG_ACK`; richer Pi↔conductor
-  serial (Half 2).
+- **[done]** `MSG_TABLE`: the conductor broadcasts the layout table in chunks
+  (`TableRow` ×17/packet); nodes adopt their own row. `chunk`/`chunks` fields let a
+  receiver tell how much it has seen.
+- **[planned]** `MSG_ACK` + richer machine Pi↔conductor serial (lands with the Pi
+  UI).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
 
 ## 8. Resilience model
 
 - Missed beacon → free-run on last offset; re-lock on next. **[done]**
 - Cold boot → read role/identity/position from NVS + MAC from efuse, lock within
-  ~1–2 s, resume. **[done for role/pos/MAC; table cache planned (Half 2)]**
+  ~1–2 s, resume. **[done — role/pos/MAC; table-assigned position is cached to the
+  same NVS pos keys, so it survives a reboot without re-hearing the table]**
 - Calibration capture is open-loop (no live RF dependency during the fly-over).
 - NVS caches (role, position, pattern config) survive power cycles / battery swaps.
 
@@ -234,7 +246,8 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 | 2 — NVS identity + position-aware sweep | ✅ done, hardware-verified |
 | Refactor — symmetric runtime role + NVS pattern persistence + rainbow drift pattern | ✅ done, hardware-verified |
 | Protocol foundation, Half 1 — typed header, MAC identity, bidirectional ESP-NOW, registration + roster | ✅ done, hardware-verified |
-| Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache, structured Pi↔conductor serial | 📐 planned (next) |
+| Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
+| Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
 | 3 — power management (modem-sleep, dusk deep-sleep, LDR/battery ADC) | 📐 planned |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |

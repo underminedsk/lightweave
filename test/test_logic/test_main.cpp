@@ -11,6 +11,7 @@
 #include "sync.h"
 #include "pattern_math.h"
 #include "roster.h"
+#include "table.h"
 
 // ---- Sync: locking & offset --------------------------------------------------
 
@@ -313,6 +314,85 @@ void test_roster_overflow_drops_new_keeps_existing() {
   TEST_ASSERT_EQUAL_UINT16(42, r.entries[rosterFind(r, known)].id);
 }
 
+// ---- Layout table: authoritative MAC -> (x,y) -------------------------------
+
+void test_table_set_and_lookup() {
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6], b[6];
+  macN(a, 1);
+  macN(b, 2);
+  TEST_ASSERT_TRUE(tableSet(t, a, 1.0f, 2.0f));
+  TEST_ASSERT_TRUE(tableSet(t, b, -3.5f, 4.25f));
+  TEST_ASSERT_EQUAL_UINT8(2, t.count);
+  float x = 0, y = 0;
+  TEST_ASSERT_TRUE(tableLookup(t, b, x, y));
+  TEST_ASSERT_EQUAL_FLOAT(-3.5f, x);
+  TEST_ASSERT_EQUAL_FLOAT(4.25f, y);
+  uint8_t miss[6];
+  macN(miss, 9);
+  TEST_ASSERT_FALSE(tableLookup(t, miss, x, y));
+}
+
+void test_table_set_updates_in_place() {
+  // Re-assigning a known MAC moves it, never duplicates (re-arranging the field).
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6];
+  macN(a, 1);
+  tableSet(t, a, 1.0f, 1.0f);
+  tableSet(t, a, 9.0f, 8.0f);
+  TEST_ASSERT_EQUAL_UINT8(1, t.count);
+  float x = 0, y = 0;
+  tableLookup(t, a, x, y);
+  TEST_ASSERT_EQUAL_FLOAT(9.0f, x);
+  TEST_ASSERT_EQUAL_FLOAT(8.0f, y);
+}
+
+void test_table_remove() {
+  // Node replacement: dropping a MAC leaves the others intact and findable.
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6], b[6], c[6];
+  macN(a, 1);
+  macN(b, 2);
+  macN(c, 3);
+  tableSet(t, a, 1, 1);
+  tableSet(t, b, 2, 2);
+  tableSet(t, c, 3, 3);
+  TEST_ASSERT_TRUE(tableRemove(t, b));
+  TEST_ASSERT_EQUAL_UINT8(2, t.count);
+  TEST_ASSERT_EQUAL_INT(-1, tableFind(t, b));
+  float x = 0, y = 0;  // the survivors are still correct
+  TEST_ASSERT_TRUE(tableLookup(t, a, x, y));
+  TEST_ASSERT_EQUAL_FLOAT(1, x);
+  TEST_ASSERT_TRUE(tableLookup(t, c, x, y));
+  TEST_ASSERT_EQUAL_FLOAT(3, x);
+  TEST_ASSERT_FALSE(tableRemove(t, b));  // already gone
+}
+
+void test_table_overflow_drops_new() {
+  LayoutTable t;
+  tableInit(t);
+  for (int n = 0; n < TABLE_MAX; n++) {
+    uint8_t m[6];
+    macN(m, (uint8_t)n);
+    TEST_ASSERT_TRUE(tableSet(t, m, (float)n, 0.0f));
+  }
+  TEST_ASSERT_EQUAL_UINT8(TABLE_MAX, t.count);
+  uint8_t over[6];
+  macN(over, 200);
+  TEST_ASSERT_FALSE(tableSet(t, over, 1, 1));  // full + new MAC -> dropped
+  TEST_ASSERT_EQUAL_UINT8(TABLE_MAX, t.count);
+  // A known MAC still updates even when full.
+  uint8_t known[6];
+  macN(known, 5);
+  TEST_ASSERT_TRUE(tableSet(t, known, 99, 99));
+  float x = 0, y = 0;
+  tableLookup(t, known, x, y);
+  TEST_ASSERT_EQUAL_FLOAT(99, x);
+}
+
 // ---- Heartbeat: synced square wave ------------------------------------------
 
 void test_heartbeat_square_wave() {
@@ -375,6 +455,10 @@ int main(int, char**) {
   RUN_TEST(test_roster_appends_distinct_macs);
   RUN_TEST(test_roster_dedup_updates_in_place);
   RUN_TEST(test_roster_overflow_drops_new_keeps_existing);
+  RUN_TEST(test_table_set_and_lookup);
+  RUN_TEST(test_table_set_updates_in_place);
+  RUN_TEST(test_table_remove);
+  RUN_TEST(test_table_overflow_drops_new);
   RUN_TEST(test_heartbeat_square_wave);
   RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
   RUN_TEST(test_heartbeat_handles_negative_synced_time);
