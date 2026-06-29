@@ -4,7 +4,7 @@ Parts list + cost model for the production field. Companion to
 [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) (the hardware table / constraints) and the
 `power-budget-go-no-go` measurements that justify the battery sizing.
 
-**Scope:** ~60 performer nodes + 1 conductor + 1 admin host, sized with ~10% spares.
+**Scope:** 50 deployed lanterns + 5 spares (**55 nodes**) + 1 conductor + 1 admin host.
 **Status:** first costed pass (2026-06-28). Decisions locked except the enclosure
 (art-side) and the level-shifter (recommended-optional). Verify every price at
 checkout — see the price caveat at the bottom.
@@ -69,16 +69,16 @@ LED ring and the buck (the fixed-vs-adjustable choice, below).
 
 ---
 
-## Field roll-up (60 performers + conductor + admin host + ~10% spares)
+## Field roll-up (50 lanterns + 5 spares = 55 nodes, + conductor + admin host)
 
 | Bucket | Qty | Est. total |
 |---|---|---|
-| Node electronics | 66 builds | ~$2,344 |
-| Batteries | 60 (+ swap spares) | ~$2,880 |
+| Node electronics | 55 builds | ~$1,953 |
+| Batteries | 55 | ~$2,640 |
 | Conductor (board + power) | 1 | ~$70 |
 | Admin host (Pi Zero 2 W) | 1 | ~$45 |
-| **Subtotal — electronics + batteries** | | **≈ $5,340** |
-| Enclosures / diffusers | 60 | **TBD (art-side)** |
+| **Subtotal — electronics + batteries** | | **≈ $4,710** |
+| Enclosures / diffusers | 55 | **TBD (art-side)** |
 
 Enclosures are the remaining unknown and could rival the battery line depending on
 how the baskets are built — owned on the art side, left as a placeholder here.
