@@ -93,7 +93,16 @@ logic. Open considerations: smooth **transitions/crossfades** between patterns
 (would need a blend factor in the recipe), and the schedule's **time base**
 (uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
 
-### 4.2 Power instrumentation — INA228 **[planned]**
+### 4.2 Power instrumentation — INA228 **[done — firmware; awaiting the chip]**
+
+Firmware landed 2026-07-04, built ahead of the pilot-batch chips (arriving with
+the Monday order) so their arrival is pure hardware verification: I2C probe at
+boot (one image everywhere — a node without the chip skips telemetry silently,
+`skipReset=true` so a serial monitor's DTR reset can't wipe the night's
+accumulated Wh), pure logic in the host-tested `include/powermon.h`
+(conversions, plausibility gate, radio-aware report scheduler), a `MSG_POWER`
+unicast on the existing REGISTER path (no PROTO_VERSION bump — new type only),
+ungated conductor-side logging, and `power` / `power reset` serial commands.
 
 A precision power monitor (**INA228** breakout, 15 mΩ on-board shunt) wired in series
 between battery+ and the buck input, on **1–2 instrumented reference nodes only** —
@@ -263,6 +272,10 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 - **[done]** `MSG_TABLE`: the conductor broadcasts the layout table in chunks
   (`TableRow` ×17/packet); nodes adopt their own row. `chunk`/`chunks` fields let a
   receiver tell how much it has seen.
+- **[done]** `MSG_POWER`: an INA228-instrumented performer unicasts its
+  hardware-accumulated energy/charge to the conductor (§4.2), reusing the
+  REGISTER unicast path. Added without a PROTO_VERSION bump — no existing
+  layout changed, and receivers ignore unknown types via the dispatch default.
 - **[planned]** `MSG_ACK` + richer machine Pi↔conductor serial (lands with the Pi
   UI).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
@@ -309,7 +322,7 @@ and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
 | Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
-| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) and Lever 2 (daytime deep-sleep, `dusk.h`, fail-awake design, `wake on|off` field-summon flag, default off) 🛠 both code-complete + host-tested, awaiting bench verify/measure; INA228 instrumentation (§4.2) planned |
+| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) ✅ hardware-verified on bench 2026-07-03 (power re-measure owed); Lever 2 (daytime deep-sleep, `dusk.h`, fail-awake design, `wake on|off` field-summon flag, default off) 🛠 code-complete + host-tested, awaiting the pilot phototransistors; INA228 instrumentation (§4.2) ✅ firmware done + host-tested (`powermon.h`, `MSG_POWER`), awaiting the chip |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 📐 planned |
 

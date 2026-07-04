@@ -8,35 +8,33 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**58 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
-`main` (all pushed, working tree clean as of 2026-07-03 evening): Stage-A radio
-duty-cycle (measured), **Stage-B CPU light-sleep (hardware-verified on bench
-2026-07-03)**, **Lever-2 daytime deep-sleep (code-complete, default off,
-awaiting the pilot phototransistors)**, a full-repo adversarial self-review
-with all 5 correctness findings fixed, the production BOM, and the
-**pilot-batch order placed 2026-07-03** (most parts arrive Mon Jul 6,
-batteries Jul 10 — see "Pilot batch: ORDERED" below).
+(**65 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest
+work (2026-07-04): **INA228 power-telemetry firmware (code-complete,
+host-tested — built ahead of the chip, see below)**. Before that, on `main` as
+of 2026-07-03: Stage-A radio duty-cycle (measured), **Stage-B CPU light-sleep
+(hardware-verified on bench 2026-07-03)**, **Lever-2 daytime deep-sleep
+(code-complete, default off, awaiting the pilot phototransistors)**, a
+full-repo adversarial self-review with all 5 correctness findings fixed, the
+production BOM, and the **pilot-batch order placed 2026-07-03** (most parts
+arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
-## ▶ Next session: pick up here (agreed 2026-07-03)
+## ▶ Next session: pick up here (updated 2026-07-04)
 
-Priority order, chosen so Monday's parts arrival is pure hardware verification:
-1. **Build the INA228 telemetry firmware NOW, before the chip arrives**
-   (ARCHITECTURE §4.2): I2C probe at boot (one image everywhere — nodes without
-   the chip skip it silently), a module wrapping `readEnergy()` /
-   `resetAccumulators()` (Adafruit_INA228 lib, continuous mode ONLY — triggered
-   mode invalidates the accumulators), a new `MSG_POWER` unicast so instrumented
-   performers report accumulated Wh to the conductor on the existing
-   bidirectional path, conductor logs it. Keep the pure parts host-tested.
-2. **Review debt** (list in "Self code-review" section below): extract
+~~1. Build the INA228 telemetry firmware NOW, before the chip arrives~~ —
+**DONE 2026-07-04** (details in "INA228 power telemetry" below). Remaining, in
+order:
+1. **Review debt** (list in "Self code-review" section below): extract
    host-unreachable logic from main.cpp (boot classification, `parseMac`, table
    chunk math, SOLID boot-guard) into tested pure headers; add a `field` build
    env with `-D HEARTBEAT_LED=0`; stretch table rebroadcast cadence.
-3. **Monday (parts in hand):** wire a phototransistor → calibrate
+2. **Monday (parts in hand):** wire a phototransistor → calibrate
    `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
    verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
-   wire INA228 on one reference node → first real Wh integral; first flash of
-   the `firebeetle` env on real FireBeetle hardware.
-4. **User task, anytime (needs hands + DMM):** re-measure the 12 V
+   wire INA228 on one reference node (SDA→21, SCL→22, chip in series between
+   battery+ and buck input) → run the INA228 bench checklist below → first
+   real Wh integral; first flash of the `firebeetle` env on real FireBeetle
+   hardware.
+3. **User task, anytime (needs hands + DMM):** re-measure the 12 V
    battery-side draw with naps running, **USB disconnected** (USB backfeeds the
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
    51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
@@ -82,14 +80,18 @@ power measurement):
   `pattern <n>`, `bri <n>`, `param <i> <v>`, `powersave on|off`,
   `dusk on|off` (performer; daytime deep-sleep, default off),
   `wake on|off` (conductor; FIELD_AWAKE beacon flag, summons dusk-sleeping
-  nodes). Note diag output is gated: it prints only within **5 min of serial
-  input** — hit Enter in a monitor to revive a quiet node (see FLASHING.md).
+  nodes), `power` / `power reset` (INA228 nodes; print / zero the energy
+  accumulators). Note diag output is gated: it prints only within **5 min of
+  serial input** — hit Enter in a monitor to revive a quiet node (see
+  FLASHING.md). Exception: the conductor's `[power]` telemetry log is
+  deliberately ungated (it's the overnight audit trail).
 - **Wire protocol is v2** (`PROTO_VERSION 2`, beacon grew a `flags` byte for
   FIELD_AWAKE). v1 and v2 nodes silently reject each other — **flash every
   board together** (all 3 bench boards are on v2 as of 2026-07-03).
-- **Host unit tests** (`test/test_logic/`, 58): sync core, pattern math, roster,
+- **Host unit tests** (`test/test_logic/`, 65): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
-  fail-awake gates (Lever 2), pattern static-ids, glow warm-hue color.
+  fail-awake gates (Lever 2), pattern static-ids, glow warm-hue color, power
+  telemetry (conversions / plausibility gate / report scheduler).
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -152,20 +154,67 @@ color at a fixed hue, no time term, so the field holds one calm color with a *fl
 a genuine warm/gentle show pattern. Host test covers the warm-hue color math (39
 tests now).
 
+**INA228 power telemetry — CODE-COMPLETE 2026-07-04, host-tested (65 native
+tests green), both device envs build — NOT hardware-verified (chip arrives with
+Monday's order).** ARCHITECTURE §4.2. Reviewed same day (8-angle /code-review,
+10 verified candidates → 4 fixes applied: avg-W plausibility bound, time-gate
+before the spinlock in maybePowerReport, PowerSample embedded in PowerMsg,
+conductor self-log on the tested scheduler). What landed:
+- `include/powermon.h` (pure, 7 host tests): J→Wh / C→mAh / avg-W conversions,
+  a plausibility gate (NaN/inf/orders-of-magnitude nonsense gets logged but
+  flagged `** IMPLAUSIBLE`, never trusted into the budget — including the
+  reboot-inflated avg-W case: accumulator survives an ESP32 reset while the
+  elapsed anchor restarts, so a whole night's Joules over seconds would read
+  as kW; the gate bounds avg at 50 W), and the report scheduler (fires only
+  while the radio is up + conductor peer exists, catches up with exactly ONE
+  report after a long radio-off span — no bursts).
+- Wire: `MSG_POWER` unicast performer→conductor on the existing REGISTER path;
+  the payload IS the embedded `PowerSample` struct (one field list, sender and
+  receiver can't drift; byte-identical layout — all members 4-byte aligned).
+  **No PROTO_VERSION bump** — new type only; v2 receivers without the handler
+  ignore it via the dispatch default. The peer-add logic is now shared
+  (`conductorPeerReady`).
+- Glue (`main.cpp`): I2C probe at boot (`Wire` on SDA 21 / SCL 22; a node
+  without the chip fails the probe in ~ms and stays silent — one image
+  everywhere). **`begin(..., skipReset=true)` is load-bearing:** the chip stays
+  battery-powered across an ESP32 reset, and the lib's default begin()
+  hardware-resets it — which would wipe the night's Wh the moment a serial
+  monitor's DTR auto-reset hits. Zeroing is only ever explicit (`power reset`).
+  Continuous conversion mode is set explicitly (triggered mode invalidates the
+  hardware accumulators). Conductor drains reports from a spinlocked queue and
+  logs `[power] <mac> E=… Wh avg=… W Q=… mAh V=… I=… (elapsed)` — ungated by
+  the serial-activity window (it IS the overnight audit log). A conductor
+  carrying the chip logs its own line on the same 60 s cadence.
+- Caveat (documented in the code): `elapsed_s` restarts on reboot while the
+  chip keeps accumulating, so after an unplanned mid-night reboot the energy
+  total is still right but avg-W overstates until the next `power reset`.
+- Overnight flow: `power reset` at dusk → run untethered → morning: reconnect
+  USB and read with the **no-reset pyserial trick** (FLASHING.md) *or* just
+  read the conductor's scrollback; a DTR reset no longer zeroes the chip, only
+  the elapsed anchor.
+
+**INA228 bench checklist (Monday, chip in hand):** (1) wire VCC→3V3, GND→GND,
+SDA→21, SCL→22, shunt in series battery+ → buck input; (2) boot log shows
+`[power] INA228 found`; `info` shows `ina228=yes`; (3) `power` prints a sane
+line (V≈13.4, I≈55 mA on the GLOW scene); (4) cross-check E against the DMM/
+ET900 over ~30 min; (5) confirm a `[power]` report lands in the conductor log
+~every 60 s with powersave on (deferred through radio-off spans); (6) DTR-reset
+the node mid-run and confirm E survives (only elapsed resets); (7) `power
+reset` then verify E climbs from 0.
+
 **Code layout:** `include/` — `config.h` (pins/constants), `beacon.h` (wire
 packets), `sync.h` (clock core, tested), `pattern_math.h` (pure pattern fns,
 tested), `patterns.h` (LED binding), `roster.h` + `table.h` (pure, tested),
-`powersave.h` (radio duty-cycle schedule, pure, tested), `identity.h`
+`powersave.h` (radio duty-cycle schedule, pure, tested), `powermon.h` (INA228
+telemetry logic, pure, tested), `identity.h`
 (NodeIdentity). `src/main.cpp`
 is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 `pat`/`bri`/`p0`..`p3` for the recipe, `table` blob on the conductor).
 
 **Not built yet:** structured machine Pi↔conductor serial (lands with the Pi UI),
-auto-calibration, show program / scheduling, the Pi web UI, power management
-(modem-sleep is on, but no deep-sleep/LDR/ADC), OTA, **INA228 precision power
-monitor** (I2C, hardware energy/charge accumulation; ARCHITECTURE.md §4.2) —
-planned for 1–2 instrumented reference nodes to validate Stage B / Lever 2 against
-real overnight draw, not a field-wide component.
+auto-calibration, show program / scheduling, the Pi web UI, OTA. (INA228
+telemetry firmware IS built now — see the section above; it awaits the physical
+chip.)
 
 ## Hardware state
 
@@ -281,15 +330,15 @@ the **12 V battery rig, USB disconnected** for the true MCU floor before sizing 
 sleep work. (FireBeetle, the M4 candidate, has a lower quiescent draw and shrinks
 this floor further.)
 
-**Also planned: INA228 precision power monitor** (see `PROJECT_BRIEF.md` hardware
-table + readout-path section, and `ARCHITECTURE.md` §4.2) — an I2C breakout with
-hardware energy/charge accumulation, wired in series between battery+ and the buck
-input on 1–2 reference nodes. Once wired up, it replaces one-off ET900/DMM snapshots
-with a true continuous Wh integral per night (`readEnergy()`/`resetAccumulators()`),
-and the plan is to have performers report their accumulated Wh back to the conductor
-over ESP-NOW so every overnight sync test doubles as a fleet-wide power audit. Not
-built yet — this is the next instrumentation task, useful before/alongside sizing
-Stage B and Lever 2.
+**INA228 precision power monitor: firmware DONE (2026-07-04)** (see the
+"INA228 power telemetry" section above, `PROJECT_BRIEF.md` readout-path
+section, and `ARCHITECTURE.md` §4.2) — an I2C breakout with hardware
+energy/charge accumulation, wired in series between battery+ and the buck
+input on 1–2 reference nodes. It replaces one-off ET900/DMM snapshots with a
+true continuous Wh integral per night, and instrumented performers report
+accumulated Wh to the conductor over ESP-NOW (`MSG_POWER`) so every overnight
+sync test doubles as a fleet-wide power audit. Awaiting the physical chip
+(Monday's order) — the bench checklist is in the section above.
 
 ### Lever 1 (do first): radio off between beacons — performer-only
 

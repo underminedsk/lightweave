@@ -14,6 +14,8 @@
 
 #include <stdint.h>
 
+#include "powermon.h"  // PowerSample — MSG_POWER's payload IS the logic struct
+
 // Bumped on any incompatible wire-layout change. Receivers reject a mismatch
 // rather than misparse a packet from a node on different firmware. Also reported
 // in REGISTER so the conductor can spot a straggler running stale firmware.
@@ -35,6 +37,7 @@ enum MsgType : uint8_t {
   MSG_ROSTER   = 2,  // conductor -> all: finalized roster        (Half 2)
   MSG_TABLE    = 3,  // conductor -> all: MAC->(x,y) layout chunk  (Half 2)
   MSG_ACK      = 4,  // generic acknowledgement                   (Half 2)
+  MSG_POWER    = 5,  // performer -> conductor: INA228 energy telemetry
 };
 
 typedef struct __attribute__((packed)) {
@@ -89,3 +92,21 @@ typedef struct __attribute__((packed)) {
   uint8_t   n;       // rows present in this packet (<= TABLE_ROWS_PER_MSG)
   TableRow  rows[TABLE_ROWS_PER_MSG];
 } TableMsg;
+
+// type = MSG_POWER. An INA228-instrumented performer (1–2 reference nodes, not
+// the whole field) unicasts its hardware-accumulated energy/charge totals to the
+// conductor on the existing REGISTER path, so any overnight sync test doubles as
+// a fleet power audit. Sent occasionally (the accumulator integrates in hardware
+// regardless); the conductor just logs it. Adding this type did NOT bump
+// PROTO_VERSION: no existing layout changed, and a receiver without the handler
+// ignores an unknown type via its dispatch default.
+//
+// The payload IS powermon.h's PowerSample, embedded — one field list, so sender
+// and receiver can never drift out of positional lockstep. Wire-safe: all five
+// members are 4-byte and naturally aligned, so PowerSample has no internal
+// padding and the packed layout is byte-identical to spelling the fields out.
+typedef struct __attribute__((packed)) {
+  MsgHeader   hdr;
+  uint8_t     mac[6];  // sender's MAC (also in recv-info; kept for the log)
+  PowerSample s;       // energy_j / charge_c / bus_v / current_ma / elapsed_s
+} PowerMsg;

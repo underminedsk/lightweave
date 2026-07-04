@@ -151,6 +151,25 @@ static constexpr uint64_t DUSK_RESAMPLE_US = 900000000ULL;  // 15 min between wa
 // comes later with the pilot hardware.
 static constexpr float VBAT_DIVIDER = 5.7f;
 
+// ---- INA228 power telemetry (Milestone 3 instrumentation, ARCHITECTURE §4.2) --
+// A precision power monitor on 1–2 reference nodes only, wired in series between
+// battery+ and the buck input. Probed over I2C at boot — the one shared firmware
+// image runs everywhere, and a node without the chip just skips telemetry
+// silently. The breakout's on-board shunt is 15 mΩ; max-expected-current sets the
+// device's current LSB (our whole node draws <0.2 A, but the lib default 10 A
+// scaling is still micro-amp-class resolution — plenty). MUST run in continuous
+// conversion mode: in triggered mode the hardware energy/charge accumulators are
+// invalid (the device stops tracking elapsed time). Default ESP32 I2C pins
+// (SDA 21 / SCL 22 on both DevKitC and FireBeetle 2).
+static constexpr uint8_t INA228_I2C_ADDR      = 0x40;    // breakout default
+static constexpr float   INA228_SHUNT_OHMS    = 0.015f;  // on-board shunt
+static constexpr float   INA228_MAX_CURRENT_A = 10.0f;   // current-LSB scaling
+// How often an instrumented performer unicasts MSG_POWER to the conductor. The
+// hardware accumulator integrates continuously regardless, so this is a logging
+// cadence, not a sampling rate; the scheduler (powermon.h) defers sends until a
+// radio-on window anyway.
+static constexpr int64_t POWER_REPORT_INTERVAL_US = 60000000;  // 60 s
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s

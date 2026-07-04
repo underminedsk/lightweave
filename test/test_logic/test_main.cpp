@@ -13,6 +13,7 @@
 #include "napsched.h"
 #include "pattern_ids.h"
 #include "pattern_math.h"
+#include "powermon.h"
 #include "powersave.h"
 #include "roster.h"
 #include "table.h"
@@ -769,6 +770,106 @@ void test_dusk_dark_timer_wake_blocks_resleep() {
   TEST_ASSERT_TRUE(duskShouldSleep(d, DUSKC, 11 * S, 10 * S, never, never));
 }
 
+// ---- INA228 power telemetry (powermon.h) --------------------------------------
+// The conversions feed the battery-budget math directly, the plausibility gate
+// keeps a broken sensor from being trusted into it, and the report scheduler
+// must defer through radio-off spans (Stage-A duty-cycling keeps the radio off
+// ~87% of the time) without ever bursting to catch up.
+
+void test_power_unit_conversions() {
+  // The INA228 accumulates SI (J / C); the budget is kept in Wh / mAh.
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, powerWh(3600.0f));    // 3600 J = 1 Wh
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 11.0f, powerWh(39600.0f));  // a target night
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, powerMah(3.6f));      // 3.6 C = 1 mAh
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12000.0f, powerMah(43200.0f));  // 12 Ah battery
+}
+
+void test_power_avg_watts() {
+  // 3600 J over an hour is 1 W — and a zero window must not divide by zero
+  // (a report can land the same second the accumulators are reset).
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, powerAvgW(3600.0f, 3600));
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, powerAvgW(3600.0f, 0));
+}
+
+void test_power_plausible_accepts_real_readings() {
+  // A realistic overnight report from the measured rig: ~0.74 W avg @ 13.4 V.
+  PowerSample s = {26640.0f, 1980.0f, 13.4f, 55.0f, 36000};
+  TEST_ASSERT_TRUE(powerPlausible(s));
+  // Bench edge: freshly reset, everything ~zero, is still a valid reading.
+  PowerSample zero = {0.0f, 0.0f, 12.8f, 0.0f, 0};
+  TEST_ASSERT_TRUE(powerPlausible(zero));
+  // Backwards-wired shunt on the bench: negative current/charge is real data.
+  PowerSample rev = {100.0f, -80.0f, 13.0f, -55.0f, 1000};
+  TEST_ASSERT_TRUE(powerPlausible(rev));
+}
+
+void test_power_plausible_rejects_nonsense() {
+  PowerSample ok = {100.0f, 80.0f, 13.0f, 55.0f, 1000};
+  TEST_ASSERT_TRUE(powerPlausible(ok));
+
+  PowerSample s = ok;
+  s.energy_j = NAN;
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.energy_j = INFINITY;
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.energy_j = -1.0f;             // energy accumulator can't run backwards
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.energy_j = 1e9f;              // orders past any night on this battery
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.bus_v = 120.0f;               // divider/wiring fault
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.bus_v = -0.5f;
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.current_ma = 50000.0f;        // far past the buck's limit
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  s = ok; s.charge_c = NAN;
+  TEST_ASSERT_FALSE(powerPlausible(s));
+}
+
+void test_power_plausible_flags_reboot_inflated_avg() {
+  // The skipReset design means a mid-night ESP32 reboot preserves the chip's
+  // accumulator while the node's elapsed anchor restarts: a whole night's
+  // Joules over a few seconds of elapsed. Every raw field is in range — only
+  // the derived average exposes it (26640 J / 5 s = 5328 W "average").
+  PowerSample s = {26640.0f, 1980.0f, 13.4f, 55.0f, 5};
+  TEST_ASSERT_FALSE(powerPlausible(s));
+  // The same totals over the real 10 h window are a normal night (~0.74 W).
+  s.elapsed_s = 36000;
+  TEST_ASSERT_TRUE(powerPlausible(s));
+  // And elapsed 0 (report landing the same second as a reset) stays valid —
+  // powerAvgW guards the division and reads as 0 W.
+  PowerSample fresh = {3600.0f, 300.0f, 13.4f, 55.0f, 0};
+  TEST_ASSERT_TRUE(powerPlausible(fresh));
+}
+
+void test_power_sched_first_report_immediate_then_interval() {
+  PowerSched ps;
+  powerSchedInit(ps);
+  const int64_t I = 60000000;  // 60 s
+  // First sendable moment fires immediately — a link check right after boot.
+  TEST_ASSERT_TRUE(powerReportDue(ps, 5 * 1000000LL, I, true));
+  // Then not again until the interval elapses.
+  TEST_ASSERT_FALSE(powerReportDue(ps, 6 * 1000000LL, I, true));
+  TEST_ASSERT_FALSE(powerReportDue(ps, 64 * 1000000LL, I, true));
+  TEST_ASSERT_TRUE(powerReportDue(ps, 65 * 1000000LL, I, true));
+}
+
+void test_power_sched_defers_while_cannot_send_no_burst() {
+  PowerSched ps;
+  powerSchedInit(ps);
+  const int64_t I = 60000000;
+  TEST_ASSERT_TRUE(powerReportDue(ps, 0, I, true));
+  // Radio stays off (or no conductor peer) across THREE due intervals…
+  for (int64_t t = 1; t <= 200; t += 7)
+    TEST_ASSERT_FALSE(powerReportDue(ps, t * 1000000LL, I, false));
+  // …then exactly ONE catch-up report at the first sendable moment, not three.
+  TEST_ASSERT_TRUE(powerReportDue(ps, 201 * 1000000LL, I, true));
+  TEST_ASSERT_FALSE(powerReportDue(ps, 202 * 1000000LL, I, true));
+  // And the next one is a full interval later.
+  TEST_ASSERT_FALSE(powerReportDue(ps, 260 * 1000000LL, I, true));
+  TEST_ASSERT_TRUE(powerReportDue(ps, 261 * 1000000LL, I, true));
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -831,5 +932,12 @@ int main(int, char**) {
   RUN_TEST(test_dusk_should_sleep_gates);
   RUN_TEST(test_dusk_timer_wake_resample_paths);
   RUN_TEST(test_dusk_dark_timer_wake_blocks_resleep);
+  RUN_TEST(test_power_unit_conversions);
+  RUN_TEST(test_power_avg_watts);
+  RUN_TEST(test_power_plausible_accepts_real_readings);
+  RUN_TEST(test_power_plausible_rejects_nonsense);
+  RUN_TEST(test_power_plausible_flags_reboot_inflated_avg);
+  RUN_TEST(test_power_sched_first_report_immediate_then_interval);
+  RUN_TEST(test_power_sched_defers_while_cannot_send_no_burst);
   return UNITY_END();
 }

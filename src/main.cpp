@@ -17,6 +17,8 @@
 #include <NeoPixelBus.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <Wire.h>            // INA228 power monitor (I2C)
+#include <Adafruit_INA228.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
@@ -30,6 +32,7 @@
 #include "identity.h"
 #include "napsched.h"
 #include "patterns.h"
+#include "powermon.h"
 #include "powersave.h"
 #include "roster.h"
 #include "sync.h"
@@ -90,6 +93,31 @@ static int64_t  g_last_wake_flag_us = INT64_MIN / 2;  // "never" (avoids overflo
 static bool     g_wake_flag = false;       // conductor: field-awake override
 static uint16_t g_light_mv = 0;            // last light sample, for diag/info
 RTC_DATA_ATTR static bool g_rtc_was_day = false;
+
+// INA228 power telemetry (powermon.h logic, host-tested; ARCHITECTURE §4.2).
+// Probed over I2C at boot: 1–2 reference nodes carry the breakout in series
+// between battery+ and the buck input; every other node runs the same image and
+// just skips telemetry. The chip accumulates energy/charge in hardware
+// (continuous mode — REQUIRED, triggered mode invalidates the accumulators), so
+// firmware only reads totals and reports them. g_power_reset_us anchors the
+// elapsed_s in each report: seconds since boot or the last `power reset`,
+// whichever is later. Caveat: the chip keeps accumulating across an ESP32
+// reboot (it stays battery-powered), so after an unplanned reboot the energy
+// total is still right but avg-W (energy/elapsed) overstates until the next
+// `power reset` — the overnight flow is `power reset` at dusk, read in the
+// morning with the no-reset pyserial trick (FLASHING.md; a DTR reset does NOT
+// zero the chip, only the elapsed anchor).
+static Adafruit_INA228 g_ina228;
+static bool       g_have_ina228 = false;
+static PowerSched g_power_sched = {0};
+static int64_t    g_power_reset_us = 0;
+// Conductor side: MSG_POWER reports land in the recv callback, which must not
+// print — they stash here under a spinlock and loop() drains + logs them.
+static constexpr uint8_t POWER_Q_MAX = 4;
+static PowerMsg     g_power_q[POWER_Q_MAX];
+static uint8_t      g_power_q_n = 0;
+static uint32_t     g_power_q_dropped = 0;
+static portMUX_TYPE g_power_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Conductor's authoritative layout table (table.h logic, host-tested). Declared
 // here so the NVS load/save below can reach it; edited only over serial on the
@@ -314,6 +342,19 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       }
       break;
     }
+    case MSG_POWER: {
+      if (!isConductor()) return;  // reports flow performer -> conductor only
+      if (len != (int)sizeof(PowerMsg)) return;
+      portENTER_CRITICAL(&g_power_mux);
+      if (g_power_q_n < POWER_Q_MAX) {
+        memcpy(&g_power_q[g_power_q_n], data, sizeof(PowerMsg));
+        g_power_q_n++;
+      } else {
+        g_power_q_dropped++;  // can't happen at 1–2 nodes / 60 s, but never lie
+      }
+      portEXIT_CRITICAL(&g_power_mux);
+      break;
+    }
     default:
       break;
   }
@@ -391,20 +432,18 @@ static void broadcastBeacon() {
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
 
-// Performer: announce ourselves to the conductor we've heard, periodically so the
-// roster self-heals after a conductor restart. Peer-add + send happen here (in
-// loop context), never in the recv callback.
-static void maybeRegister(int64_t t) {
-  if (isConductor()) return;
-
+// Snapshot the learned conductor MAC and make sure it exists as a unicast peer.
+// esp_wifi_stop() drops the whole peer table on every duty-cycle sleep, so this
+// re-adds the peer whenever it's missing — call it before ANY unicast to the
+// conductor (REGISTER, POWER). Peer-add happens here in loop context, never in
+// the recv callback. Returns true when a unicast can be sent to cmac.
+static bool conductorPeerReady(uint8_t cmac[6]) {
   bool have;
-  uint8_t cmac[6];
   portENTER_CRITICAL(&g_sync_mux);
   have = g_have_conductor;
   if (have) memcpy(cmac, g_conductor_mac, 6);
   portEXIT_CRITICAL(&g_sync_mux);
-  if (!have || t < g_next_register_us) return;
-  g_next_register_us = t + REGISTER_INTERVAL_US;
+  if (!have) return false;
 
   if (!g_conductor_peer_added) {
     esp_now_peer_info_t peer = {};
@@ -413,12 +452,93 @@ static void maybeRegister(int64_t t) {
     peer.encrypt = false;
     if (esp_now_add_peer(&peer) == ESP_OK) g_conductor_peer_added = true;
   }
-  if (!g_conductor_peer_added) return;
+  return g_conductor_peer_added;
+}
+
+// Performer: announce ourselves to the conductor we've heard, periodically so the
+// roster self-heals after a conductor restart.
+static void maybeRegister(int64_t t) {
+  if (isConductor()) return;
+  if (t < g_next_register_us) return;
+  uint8_t cmac[6];
+  if (!conductorPeerReady(cmac)) return;  // no conductor heard yet / peer-add failed
+  g_next_register_us = t + REGISTER_INTERVAL_US;
 
   RegisterMsg r = {{BEACON_MAGIC, PROTO_VERSION, MSG_REGISTER}, {0}, g_id.id,
                    PROTO_VERSION};
   memcpy(r.mac, g_mac, 6);
   esp_now_send(cmac, (const uint8_t*)&r, sizeof(r));
+}
+
+// ---- INA228 power telemetry (ARCHITECTURE §4.2) --------------------------------
+
+// Read one sample off the local INA228. Lib units (verified in its source):
+// readEnergy Joules, readCharge Coulombs, readBusVoltage VOLTS, readCurrent mA.
+// elapsed_s anchors avg-W (see the globals comment for the reboot caveat).
+static PowerSample readPowerSample(int64_t t) {
+  PowerSample s;
+  s.energy_j   = g_ina228.readEnergy();
+  s.charge_c   = g_ina228.readCharge();
+  s.bus_v      = g_ina228.readBusVoltage();
+  s.current_ma = g_ina228.readCurrent();
+  s.elapsed_s  = (uint32_t)((t - g_power_reset_us) / 1000000);
+  return s;
+}
+
+// One [power] log line — shared by the conductor's report drain and the local
+// `power` bench command, so both paths print identical, comparable numbers.
+static void printPowerSample(const uint8_t mac[6], const PowerSample& s) {
+  char m[18];
+  Serial.printf(
+      "[power] %s  E=%.3f Wh  avg=%.2f W  Q=%.1f mAh  V=%.2f V  I=%.1f mA  (%lu s)%s\n",
+      macStr(mac, m), powerWh(s.energy_j), powerAvgW(s.energy_j, s.elapsed_s),
+      powerMah(s.charge_c), s.bus_v, s.current_ma, (unsigned long)s.elapsed_s,
+      powerPlausible(s) ? "" : "  ** IMPLAUSIBLE — sensor/wiring fault?");
+}
+
+// Instrumented performer: unicast the hardware-accumulated totals to the
+// conductor. Purely a logging path — the chip integrates regardless — so the
+// schedule (powermon.h, host-tested) simply fires at the first radio-on moment
+// after each interval; no retries or acks needed.
+static void maybePowerReport(int64_t t) {
+  if (!g_have_ina228 || isConductor()) return;
+  // Cheap time gate BEFORE conductorPeerReady: the peer check takes the
+  // g_sync_mux spinlock (the same lock the beacon recv callback contends), so
+  // don't pay it every loop pass of a listen window for a once-a-minute
+  // report. powerReportDue re-checks and stays authoritative.
+  if (t < g_power_sched.next_us) return;
+  uint8_t cmac[6];
+  bool can_send = g_radio_on && conductorPeerReady(cmac);
+  if (!powerReportDue(g_power_sched, t, POWER_REPORT_INTERVAL_US, can_send)) return;
+
+  PowerMsg m = {{BEACON_MAGIC, PROTO_VERSION, MSG_POWER}, {0}, readPowerSample(t)};
+  memcpy(m.mac, g_mac, 6);
+  esp_now_send(cmac, (const uint8_t*)&m, sizeof(m));
+}
+
+// Conductor: drain + log the reports stashed by the recv callback. Deliberately
+// NOT gated on recent serial activity like the diag lines — the whole point is
+// a conductor left on USB overnight collecting every instrumented node's Wh
+// (read the scrollback in the morning). ~1 line/min/node, negligible.
+static void drainPowerReports() {
+  PowerMsg q[POWER_Q_MAX];
+  uint8_t n;
+  uint32_t dropped;
+  portENTER_CRITICAL(&g_power_mux);
+  n = g_power_q_n;
+  if (n) memcpy(q, g_power_q, sizeof(PowerMsg) * n);
+  g_power_q_n = 0;
+  dropped = g_power_q_dropped;
+  g_power_q_dropped = 0;
+  portEXIT_CRITICAL(&g_power_mux);
+
+  for (uint8_t i = 0; i < n; i++) {
+    PowerSample s = q[i].s;  // copy out of the packed msg (no packed-ref binding)
+    printPowerSample(q[i].mac, s);
+  }
+  if (dropped)
+    Serial.printf("[power] %lu report(s) dropped (queue full)\n",
+                  (unsigned long)dropped);
 }
 
 // Conductor: broadcast the authoritative layout table, split into chunks that fit
@@ -550,6 +670,9 @@ static void printDiag() {
 //                        summons dusk-sleeping nodes at their next resample
 //                        (<= 15 min) and holds the field awake for daytime
 //                        tests. Sticky in NVS ("wake").
+//   power                (INA228 nodes) print the local energy/charge totals
+//   power reset          (INA228 nodes) zero the accumulators — run at the
+//                        start of a night for a clean "Wh consumed" figure
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
 //   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep,
 //                        3 = solid full-white (worst-case draw, for measuring),
@@ -579,9 +702,9 @@ static void printInfo() {
                   g_wake_flag ? "ON" : "off");
   // Raw sensor readings — garbage until the divider/phototransistor are wired.
   uint32_t vbat_mv = analogReadMilliVolts(PIN_VBAT);
-  Serial.printf("  sensors: light=%u mV  vbat=%.2f V (raw %lu mV; unwired = noise)\n",
+  Serial.printf("  sensors: light=%u mV  vbat=%.2f V (raw %lu mV; unwired = noise)  ina228=%s\n",
                 g_light_mv, vbat_mv * VBAT_DIVIDER / 1000.0f,
-                (unsigned long)vbat_mv);
+                (unsigned long)vbat_mv, g_have_ina228 ? "yes" : "no");
 }
 
 // Conductor-only: print the roster of nodes that have registered. Snapshots the
@@ -758,6 +881,20 @@ static void handleCommand(char* line) {
     } else {
       Serial.println("? wake on|off");
     }
+  } else if (!strcmp(cmd, "power")) {
+    char* a = strtok(nullptr, " \t");
+    if (!g_have_ina228) {
+      Serial.println("(no INA228 detected on this node — telemetry lives on the "
+                     "1-2 instrumented reference nodes)");
+    } else if (a && !strcmp(a, "reset")) {
+      g_ina228.resetAccumulators();
+      g_power_reset_us = now_us();
+      Serial.println("[power] accumulators zeroed — clean measurement window "
+                     "starts now (run at dusk for a per-night Wh figure)");
+    } else {
+      PowerSample s = readPowerSample(now_us());
+      printPowerSample(g_mac, s);
+    }
   } else if (!strcmp(cmd, "powersave") || !strcmp(cmd, "ps")) {
     char* a = strtok(nullptr, " \t");
     if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
@@ -852,6 +989,25 @@ void setup() {
     Serial.println("[dusk] timer wake — re-sampling daylight + listening for FIELD_AWAKE");
   analogSetPinAttenuation(PIN_LDR, ADC_11db);   // full ~0-3.1V range
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
+
+  // INA228 probe (ARCHITECTURE §4.2): one image everywhere — a node without the
+  // chip fails the probe in ~ms and runs without telemetry, silently.
+  // skipReset=true is load-bearing: the chip stays battery-powered across an
+  // ESP32 reset, and the default begin() would hardware-reset it — wiping the
+  // night's accumulated Wh the moment a serial monitor's DTR auto-reset hits.
+  // Zeroing is only ever explicit (`power reset`). Continuous conversion mode
+  // is set explicitly (skipReset skips the lib's own setMode; triggered mode
+  // would invalidate the accumulators) — a same-value ADC-config write doesn't
+  // disturb the running totals, only the RSTACC bit does.
+  Wire.begin();
+  g_have_ina228 = g_ina228.begin(INA228_I2C_ADDR, &Wire, /*skipReset=*/true);
+  if (g_have_ina228) {
+    g_ina228.setShunt(INA228_SHUNT_OHMS, INA228_MAX_CURRENT_A);
+    g_ina228.setMode(INA2XX_MODE_CONTINUOUS);
+    powerSchedInit(g_power_sched);
+    Serial.println("[power] INA228 found — energy telemetry ON "
+                   "(`power` / `power reset`; reports unicast to conductor)");
+  }
 }
 
 void loop() {
@@ -885,6 +1041,16 @@ void loop() {
       broadcastTable();
       next_table = t + TABLE_INTERVAL_US;
     }
+    drainPowerReports();  // log performers' MSG_POWER (ungated — overnight audit)
+    // A conductor carrying the chip logs its own draw on the same cadence, so a
+    // single instrumented board benches the sensor with no second node needed.
+    // Same host-tested scheduler as the performer path (can_send always true:
+    // "sending" here is a local print, no radio involved).
+    if (g_have_ina228) {
+      static PowerSched self_sched = {0};
+      if (powerReportDue(self_sched, t, POWER_REPORT_INTERVAL_US, /*can_send*/ true))
+        printPowerSample(g_mac, readPowerSample(t));
+    }
   } else {
     // Duty-cycle the radio: off between brief listen windows, rendering the whole
     // time from the synced clock. dutyStep returns a transition to apply, if any.
@@ -894,6 +1060,7 @@ void loop() {
       else if (act == DUTY_SLEEP) radioSleep();
     }
     if (g_radio_on) maybeRegister(t);  // TX only when the radio is powered
+    maybePowerReport(t);   // no-op without the INA228; defers until radio-on
     maybeAdoptPosition();  // pure NVS; flush a pending table adoption regardless
 
     // Lever 2: sample the light sensor at 1 Hz and deep-sleep through daylight.
