@@ -367,6 +367,39 @@ threshold for a debounce → `esp_deep_sleep` (~10 µA), waking on an RTC timer 
 re-sample (e.g. every ~30 min) or sleeping a fixed span until expected dusk. Add the
 **battery ADC on `PIN_VBAT` = GPIO35** (divider) to report voltage + low-batt cutoff.
 
+### Self code-review (2026-07-03) — fixes landed + known debt
+
+A full-repo adversarial review (8 finder angles) ran after Stage B + Lever 2.
+**Fixed + tested + committed:** (1) the stale-RTC-day trap — a dusk node
+timer-waking after sunset re-slept every 15 min all night; `duskShouldSleep`
+now refuses while live samples disagree with the day state (`d.cand != d.day`,
+host-tested); (2) re-issued `powersave on` during a radio-off span stranded the
+radio off permanently (now radioWake()s first; espnowStart also tolerates
+double-init); (3) serial `pattern`/`bri`/`param` raced the recv callback's
+`g_beacon` overwrite (now mutate+snapshot under `g_sync_mux`, NVS-save from the
+snapshot); (4) role switches left a stale duty schedule (role command now
+re-inits the duty machine); (5) `missed_windows` overcounted (beacon credit now
+runs before `dutyStep` in loop()); (6) static patterns no longer re-render at
+60 Hz (recipe-change detection + 1 Hz safety refresh); (7) diag prints only
+within 5 min of serial activity — **hit Enter on a monitor to revive a quiet
+node's diag** (headless nodes no longer burn ~13 ms/s of UART drain).
+
+**Known debt (deliberate, not yet done):**
+- **Field build must set `-D HEARTBEAT_LED=0`** — the default heartbeat caps
+  every Stage-B nap at 500 ms and burns LED current inside an opaque lantern.
+  Consider a dedicated `field` build env or a runtime NVS toggle before the pilot.
+- **Table rebroadcast every 5 s is wasteful** — stretch steady-state to ~60 s
+  and burst only after `assign`/new-MAC REGISTER.
+- **Host-unreachable logic in main.cpp** (CLAUDE.md rule): the Lever-2 boot
+  classification in setup() (timer-wake seeding — its correctness depends on
+  `DUSK_SERIAL_GRACE_US > SERIAL_NAP_GRACE_US`, an unlabeled invariant),
+  `parseMac`, `broadcastTable` chunk math, MSG_TABLE length validation, and the
+  SOLID boot-guard in `patternConfigLoad` — extract to pure headers + test.
+- Dead wire artifacts: `palette_id` unused, `MSG_ROSTER`/`MSG_ACK` unsent,
+  `TableMsg.chunk/chunks` written but never read, roster `fw` can never differ
+  from PROTO_VERSION (the version gate rejects stragglers before dispatch — a
+  stale-firmware node just vanishes from the roster instead of being flagged).
+
 ### After Milestone 3
 Milestone 4 — battery enclosure + final go/no-go on the **FireBeetle** (lower draw
 than the DevKit). Then the non-power tracks still open: auto-calibration (§6),

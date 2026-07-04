@@ -746,6 +746,29 @@ void test_dusk_timer_wake_resample_paths() {
   TEST_ASSERT_FALSE(d.day);                    // dusk arrived: stay up, show on
 }
 
+// THE STALE-RTC-DAY TRAP (self-review finding #1): a timer wake after sunset
+// starts with day=true from RTC memory, and the short timer-wake hold-off
+// (10 s) expires long before the 60 s debounce can flip the state to night.
+// The gate must refuse to re-sleep while the live samples disagree with the
+// (stale) day state — otherwise the node re-sleeps every 15 min all night and
+// the lantern misses the entire show.
+void test_dusk_dark_timer_wake_blocks_resleep() {
+  Dusk d;
+  int64_t never = INT64_MIN / 2;
+  duskInit(d, /*start_day*/ true, 0);   // woke from daytime sleep...
+  duskOnSample(d, DUSKC, 400, 1 * S);   // ...but it's dark out now
+  duskOnSample(d, DUSKC, 400, 10 * S);  // hold-off expiring, debounce not done
+  TEST_ASSERT_TRUE(d.day);              // state is still (stale) day...
+  TEST_ASSERT_FALSE(                    // ...but sleep must be blocked
+      duskShouldSleep(d, DUSKC, 10 * S, 10 * S, never, never));
+  for (int i = 11; i <= 62; i++) duskOnSample(d, DUSKC, 400, i * S);
+  TEST_ASSERT_FALSE(d.day);             // debounce completes: night, show on
+  // Contrast: a still-bright wake (samples AGREE with day) may re-sleep.
+  duskInit(d, true, 0);
+  duskOnSample(d, DUSKC, 2500, 1 * S);
+  TEST_ASSERT_TRUE(duskShouldSleep(d, DUSKC, 11 * S, 10 * S, never, never));
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -807,5 +830,6 @@ int main(int, char**) {
   RUN_TEST(test_dusk_implausible_reading_is_night);
   RUN_TEST(test_dusk_should_sleep_gates);
   RUN_TEST(test_dusk_timer_wake_resample_paths);
+  RUN_TEST(test_dusk_dark_timer_wake_blocks_resleep);
   return UNITY_END();
 }

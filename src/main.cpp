@@ -234,14 +234,18 @@ static void patternConfigLoad() {
   g_prefs.end();
 }
 
-static void patternConfigSave() {
+// Takes a caller-held snapshot, not the live g_beacon: on a performer the recv
+// callback overwrites g_beacon (under g_sync_mux) from the WiFi task, and NVS
+// writes are far too slow to hold a spinlock across — so the serial handlers
+// mutate + snapshot under the lock, then persist from the copy.
+static void patternConfigSave(const BeaconMsg& b) {
   g_prefs.begin("node", /*readonly*/ false);
-  g_prefs.putUShort("pat", g_beacon.pattern_id);
-  g_prefs.putUChar("bri", g_beacon.brightness);
-  g_prefs.putUShort("p0", g_beacon.params[0]);
-  g_prefs.putUShort("p1", g_beacon.params[1]);
-  g_prefs.putUShort("p2", g_beacon.params[2]);
-  g_prefs.putUShort("p3", g_beacon.params[3]);
+  g_prefs.putUShort("pat", b.pattern_id);
+  g_prefs.putUChar("bri", b.brightness);
+  g_prefs.putUShort("p0", b.params[0]);
+  g_prefs.putUShort("p1", b.params[1]);
+  g_prefs.putUShort("p2", b.params[2]);
+  g_prefs.putUShort("p3", b.params[3]);
   g_prefs.end();
 }
 
@@ -331,7 +335,10 @@ static void espnowStart() {
   // the default in STA mode; set it explicitly so it can't silently regress.
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
-  if (esp_now_init() != ESP_OK) {
+  // Tolerate double-init: a redundant radioWake() (role churn, defensive
+  // callers) must not abort peer/callback setup below.
+  esp_err_t err = esp_now_init();
+  if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
     Serial.println("ESP-NOW init failed");
     return;
   }
@@ -553,12 +560,16 @@ static void printDiag() {
 //                        glow hue(deg) / saturation(%)
 static void printInfo() {
   char mac[18];
+  BeaconMsg b;
+  portENTER_CRITICAL(&g_sync_mux);  // recv cb overwrites g_beacon on a performer
+  b = g_beacon;
+  portEXIT_CRITICAL(&g_sync_mux);
   Serial.printf("role=%s  id=%u  mac=%s  x=%.2f  y=%.2f\n",
                 isConductor() ? "CONDUCTOR" : "PERFORMER", g_id.id,
                 macStr(g_mac, mac), g_id.x, g_id.y);
-  Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
-                g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
-                g_beacon.params[2], g_beacon.params[3]);
+  Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", b.pattern_id,
+                b.brightness, b.params[0], b.params[1],
+                b.params[2], b.params[3]);
   Serial.printf("  powersave=%s%s  dusk=%s%s\n", g_powersave ? "on" : "off",
                 isConductor() ? " (conductor: radio always on)" : "",
                 g_dusk_on ? "on" : "off",
@@ -657,9 +668,13 @@ static void handleCommand(char* line) {
       else if (!strcmp(a, "performer") || !strcmp(a, "0")) g_role = ROLE_PERFORMER;
       else { Serial.println("? role conductor|performer"); return; }
       roleSave();
-      // A conductor must always have the radio up to beacon; if this board was a
-      // performer that duty-cycled the radio off, power it back on now.
-      if (isConductor() && !g_radio_on) radioWake();
+      // Reconcile radio + duty state with the new role: a conductor must have
+      // the radio up to beacon, and a (re-)performer must not resume a stale
+      // duty schedule (frozen change_at_us => spurious instant sleep). Bringing
+      // the radio up and re-initing the duty machine covers both directions;
+      // dutyInit assumes a powered radio, so order matters.
+      if (!g_radio_on) radioWake();
+      dutyInit(g_duty, DUTY_CFG, now_us());
       printInfo();
     }
   } else if (!strcmp(cmd, "id")) {
@@ -671,15 +686,29 @@ static void handleCommand(char* line) {
     if (ax && ay) { g_id.x = atof(ax); g_id.y = atof(ay); identitySave(); printInfo(); }
   } else if (!strcmp(cmd, "pattern")) {
     char* a = strtok(nullptr, " \t");
-    if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); patternConfigSave(); printInfo(); }
+    if (a) {
+      // g_beacon is overwritten whole by the recv callback on a performer, so
+      // every read-modify-write goes under g_sync_mux; the NVS save works from
+      // a snapshot taken inside the same critical section.
+      uint16_t v = (uint16_t)atoi(a);
+      portENTER_CRITICAL(&g_sync_mux);
+      g_beacon.pattern_id = v;
+      BeaconMsg snap = g_beacon;
+      portEXIT_CRITICAL(&g_sync_mux);
+      patternConfigSave(snap);
+      printInfo();
+    }
   } else if (!strcmp(cmd, "bri")) {
     char* a = strtok(nullptr, " \t");
     if (a) {
       int v = atoi(a);
       if (v < 0) v = 0;
       if (v > MAX_BRIGHTNESS) v = MAX_BRIGHTNESS;  // never store above the cap
+      portENTER_CRITICAL(&g_sync_mux);
       g_beacon.brightness = (uint8_t)v;
-      patternConfigSave();
+      BeaconMsg snap = g_beacon;
+      portEXIT_CRITICAL(&g_sync_mux);
+      patternConfigSave(snap);
       printInfo();
     }
   } else if (!strcmp(cmd, "param")) {
@@ -688,8 +717,12 @@ static void handleCommand(char* line) {
     if (ai && av) {
       int i = atoi(ai);
       if (i >= 0 && i < 4) {
-        g_beacon.params[i] = (uint16_t)atoi(av);
-        patternConfigSave();
+        uint16_t v = (uint16_t)atoi(av);
+        portENTER_CRITICAL(&g_sync_mux);
+        g_beacon.params[i] = v;
+        BeaconMsg snap = g_beacon;
+        portEXIT_CRITICAL(&g_sync_mux);
+        patternConfigSave(snap);
         printInfo();
       }
     }
@@ -729,6 +762,12 @@ static void handleCommand(char* line) {
     char* a = strtok(nullptr, " \t");
     if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
       g_powersave = true;
+      // dutyInit assumes the radio is powered (it starts in a listen window).
+      // If the duty cycle currently has the radio physically off — ~87% of the
+      // time when powersave was already on — a re-issued `powersave on` would
+      // otherwise strand the node in a phantom window the radio can never
+      // catch a beacon in, leaving it deaf until reboot.
+      if (!g_radio_on) radioWake();
       dutyInit(g_duty, DUTY_CFG, now_us());  // restart from a fresh listen window
       powersaveSave();
       printInfo();
@@ -820,6 +859,21 @@ void loop() {
 
   pollSerialCommands();
 
+  // Snapshot sync + beacon together up front; render uses them below. The
+  // beacon credit (dutyNoteBeacon) must run BEFORE dutyStep: a beacon that
+  // lands in the final loop tick of a listen window would otherwise be
+  // discovered only after dutyStep has already closed the window as "missed"
+  // and powered the radio down (where dutyNoteBeacon no-ops) — silently
+  // corrupting the missed_windows health metric.
+  SyncState s;
+  BeaconMsg b;
+  portENTER_CRITICAL(&g_sync_mux);
+  s = g_sync;
+  b = g_beacon;
+  portEXIT_CRITICAL(&g_sync_mux);
+  static uint32_t last_rx = 0;
+  if (s.beacons_rx != last_rx) { dutyNoteBeacon(g_duty); last_rx = s.beacons_rx; }
+
   if (isConductor()) {
     static int64_t next_beacon = 0;
     if (t >= next_beacon) {
@@ -865,19 +919,6 @@ void loop() {
     }
   }
 
-  // Snapshot sync + beacon together, then render against the right clock.
-  SyncState s;
-  BeaconMsg b;
-  portENTER_CRITICAL(&g_sync_mux);
-  s = g_sync;
-  b = g_beacon;
-  portEXIT_CRITICAL(&g_sync_mux);
-
-  // Tell the duty-cycle scheduler whenever a fresh beacon landed this loop, so it
-  // knows the listen window caught one (and that we've acquired at least once).
-  static uint32_t last_rx = 0;
-  if (s.beacons_rx != last_rx) { dutyNoteBeacon(g_duty); last_rx = s.beacons_rx; }
-
   // Power safety: hard-clamp the rendered brightness to MAX_BRIGHTNESS on every
   // node, so the per-node draw is bounded no matter what a recipe asks for.
   if (b.brightness > MAX_BRIGHTNESS) b.brightness = MAX_BRIGHTNESS;
@@ -885,8 +926,26 @@ void loop() {
   // Conductor renders against its own clock; a performer against synced time
   // (which free-runs on the last offset when no beacon arrives).
   int64_t render_us = isConductor() ? t : syncedTime(s, t);
-  patterns::render(strip, b, render_us, g_id.x, g_id.y);
-  strip.Show();
+
+  // Static patterns (GLOW/SOLID) latch: pushing the identical frame at 60 Hz is
+  // pure RMT + CPU waste, and it delays every Stage-B nap behind the CanShow()
+  // wait. Re-render them only when the recipe changes, plus a ~1 Hz safety
+  // refresh (self-heals a noise-glitched pixel). Animated patterns render every
+  // pass as before.
+  static BeaconMsg last_shown = {};
+  static bool shown_once = false;
+  static int64_t next_static_refresh = 0;
+  bool recipe_changed = !shown_once || last_shown.pattern_id != b.pattern_id ||
+                        last_shown.brightness != b.brightness ||
+                        memcmp(last_shown.params, b.params, sizeof(b.params)) != 0;
+  if (!patterns::patternIsStatic(b.pattern_id) || recipe_changed ||
+      t >= next_static_refresh) {
+    patterns::render(strip, b, render_us, g_id.x, g_id.y);
+    strip.Show();
+    last_shown = b;
+    shown_once = true;
+    next_static_refresh = t + DIAG_INTERVAL_US;
+  }
 
 #if HEARTBEAT_LED
   bool on = pmath::heartbeatOn(render_us, HEARTBEAT_HALF_US);
@@ -895,7 +954,11 @@ void loop() {
 
   static int64_t next_diag = 0;
   if (t >= next_diag) {
-    printDiag();
+    // A headless battery node shouldn't spend ~13 ms of forced-awake UART
+    // drain every second printing to a disconnected port (the pre-nap
+    // Serial.flush() waits it out). Diag prints only within the serial-activity
+    // window — hit Enter on the monitor to revive it for another 5 minutes.
+    if (t - g_last_serial_us < DUSK_SERIAL_GRACE_US) printDiag();
     next_diag = t + DIAG_INTERVAL_US;
   }
 

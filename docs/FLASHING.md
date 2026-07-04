@@ -118,6 +118,10 @@ EOF
 
 ## Reading the diagnostics
 
+> **Quiet node?** Diag lines only print within **5 minutes of serial input**
+> (battery nodes shouldn't burn UART time printing to nobody). **Hit Enter** in
+> the monitor to revive them for another 5 minutes.
+
 **Conductor:**
 ```
 [conductor] t=1338048 us  seq=4  pat=0  bri=48

@@ -101,6 +101,14 @@ inline bool duskOnSample(Dusk& d, const DuskConfig& c, uint16_t mv,
 
 // May the node actually deep-sleep right now? Debounced day is necessary but
 // not sufficient — all of these must ALSO hold (each is a fail-awake gate):
+//   - the CURRENT samples agree with the day state (d.cand == d.day). This
+//     closes the stale-RTC-day trap: a timer wake after sunset starts with
+//     day=true inherited from RTC memory, and the dark samples' night stretch
+//     needs the full debounce (60 s) to flip it — far longer than the timer
+//     wake's short min-awake (10 s). Without this gate the node would re-sleep
+//     on the stale state at t=10 s, every 15 min, all night — dark through the
+//     entire show. With it, any in-progress disagreeing stretch blocks sleep,
+//     so a dark wake stays up until the flip and the show starts;
 //   - earliest_sleep_us has passed: a cold boot gets a long provisioning
 //     hold-off, a timer wake a short one (glue computes it at boot);
 //   - no serial traffic within serial_grace_us: a human is at the bench;
@@ -112,6 +120,7 @@ inline bool duskShouldSleep(const Dusk& d, const DuskConfig& c, int64_t now_us,
                             int64_t earliest_sleep_us, int64_t last_serial_us,
                             int64_t last_wake_flag_us) {
   if (!d.day) return false;
+  if (d.cand != d.day) return false;  // live samples disagree: never re-sleep
   if (now_us < earliest_sleep_us) return false;
   if (now_us - last_serial_us < c.serial_grace_us) return false;
   if (now_us - last_wake_flag_us < c.wake_ttl_us) return false;
