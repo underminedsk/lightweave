@@ -322,7 +322,44 @@ latency, not sync.
 
 ### Lever 2 (then): daytime deep-sleep — calendar life
 
-Fixes the 24/7 ~5-day problem by sleeping through daylight. **Light sensor on
+**🛠 CODE-COMPLETE (2026-07-03), host-tested (57 native tests green), both device
+envs build — NOT hardware-verified (needs the pilot phototransistors, arriving);
+DEFAULT OFF (`dusk on|off`, NVS `dusk`) because GPIO34 floats until the sensor
+is wired.** What landed: `include/dusk.h` (pure debounced day/night detector
+with hysteresis + the deep-sleep gate; 9 host tests) + glue in `main.cpp` +
+config knobs (`DUSK_*`; thresholds are placeholders to bench-calibrate).
+
+**Design principle: FAIL AWAKE** — every ambiguous case resolves to staying
+awake; the only possible failure mode is battery drain, never an unreachable
+field. Four independent layers guarantee daytime testability:
+1. **`wake on|off` (conductor, NVS-sticky)** sets `BEACON_FLAG_FIELD_AWAKE` in
+   every beacon. A dusk-sleeping node wakes every **15 min** (`DUSK_RESAMPLE_US`)
+   and listens for a beacon before it may re-sleep — a flagged beacon pins it
+   awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
+   ≤ one resample interval. **Wire format grew a `flags` byte → PROTO_VERSION 2 —
+   reflash every board together; v1/v2 nodes reject each other's packets.**
+2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
+   for 10 min, 60 s light debounce on top). Per-lantern physical override via the
+   battery toggle switch — no firmware bug can remove it.
+3. **`dusk` is default OFF** — nothing sleeps until deliberately enabled after
+   the pilot proves it (INA228 watching).
+4. **Fail-awake invariants:** deep sleep is only entered via `duskEnterDeepSleep()`
+   which arms the RTC wake timer atomically (`esp_deep_sleep`); implausible light
+   readings (outside `[20, 3100] mV` — floating/broken sensor) read as *night*;
+   serial traffic holds sleep off 5 min; all host-tested.
+
+Mechanics: 1 Hz ADC sampling; flip day↔night only after 60 s continuously past
+the far hysteresis threshold (clouds/headlights/flashlights reset the stretch);
+timer wakes start in "day" via an RTC-memory flag and re-sleep in ~10 s if still
+bright; dusk arrival flips to night and the show starts. `[dusk]` diag line +
+light/vbat in `info` (VBAT divider read landed too — reported only, no cutoff
+policy yet). Daytime cost at 15-min cadence ≈ ~1% duty → ~0.15 Wh/day, noise.
+**Bench checklist:** calibrate `DUSK_DAY_MV`/`DUSK_NIGHT_MV` (+ polarity
+`DUSK_DAY_ABOVE`) against the real divider; verify deep-sleep current (~10 µA
+class); verify a full sleep→timer-wake→re-sleep cycle and `wake on` summoning;
+verify a cold boot never sleeps for 10 min.
+
+Original design notes: fixes the 24/7 ~5-day problem by sleeping through daylight. **Light sensor on
 `PIN_LDR` = GPIO34 (ADC1 — ADC2 dies with the radio, already reserved in config.h).**
 User leans toward a **photodiode/phototransistor** (faster than an LDR; an LDR in a
 divider also works for a coarse threshold — pick by what's on hand). Below a light

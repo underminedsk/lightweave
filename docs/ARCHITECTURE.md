@@ -309,7 +309,7 @@ and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
 | Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
-| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) 🛠 code-complete + host-tested, awaiting bench verify/measure; Lever 2 + INA228 instrumentation (§4.2) planned |
+| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) and Lever 2 (daytime deep-sleep, `dusk.h`, fail-awake design, `wake on|off` field-summon flag, default off) 🛠 both code-complete + host-tested, awaiting bench verify/measure; INA228 instrumentation (§4.2) planned |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 📐 planned |
 

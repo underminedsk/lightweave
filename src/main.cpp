@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "beacon.h"
+#include "dusk.h"
 #include "identity.h"
 #include "napsched.h"
 #include "patterns.h"
@@ -68,6 +69,28 @@ static int64_t  g_last_serial_us = 0;
 static uint32_t g_naps = 0;        // completed light-sleeps
 static int64_t  g_napped_us = 0;   // total time measured asleep
 
+// Lever 2: daytime deep-sleep (dusk.h logic, host-tested; fail-awake design).
+// g_dusk_on is the runtime/NVS master switch, DEFAULT OFF — GPIO34 floats until
+// the phototransistor is wired. g_rtc_was_day lives in RTC memory so it
+// survives deep sleep: a timer wake starts the detector in "day" and re-sleeps
+// after a short min-awake; every other boot starts in "night" (awake — the
+// physical power-cycle override). g_wake_flag is the CONDUCTOR side: `wake on`
+// sets BEACON_FLAG_FIELD_AWAKE in every beacon, summoning dusk-sleeping nodes
+// at their next resample rendezvous (sticky in NVS so a conductor reboot can't
+// drop the override). g_last_wake_flag_us is the PERFORMER side: when a flagged
+// beacon last arrived (written in the recv callback under g_sync_mux).
+static bool     g_dusk_on = (DUSK_DEFAULT != 0);
+static Dusk     g_dusk;
+static const DuskConfig DUSK_CFG = {DUSK_DAY_ABOVE,       DUSK_DAY_MV,
+                                    DUSK_NIGHT_MV,        DUSK_FLOOR_MV,
+                                    DUSK_CEIL_MV,         DUSK_DEBOUNCE_US,
+                                    DUSK_SERIAL_GRACE_US, DUSK_WAKE_TTL_US};
+static int64_t  g_dusk_earliest_us = 0;    // no dusk sleep before this (boot hold-off)
+static int64_t  g_last_wake_flag_us = INT64_MIN / 2;  // "never" (avoids overflow)
+static bool     g_wake_flag = false;       // conductor: field-awake override
+static uint16_t g_light_mv = 0;            // last light sample, for diag/info
+RTC_DATA_ATTR static bool g_rtc_was_day = false;
+
 // Conductor's authoritative layout table (table.h logic, host-tested). Declared
 // here so the NVS load/save below can reach it; edited only over serial on the
 // conductor and read by the broadcast — both in loop() — so it needs no spinlock
@@ -90,12 +113,26 @@ static void configLoad() {
   g_id.y = g_prefs.getFloat("y", 0.0f);
   g_role = g_prefs.getUChar("role", DEFAULT_ROLE);
   g_powersave = g_prefs.getBool("ps", POWERSAVE_DEFAULT != 0);
+  g_dusk_on = g_prefs.getBool("dusk", DUSK_DEFAULT != 0);
+  g_wake_flag = g_prefs.getBool("wake", false);
   g_prefs.end();
 }
 
 static void powersaveSave() {
   g_prefs.begin("node", /*readonly*/ false);
   g_prefs.putBool("ps", g_powersave);
+  g_prefs.end();
+}
+
+static void duskSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBool("dusk", g_dusk_on);
+  g_prefs.end();
+}
+
+static void wakeFlagSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBool("wake", g_wake_flag);
   g_prefs.end();
 }
 
@@ -147,7 +184,7 @@ static bool parseMac(const char* s, uint8_t out[6]) {
 static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
-                             /*palette*/ 0, {0, 0, 0, 0}, 0};
+                             /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0}, 0};
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Performer -> conductor registration state. The conductor's MAC is learned from
@@ -236,6 +273,9 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       g_beacon = b;
       memcpy(g_conductor_mac, src, 6);  // remember who to register with
       g_have_conductor = true;
+      // Field-awake override: a flagged beacon blocks dusk-sleep for
+      // DUSK_WAKE_TTL_US — this is what a resample rendezvous checks for.
+      if (b.flags & BEACON_FLAG_FIELD_AWAKE) g_last_wake_flag_us = local;
       portEXIT_CRITICAL(&g_sync_mux);
       break;
     }
@@ -340,6 +380,7 @@ static void broadcastBeacon() {
   b.hdr.type = MSG_BEACON;
   b.epoch_us = now_us();
   b.seq = g_tx_seq++;
+  b.flags = g_wake_flag ? BEACON_FLAG_FIELD_AWAKE : 0;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
 
@@ -419,6 +460,29 @@ static void maybeAdoptPosition() {
   Serial.printf("[table] adopted position x=%.2f y=%.2f from conductor\n", px, py);
 }
 
+// ---- Daytime deep-sleep entry (Lever 2) ---------------------------------------
+// The one and only way into deep sleep, and it arms the RTC wake timer
+// atomically (esp_deep_sleep = enable timer + sleep in one call) — there is no
+// code path that sleeps without a scheduled wake. LEDs are cleared first (they
+// would otherwise latch the last frame all day); the RTC-memory flag makes the
+// next timer wake boot straight into "day" for a quick re-sleep if it's still
+// bright. Never returns.
+static void duskEnterDeepSleep() {
+  Serial.printf(
+      "[dusk] daylight confirmed (light=%u mV) — deep sleeping %llu min; "
+      "power-cycle wakes it immediately\n",
+      g_light_mv, (unsigned long long)(DUSK_RESAMPLE_US / 60000000ULL));
+  Serial.flush();
+  strip.ClearTo(RgbwColor(0, 0, 0, 0));
+  strip.Show();
+  while (!strip.CanShow()) delayMicroseconds(50);
+#if HEARTBEAT_LED
+  digitalWrite(HEARTBEAT_LED_PIN, HEARTBEAT_ACTIVE_LOW ? HIGH : LOW);
+#endif
+  g_rtc_was_day = true;
+  esp_deep_sleep(DUSK_RESAMPLE_US);
+}
+
 // ---- Diagnostics -------------------------------------------------------------
 // One-line status per second so boards can be range-walked to find where sync
 // drops.
@@ -452,6 +516,12 @@ static void printDiag() {
                   (unsigned long)g_duty.missed_windows, (unsigned long)g_naps,
                   (double)g_napped_us / 1e6);
   }
+  if (g_dusk_on) {
+    // day=DAY means deep sleep is pending only the fail-awake gates (boot
+    // hold-off / serial grace / wake-flag TTL) — the node will vanish soon.
+    Serial.printf("  [dusk] light=%u mV  %s\n", g_light_mv,
+                  g_dusk.day ? "DAY — sleep pending gates" : "night");
+  }
 }
 
 // ---- Serial command interface ------------------------------------------------
@@ -466,6 +536,13 @@ static void printDiag() {
 //   pos <x> <y>          set this node's own (x,y) coordinate and save to NVS
 //   powersave <on|off>   (performer) radio duty-cycle on/off; saved to NVS ("ps").
 //                        Toggle it to A/B the night draw on the power meter.
+//   dusk <on|off>        (performer) daytime deep-sleep; saved to NVS ("dusk").
+//                        DEFAULT OFF — enable only once the light sensor is
+//                        wired (a floating GPIO34 must never sleep a node).
+//   wake <on|off>        (conductor) FIELD_AWAKE override in every beacon:
+//                        summons dusk-sleeping nodes at their next resample
+//                        (<= 15 min) and holds the field awake for daytime
+//                        tests. Sticky in NVS ("wake").
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
 //   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep,
 //                        3 = solid full-white (worst-case draw, for measuring),
@@ -482,8 +559,18 @@ static void printInfo() {
   Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
                 g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
                 g_beacon.params[2], g_beacon.params[3]);
-  Serial.printf("  powersave=%s%s\n", g_powersave ? "on" : "off",
-                isConductor() ? " (conductor: radio always on)" : "");
+  Serial.printf("  powersave=%s%s  dusk=%s%s\n", g_powersave ? "on" : "off",
+                isConductor() ? " (conductor: radio always on)" : "",
+                g_dusk_on ? "on" : "off",
+                isConductor() ? " (conductor: never dusk-sleeps)" : "");
+  if (isConductor())
+    Serial.printf("  wake-override=%s (FIELD_AWAKE flag in beacons)\n",
+                  g_wake_flag ? "ON" : "off");
+  // Raw sensor readings — garbage until the divider/phototransistor are wired.
+  uint32_t vbat_mv = analogReadMilliVolts(PIN_VBAT);
+  Serial.printf("  sensors: light=%u mV  vbat=%.2f V (raw %lu mV; unwired = noise)\n",
+                g_light_mv, vbat_mv * VBAT_DIVIDER / 1000.0f,
+                (unsigned long)vbat_mv);
 }
 
 // Conductor-only: print the roster of nodes that have registered. Snapshots the
@@ -606,6 +693,38 @@ static void handleCommand(char* line) {
         printInfo();
       }
     }
+  } else if (!strcmp(cmd, "dusk")) {
+    char* a = strtok(nullptr, " \t");
+    if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
+      g_dusk_on = true;
+      duskInit(g_dusk, /*start_day*/ false, now_us());  // fresh detector, night
+      duskSave();
+      printInfo();
+    } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
+      g_dusk_on = false;
+      duskSave();
+      printInfo();
+    } else {
+      Serial.println("? dusk on|off");
+    }
+  } else if (!strcmp(cmd, "wake")) {
+    char* a = strtok(nullptr, " \t");
+    if (!isConductor()) {
+      Serial.println("? wake is conductor-only (sets FIELD_AWAKE in beacons)");
+    } else if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
+      g_wake_flag = true;
+      wakeFlagSave();
+      Serial.println("[wake] FIELD_AWAKE on — dusk-sleeping nodes join at their "
+                     "next resample (<= 15 min)");
+      printInfo();
+    } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
+      g_wake_flag = false;
+      wakeFlagSave();
+      Serial.println("[wake] FIELD_AWAKE off — dusk logic resumes field-wide");
+      printInfo();
+    } else {
+      Serial.println("? wake on|off");
+    }
   } else if (!strcmp(cmd, "powersave") || !strcmp(cmd, "ps")) {
     char* a = strtok(nullptr, " \t");
     if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
@@ -671,11 +790,29 @@ void setup() {
 
   // Stage B naps: typing on serial wakes a sleeping node (threshold = a few RX
   // edges, so line noise doesn't), and the wake handler below then holds naps
-  // off for the grace window. Seed the grace from boot so a fresh flash always
-  // has a responsive provisioning window before the first nap.
+  // off for the grace window.
   uart_set_wakeup_threshold(UART_NUM_0, 3);
   esp_sleep_enable_uart_wakeup(UART_NUM_0);
-  g_last_serial_us = now_us();
+
+  // Lever 2 boot classification. A timer wake is a dusk resample rendezvous:
+  // start the detector in "day" (the RTC flag survived the sleep), allow
+  // re-sleep after a short min-awake, and DON'T seed the serial grace — the
+  // node should check light + beacon flag and vanish again in ~10 s. Any other
+  // boot (power-cycle, flash, brownout) is a human: start in "night" (awake),
+  // hold dusk-sleep off for 10 minutes, and seed the serial/nap grace so a
+  // fresh flash always has a responsive provisioning window. This is the
+  // power-cycle-always-wakes guarantee.
+  int64_t boot = now_us();
+  bool timer_wake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
+  duskInit(g_dusk, timer_wake && g_rtc_was_day, boot);
+  g_dusk_earliest_us =
+      boot + (timer_wake ? DUSK_MIN_AWAKE_TIMER_US : DUSK_MIN_AWAKE_COLD_US);
+  if (!timer_wake) g_rtc_was_day = false;
+  g_last_serial_us = timer_wake ? boot - DUSK_SERIAL_GRACE_US - 1 : boot;
+  if (timer_wake)
+    Serial.println("[dusk] timer wake — re-sampling daylight + listening for FIELD_AWAKE");
+  analogSetPinAttenuation(PIN_LDR, ADC_11db);   // full ~0-3.1V range
+  analogSetPinAttenuation(PIN_VBAT, ADC_11db);
 }
 
 void loop() {
@@ -704,6 +841,28 @@ void loop() {
     }
     if (g_radio_on) maybeRegister(t);  // TX only when the radio is powered
     maybeAdoptPosition();  // pure NVS; flush a pending table adoption regardless
+
+    // Lever 2: sample the light sensor at 1 Hz and deep-sleep through daylight.
+    // Every gate here fails toward "awake" (see dusk.h): debounced day + boot
+    // hold-off passed + no recent serial + no recent FIELD_AWAKE beacon. The
+    // conductor never dusk-sleeps (it's the wall-powered clock anchor), and the
+    // whole feature is off until `dusk on` (GPIO34 floats until wired).
+    if (g_dusk_on) {
+      static int64_t next_dusk_sample = 0;
+      if (t >= next_dusk_sample) {
+        next_dusk_sample = t + DUSK_SAMPLE_US;
+        g_light_mv = (uint16_t)analogReadMilliVolts(PIN_LDR);
+        duskOnSample(g_dusk, DUSK_CFG, g_light_mv, t);
+        int64_t last_flag;
+        portENTER_CRITICAL(&g_sync_mux);
+        last_flag = g_last_wake_flag_us;
+        portEXIT_CRITICAL(&g_sync_mux);
+        if (duskShouldSleep(g_dusk, DUSK_CFG, t, g_dusk_earliest_us,
+                            g_last_serial_us, last_flag)) {
+          duskEnterDeepSleep();  // never returns; RTC timer armed atomically
+        }
+      }
+    }
   }
 
   // Snapshot sync + beacon together, then render against the right clock.

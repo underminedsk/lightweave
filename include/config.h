@@ -117,6 +117,40 @@ static constexpr int64_t NAP_MIN_US          = 5000;      // shorter isn't worth
 static constexpr int64_t NAP_MAX_US          = 1000000;   // safety cap per nap
 static constexpr int64_t SERIAL_NAP_GRACE_US = 30000000;  // 30 s after serial traffic
 
+// ---- Daytime deep-sleep (Milestone 3, Lever 2) --------------------------------
+// A performer deep-sleeps through daylight (the calendar-life fix) and wakes
+// every DUSK_RESAMPLE_US to re-check the light and listen for a beacon — a
+// beacon carrying BEACON_FLAG_FIELD_AWAKE (`wake on` at the conductor) pins it
+// awake for daytime testing. Decision logic is the dependency-free, host-tested
+// include/dusk.h (fail-awake by design — see its header comment); main.cpp owns
+// the ADC sampling and esp_deep_sleep(). Toggle per node with `dusk on|off`
+// (NVS "dusk"); DEFAULT OFF — GPIO34 floats until the phototransistor is wired,
+// and a floating pin must never be able to sleep a node.
+#ifndef DUSK_DEFAULT
+#define DUSK_DEFAULT 0
+#endif
+// Polarity + thresholds are PLACEHOLDERS until the phototransistor divider is
+// bench-calibrated (pilot batch). day_above=true assumes PT from 3V3 with a
+// pull-down (daylight pulls the reading up). Pick the divider so real noon and
+// real night both land inside [DUSK_FLOOR_MV, DUSK_CEIL_MV] — outside reads as
+// a broken sensor and fails awake.
+static constexpr bool     DUSK_DAY_ABOVE = true;
+static constexpr uint16_t DUSK_DAY_MV    = 1800;  // calibrate on the bench
+static constexpr uint16_t DUSK_NIGHT_MV  = 900;   // calibrate on the bench
+static constexpr uint16_t DUSK_FLOOR_MV  = 20;    // below: broken/floating sensor
+static constexpr uint16_t DUSK_CEIL_MV   = 3100;  // above: broken/floating sensor
+static constexpr int64_t  DUSK_SAMPLE_US       = 1000000;    // sample light @ 1 Hz
+static constexpr int64_t  DUSK_DEBOUNCE_US     = 60000000;   // 60 s steady to flip
+static constexpr int64_t  DUSK_SERIAL_GRACE_US = 300000000;  // 5 min after serial
+static constexpr int64_t  DUSK_WAKE_TTL_US     = 60000000;   // flagged-beacon hold
+static constexpr int64_t  DUSK_MIN_AWAKE_TIMER_US = 10000000;   // resample wake: 10 s
+static constexpr int64_t  DUSK_MIN_AWAKE_COLD_US  = 600000000;  // cold boot: 10 min
+static constexpr uint64_t DUSK_RESAMPLE_US = 900000000ULL;  // 15 min between wakes
+// Battery-sense divider on PIN_VBAT: 47k over 10k => Vbat = Vpin * 5.7. Reading
+// is reported in `info` (garbage until the divider is wired); low-batt policy
+// comes later with the pilot hardware.
+static constexpr float VBAT_DIVIDER = 5.7f;
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s

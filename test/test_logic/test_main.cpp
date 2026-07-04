@@ -9,6 +9,7 @@
 #include <unity.h>
 
 #include "sync.h"
+#include "dusk.h"
 #include "napsched.h"
 #include "pattern_ids.h"
 #include "pattern_math.h"
@@ -617,6 +618,134 @@ void test_pattern_static_ids() {
   TEST_ASSERT_FALSE(patterns::patternIsStatic(999));  // unknown => animated
 }
 
+// ---- Daytime deep-sleep detector (Lever 2) -------------------------------------
+
+// Config used throughout: day-above wiring, day past 1800mV / night below 900mV,
+// plausible band [20, 3100], 60s debounce, 5min serial grace, 60s wake-flag TTL.
+static const DuskConfig DUSKC = {true,       1800,        900,
+                                 20,         3100,        60'000'000,
+                                 300'000'000, 60'000'000};
+
+static const int64_t S = 1'000'000;  // one second, in µs
+
+// A cold boot starts in night (awake) — the power-cycle-always-wakes guarantee.
+void test_dusk_cold_boot_starts_night() {
+  Dusk d;
+  duskInit(d, /*start_day*/ false, 0);
+  TEST_ASSERT_FALSE(d.day);
+}
+
+// Steady daylight flips to day only after the full debounce, not on the first
+// bright sample.
+void test_dusk_flips_to_day_only_after_debounce() {
+  Dusk d;
+  duskInit(d, false, 0);
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 2500, 1 * S));   // stretch starts
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 2500, 30 * S));  // 29s: still night
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 2500, 60 * S));  // 59s: still night
+  TEST_ASSERT_TRUE(duskOnSample(d, DUSKC, 2500, 61 * S));   // 60s held: day
+}
+
+// A dark interruption (cloud shadow over the sensor at dawn, a tarp) resets the
+// debounce stretch — the flip needs CONTINUOUS daylight.
+void test_dusk_flicker_resets_debounce() {
+  Dusk d;
+  duskInit(d, false, 0);
+  duskOnSample(d, DUSKC, 2500, 1 * S);                       // bright stretch
+  duskOnSample(d, DUSKC, 2500, 30 * S);
+  duskOnSample(d, DUSKC, 100, 31 * S);                       // dark blip: reset
+  duskOnSample(d, DUSKC, 2500, 32 * S);                      // new stretch
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 2500, 91 * S));   // 59s of new: night
+  TEST_ASSERT_TRUE(duskOnSample(d, DUSKC, 2500, 92 * S));    // 60s of new: day
+}
+
+// Readings between night_mv and day_mv (dawn/dusk twilight) never flip the
+// state in either direction — hysteresis dead band.
+void test_dusk_dead_band_holds_current_state() {
+  Dusk d;
+  duskInit(d, false, 0);
+  for (int i = 1; i <= 200; i++)
+    TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 1400, i * S));  // night holds
+  duskInit(d, true, 0);
+  for (int i = 1; i <= 200; i++)
+    TEST_ASSERT_TRUE(duskOnSample(d, DUSKC, 1400, i * S));   // day holds too
+}
+
+// Day flips back to night after a debounced dark stretch (dusk arrives during a
+// resample wake — node stays up for the show).
+void test_dusk_day_flips_to_night_at_dusk() {
+  Dusk d;
+  duskInit(d, true, 0);
+  duskOnSample(d, DUSKC, 500, 1 * S);
+  TEST_ASSERT_TRUE(duskOnSample(d, DUSKC, 500, 60 * S));
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 500, 61 * S));
+}
+
+// Inverted wiring (PT to GND + pull-up: daylight pulls the reading DOWN).
+void test_dusk_inverted_polarity() {
+  DuskConfig inv = DUSKC;
+  inv.day_above = false;
+  inv.day_mv = 900;    // below = day
+  inv.night_mv = 1800; // above = night
+  Dusk d;
+  duskInit(d, false, 0);
+  duskOnSample(d, inv, 300, 1 * S);                     // low reading = bright
+  TEST_ASSERT_TRUE(duskOnSample(d, inv, 300, 61 * S));  // flips to day
+}
+
+// FAIL AWAKE: implausible readings (floating pin, broken wire) read as night.
+// A node sleeping on a sensor that then breaks must come back awake and stay.
+void test_dusk_implausible_reading_is_night() {
+  Dusk d;
+  duskInit(d, true, 0);  // currently day (was sleeping, woke to re-sample)
+  duskOnSample(d, DUSKC, 3300, 1 * S);                     // floating-high pin
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 3300, 61 * S)); // debounced -> night
+  duskInit(d, true, 0);
+  duskOnSample(d, DUSKC, 0, 1 * S);                        // shorted/floating low
+  TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 0, 61 * S));
+  // And a broken sensor can never PRODUCE day from night:
+  duskInit(d, false, 0);
+  for (int i = 1; i <= 200; i++)
+    TEST_ASSERT_FALSE(duskOnSample(d, DUSKC, 3300, i * S));
+}
+
+// The sleep gate: debounced day alone is not enough — boot hold-off, serial
+// grace, and the FIELD_AWAKE beacon TTL each independently block sleep.
+void test_dusk_should_sleep_gates() {
+  Dusk d;
+  int64_t never = INT64_MIN / 2;
+  duskInit(d, false, 0);
+  // Night: never sleeps, regardless of every other gate being open.
+  TEST_ASSERT_FALSE(duskShouldSleep(d, DUSKC, 1000 * S, 0, never, never));
+  duskInit(d, true, 0);
+  // Day + all gates clear: sleeps.
+  TEST_ASSERT_TRUE(duskShouldSleep(d, DUSKC, 1000 * S, 0, never, never));
+  // Boot hold-off not yet passed: no sleep.
+  TEST_ASSERT_FALSE(duskShouldSleep(d, DUSKC, 1000 * S, 2000 * S, never, never));
+  // Serial traffic 10s ago (grace 5min): no sleep.
+  TEST_ASSERT_FALSE(duskShouldSleep(d, DUSKC, 1000 * S, 0, 990 * S, never));
+  // Flagged beacon 30s ago (TTL 60s): no sleep — the daytime-test override.
+  TEST_ASSERT_FALSE(duskShouldSleep(d, DUSKC, 1000 * S, 0, never, 970 * S));
+  // Flagged beacon 61s ago: TTL expired, sleep resumes.
+  TEST_ASSERT_TRUE(duskShouldSleep(d, DUSKC, 1000 * S, 0, never, 939 * S));
+}
+
+// Timer wake from daytime sleep starts in day: still-bright readings keep it
+// day (quick re-sleep once the short hold-off passes), while a dark wake
+// (dusk arrived) flips it to night after the debounce.
+void test_dusk_timer_wake_resample_paths() {
+  Dusk d;
+  int64_t never = INT64_MIN / 2;
+  duskInit(d, /*start_day*/ true, 0);          // RTC flag said "was day"
+  duskOnSample(d, DUSKC, 2500, 1 * S);         // still bright
+  TEST_ASSERT_TRUE(d.day);
+  // Short hold-off (10s) passed: allowed to re-sleep immediately.
+  TEST_ASSERT_TRUE(duskShouldSleep(d, DUSKC, 11 * S, 10 * S, never, never));
+  duskInit(d, true, 0);
+  for (int i = 1; i <= 61; i++) duskOnSample(d, DUSKC, 400, i * S);  // dark now
+  TEST_ASSERT_FALSE(d.day);                    // dusk arrived: stay up, show on
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -669,5 +798,14 @@ int main(int, char**) {
   RUN_TEST(test_nap_heartbeat_edge_on_negative_synced_time);
   RUN_TEST(test_nap_skips_tiny_naps);
   RUN_TEST(test_pattern_static_ids);
+  RUN_TEST(test_dusk_cold_boot_starts_night);
+  RUN_TEST(test_dusk_flips_to_day_only_after_debounce);
+  RUN_TEST(test_dusk_flicker_resets_debounce);
+  RUN_TEST(test_dusk_dead_band_holds_current_state);
+  RUN_TEST(test_dusk_day_flips_to_night_at_dusk);
+  RUN_TEST(test_dusk_inverted_polarity);
+  RUN_TEST(test_dusk_implausible_reading_is_night);
+  RUN_TEST(test_dusk_should_sleep_gates);
+  RUN_TEST(test_dusk_timer_wake_resample_paths);
   return UNITY_END();
 }

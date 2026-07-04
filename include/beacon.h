@@ -17,7 +17,17 @@
 // Bumped on any incompatible wire-layout change. Receivers reject a mismatch
 // rather than misparse a packet from a node on different firmware. Also reported
 // in REGISTER so the conductor can spot a straggler running stale firmware.
-static constexpr uint8_t PROTO_VERSION = 1;
+// v2: BeaconMsg grew `flags` (field-awake override for daytime deep-sleep).
+static constexpr uint8_t PROTO_VERSION = 2;
+
+// BeaconMsg.flags bits.
+// FIELD_AWAKE: conductor-commanded override — "the field should be awake now,
+// daylight or not". A dusk-sleeping performer checks for this at every resample
+// rendezvous (it listens for a beacon before it may re-sleep), so setting the
+// flag (`wake on` on the conductor) summons the whole field within one resample
+// interval for a daytime test; clearing it lets the dusk logic resume. Sticky on
+// the conductor (NVS) so a conductor reboot can't silently drop the override.
+static constexpr uint8_t BEACON_FLAG_FIELD_AWAKE = 0x01;
 
 enum MsgType : uint8_t {
   MSG_BEACON   = 0,  // conductor -> all: clock + pattern recipe (hot path)
@@ -42,6 +52,7 @@ typedef struct __attribute__((packed)) {
   uint16_t  pattern_id;  // which pattern to render
   uint8_t   brightness;  // global brightness cap (0-255)
   uint8_t   palette_id;  // palette selector
+  uint8_t   flags;       // BEACON_FLAG_* bits (field-awake override, …)
   uint16_t  params[4];   // pattern-specific knobs for live tweaking
   uint32_t  seq;         // monotonic; for drop detection / logging
 } BeaconMsg;
