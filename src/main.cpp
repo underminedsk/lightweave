@@ -985,9 +985,14 @@ void loop() {
     // light sleep drops chars still shifting out, garbling the diag lines.
     while (!strip.CanShow()) delayMicroseconds(50);
     Serial.flush();
+    // Hold the UART0 TX pad through the nap: light sleep releases the pin,
+    // which floats the line and sprays a junk byte at the host on every sleep
+    // transition (bench-observed as 0xFF spam on the monitor, ~2/s).
+    gpio_hold_en(GPIO_NUM_1);
     int64_t before = now_us();
     esp_sleep_enable_timer_wakeup((uint64_t)nap);
     esp_light_sleep_start();
+    gpio_hold_dis(GPIO_NUM_1);
     g_naps++;
     g_napped_us += now_us() - before;  // measured, not requested (see NAP_CFG note)
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART) {

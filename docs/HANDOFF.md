@@ -134,6 +134,13 @@ real overnight draw, not a field-wide component.
 
 - 3× DOIT ESP32 DevKit V1, all on the unified image. Rings on 2 of them; LED data
   on **GPIO13 (`D13`)**, USB 5V (no 12 V / buck yet).
+- **As of 2026-07-03 (all reflashed to protocol v2 together):**
+  - `8C:94:DF:57:7F:14` — **CONDUCTOR**, id 0, GLOW recipe (pat 4, bri 48,
+    params [40 100]). Needed a fresh `erase_flash` (clock-scramble gotcha) —
+    **its NVS layout table was lost; re-`assign` positions when they matter.**
+  - `30:76:F5:93:67:3C` — performer, id 2.
+  - `8C:94:DF:8F:71:50` — performer, id 0 (fully erased today —
+    **unprovisioned**; set `id`, and position comes from the conductor table).
 - Provisioned roles/ids/positions may have drifted across sessions — **re-check
   each board with `info`** rather than trusting labels.
 - **Gotcha:** factory boards ship with ESP-AT firmware and need a one-time
@@ -264,9 +271,21 @@ wall-powered; gate all of this on `role == performer`.
   worth doing: widening `DUTY_OFF_US` (4 s → 8 s/60 s) — at 13% duty we already
   removed ~30 of the ~34 mA radio term, so a 60 s wake saves only ~4 mA more while
   multiplying recipe-update latency. Diminishing returns; leave it at 4 s.
-- **Stage B — cut the CPU floor (now the biggest constant term). 🛠 CODE-COMPLETE
-  (2026-07-03), host-tested (48 native tests green), both device envs build —
-  NOT yet hardware-verified or measured.** What landed: `include/napsched.h`
+- **Stage B — cut the CPU floor (now the biggest constant term). ✅ HARDWARE-VERIFIED
+  (2026-07-03 bench, conductor + 2 performers, all on protocol v2): naps run
+  ~2/s on GLOW (heartbeat-capped ~0.5 s each), measured slept time tracks wall
+  clock (~87–93% of each radio-off span asleep) — `esp_timer` IS compensated
+  across light sleep, the known risk is retired; sync stays `LOCKED` with
+  `missed=0` across hundreds of naps; UART wake + serial grace + diag gating
+  all behave as designed. One glue fix found on the bench: light sleep releases
+  the UART0 TX pad and sprayed a junk byte per transition at the host —
+  `gpio_hold_en(GPIO_NUM_1)` across the sleep eliminates it (verified 0 junk
+  bytes post-fix). Power re-measure on the 12 V rig still owed. ⚠ Watch item:
+  the conductor board (8C:94:DF:57:7F:14, the one that needed today's
+  `erase_flash` for the FLASHING.md clock-scramble) once flooded serial with
+  diag lines at full baud with `seq` racing (time-gated timers firing every
+  loop) — cleared by reset, not reproducible after retrying the same command
+  sequence; if it recurs, suspect this board's hardware first.** What landed: `include/napsched.h`
   (pure `napPlan()` — how long may the CPU light-sleep right now; 9 host tests)
   + `include/pattern_ids.h` (PatternId enum extracted from Arduino-bound
   patterns.h so `patternIsStatic` is host-reachable) + glue in `main.cpp`
