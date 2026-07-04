@@ -8,10 +8,39 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(39 pass) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
-`main`: Stage-A radio duty-cycle + SOLID boot-guard + `GLOW` pattern (all
-hardware-verified incl. the 12 V power measurement below), production BOM, and
-the **pilot-batch order placed 2026-07-03** (see "Pilot batch: ORDERED" below).
+(**58 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
+`main` (all pushed, working tree clean as of 2026-07-03 evening): Stage-A radio
+duty-cycle (measured), **Stage-B CPU light-sleep (hardware-verified on bench
+2026-07-03)**, **Lever-2 daytime deep-sleep (code-complete, default off,
+awaiting the pilot phototransistors)**, a full-repo adversarial self-review
+with all 5 correctness findings fixed, the production BOM, and the
+**pilot-batch order placed 2026-07-03** (most parts arrive Mon Jul 6,
+batteries Jul 10 — see "Pilot batch: ORDERED" below).
+
+## ▶ Next session: pick up here (agreed 2026-07-03)
+
+Priority order, chosen so Monday's parts arrival is pure hardware verification:
+1. **Build the INA228 telemetry firmware NOW, before the chip arrives**
+   (ARCHITECTURE §4.2): I2C probe at boot (one image everywhere — nodes without
+   the chip skip it silently), a module wrapping `readEnergy()` /
+   `resetAccumulators()` (Adafruit_INA228 lib, continuous mode ONLY — triggered
+   mode invalidates the accumulators), a new `MSG_POWER` unicast so instrumented
+   performers report accumulated Wh to the conductor on the existing
+   bidirectional path, conductor logs it. Keep the pure parts host-tested.
+2. **Review debt** (list in "Self code-review" section below): extract
+   host-unreachable logic from main.cpp (boot classification, `parseMac`, table
+   chunk math, SOLID boot-guard) into tested pure headers; add a `field` build
+   env with `-D HEARTBEAT_LED=0`; stretch table rebroadcast cadence.
+3. **Monday (parts in hand):** wire a phototransistor → calibrate
+   `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
+   verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
+   wire INA228 on one reference node → first real Wh integral; first flash of
+   the `firebeetle` env on real FireBeetle hardware.
+4. **User task, anytime (needs hands + DMM):** re-measure the 12 V
+   battery-side draw with naps running, **USB disconnected** (USB backfeeds the
+   5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
+   51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
+   @ bri 48.
 
 ---
 
@@ -50,9 +79,17 @@ power measurement):
 - **GPIO2 heartbeat** blinks on the synced beat (zero-wiring sync check).
 - **Serial commands:** `info`, `roster` / `table` / `assign` / `forget`
   (conductor), `role conductor|performer`, `id <n>`, `pos <x> <y>`,
-  `pattern <n>`, `bri <n>`, `param <i> <v>`, `powersave on|off`.
-- **Host unit tests** (`test/test_logic/`, 39): sync core, pattern math, roster,
-  layout table, radio duty-cycle, glow warm-hue color.
+  `pattern <n>`, `bri <n>`, `param <i> <v>`, `powersave on|off`,
+  `dusk on|off` (performer; daytime deep-sleep, default off),
+  `wake on|off` (conductor; FIELD_AWAKE beacon flag, summons dusk-sleeping
+  nodes). Note diag output is gated: it prints only within **5 min of serial
+  input** — hit Enter in a monitor to revive a quiet node (see FLASHING.md).
+- **Wire protocol is v2** (`PROTO_VERSION 2`, beacon grew a `flags` byte for
+  FIELD_AWAKE). v1 and v2 nodes silently reject each other — **flash every
+  board together** (all 3 bench boards are on v2 as of 2026-07-03).
+- **Host unit tests** (`test/test_logic/`, 58): sync core, pattern math, roster,
+  layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
+  fail-awake gates (Lever 2), pattern static-ids, glow warm-hue color.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -180,7 +217,7 @@ dimming real shows. Watts are fine; the gating issue is *hours* → daytime slee
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 39 host tests
+pio test -e native                                  # 58 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -222,7 +259,7 @@ across three carts (~$732 incl. tax/shipping):
 - **Not ordered anywhere: JST-SM connector kit and fuse holders + fuses** (BOM
   pilot rows 10–11) — add to a future cart before field wiring.
 
-## Next task: Milestone 3 — power management (Lever 1 Stage A done)
+## Milestone 3 detail — power management (Stage A measured, Stage B verified, Lever 2 awaiting sensors; next-session order is at the top of this doc)
 
 **Lever 1 Stage A (performer radio duty-cycle) is done, hardware-verified, measured,
 and pushed** (`main` @ `5089d33`) — see the bench result near the top. It cut node
