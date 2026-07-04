@@ -9,7 +9,9 @@
 #include <unity.h>
 
 #include "sync.h"
+#include "bootplan.h"
 #include "dusk.h"
+#include "macaddr.h"
 #include "napsched.h"
 #include "pattern_ids.h"
 #include "pattern_math.h"
@@ -17,6 +19,7 @@
 #include "powersave.h"
 #include "roster.h"
 #include "table.h"
+#include "table_wire.h"
 
 // ---- Sync: locking & offset --------------------------------------------------
 
@@ -870,6 +873,265 @@ void test_power_sched_defers_while_cannot_send_no_burst() {
   TEST_ASSERT_TRUE(powerReportDue(ps, 261 * 1000000LL, I, true));
 }
 
+// ---- MAC text parsing (macaddr.h) ----------------------------------------------
+// Gatekeeper for the conductor's `assign`/`forget` commands — a silent misparse
+// would move the wrong lantern.
+
+void test_mac_parse_valid_any_case() {
+  uint8_t m[6];
+  TEST_ASSERT_TRUE(parseMac("8C:94:DF:57:7F:14", m));
+  const uint8_t want[6] = {0x8C, 0x94, 0xDF, 0x57, 0x7F, 0x14};
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(want, m, 6);
+  TEST_ASSERT_TRUE(parseMac("8c:94:df:57:7f:14", m));  // lowercase, same bytes
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(want, m, 6);
+  TEST_ASSERT_TRUE(parseMac("0:1:2:3:4:5", m));        // unpadded digits parse
+  const uint8_t low[6] = {0, 1, 2, 3, 4, 5};
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(low, m, 6);
+}
+
+void test_mac_parse_rejects_malformed() {
+  uint8_t m[6];
+  TEST_ASSERT_FALSE(parseMac("", m));
+  TEST_ASSERT_FALSE(parseMac("hello", m));
+  TEST_ASSERT_FALSE(parseMac("8C:94:DF:57:7F", m));       // five groups
+  TEST_ASSERT_FALSE(parseMac("8C-94-DF-57-7F-14", m));    // wrong separator
+  TEST_ASSERT_FALSE(parseMac("GG:94:DF:57:7F:14", m));    // non-hex group
+}
+
+void test_mac_parse_rejects_out_of_range_group() {
+  uint8_t m[6];
+  TEST_ASSERT_FALSE(parseMac("1FF:94:DF:57:7F:14", m));   // group > 0xFF
+  TEST_ASSERT_FALSE(parseMac("8C:94:DF:57:7F:14000", m));
+}
+
+void test_mac_format_roundtrip() {
+  uint8_t in[6], out[6];
+  macN(in, 42);
+  char buf[18];
+  TEST_ASSERT_EQUAL_STRING("DE:AD:BE:EF:00:2A", macStr(in, buf));
+  TEST_ASSERT_TRUE(parseMac(buf, out));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(in, out, 6);
+}
+
+// ---- Pattern boot guard (pattern_ids.h) ----------------------------------------
+
+void test_pattern_boot_safe() {
+  // A persisted SOLID (full-white bench pattern) must not survive a power-cycle.
+  TEST_ASSERT_EQUAL_UINT16(patterns::SWEEP, patterns::patternBootSafe(patterns::SOLID));
+  // Every real show pattern boots as itself.
+  TEST_ASSERT_EQUAL_UINT16(patterns::PULSE, patterns::patternBootSafe(patterns::PULSE));
+  TEST_ASSERT_EQUAL_UINT16(patterns::PALETTE_DRIFT,
+                           patterns::patternBootSafe(patterns::PALETTE_DRIFT));
+  TEST_ASSERT_EQUAL_UINT16(patterns::SWEEP, patterns::patternBootSafe(patterns::SWEEP));
+  TEST_ASSERT_EQUAL_UINT16(patterns::GLOW, patterns::patternBootSafe(patterns::GLOW));
+  // Unknown/future ids pass through — the renderer decides what they mean.
+  TEST_ASSERT_EQUAL_UINT16(999, patterns::patternBootSafe(999));
+}
+
+// ---- Table wire: chunking + validation (table_wire.h) --------------------------
+// The chunk math splits a 60-node table across ESP-NOW's 250-byte payloads; the
+// receive-side validation is what stands between a malformed packet and a
+// memcpy overrun.
+
+void test_table_wire_len_fits_espnow() {
+  // A full chunk is exactly sizeof(TableMsg) and inside the 250 B payload cap.
+  TEST_ASSERT_EQUAL_size_t(sizeof(TableMsg), tableMsgWireLen(TABLE_ROWS_PER_MSG));
+  TEST_ASSERT_TRUE(tableMsgWireLen(TABLE_ROWS_PER_MSG) <= 250);
+  // Zero rows is just the header + counts.
+  TEST_ASSERT_EQUAL_size_t(offsetof(TableMsg, rows), tableMsgWireLen(0));
+}
+
+void test_table_chunk_count() {
+  TEST_ASSERT_EQUAL_UINT8(0, tableChunkCount(0));   // empty: nothing to send
+  TEST_ASSERT_EQUAL_UINT8(1, tableChunkCount(1));
+  TEST_ASSERT_EQUAL_UINT8(1, tableChunkCount(TABLE_ROWS_PER_MSG));
+  TEST_ASSERT_EQUAL_UINT8(2, tableChunkCount(TABLE_ROWS_PER_MSG + 1));
+  TEST_ASSERT_EQUAL_UINT8(2, tableChunkCount(2 * TABLE_ROWS_PER_MSG));
+  TEST_ASSERT_EQUAL_UINT8(4, tableChunkCount(TABLE_MAX));  // 64 nodes -> 4 chunks
+}
+
+void test_table_chunk_build_single_chunk() {
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6], b[6];
+  macN(a, 1);
+  macN(b, 2);
+  tableSet(t, a, 1.5f, -2.0f);
+  tableSet(t, b, 3.0f, 4.0f);
+
+  TableMsg m;
+  size_t len = tableChunkBuild(t, 0, m);
+  TEST_ASSERT_EQUAL_size_t(tableMsgWireLen(2), len);
+  TEST_ASSERT_EQUAL_UINT32(BEACON_MAGIC, m.hdr.magic);
+  TEST_ASSERT_EQUAL_UINT8(PROTO_VERSION, m.hdr.version);
+  TEST_ASSERT_EQUAL_UINT8(MSG_TABLE, m.hdr.type);
+  TEST_ASSERT_EQUAL_UINT8(0, m.chunk);
+  TEST_ASSERT_EQUAL_UINT8(1, m.chunks);
+  TEST_ASSERT_EQUAL_UINT8(2, m.n);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(b, m.rows[1].mac, 6);
+  TEST_ASSERT_EQUAL_FLOAT(3.0f, m.rows[1].x);
+  TEST_ASSERT_EQUAL_FLOAT(4.0f, m.rows[1].y);
+  // Out-of-range chunk: nothing to send.
+  TEST_ASSERT_EQUAL_size_t(0, tableChunkBuild(t, 1, m));
+  // Empty table: every chunk index is out of range.
+  LayoutTable empty;
+  tableInit(empty);
+  TEST_ASSERT_EQUAL_size_t(0, tableChunkBuild(empty, 0, m));
+}
+
+void test_table_chunk_build_splits_across_chunks() {
+  LayoutTable t;
+  tableInit(t);
+  const uint8_t N = TABLE_ROWS_PER_MSG + 3;  // 20 nodes -> 17 + 3
+  for (uint8_t i = 0; i < N; i++) {
+    uint8_t m[6];
+    macN(m, i);
+    tableSet(t, m, (float)i, (float)-i);
+  }
+  TableMsg c0, c1;
+  TEST_ASSERT_EQUAL_size_t(tableMsgWireLen(TABLE_ROWS_PER_MSG),
+                           tableChunkBuild(t, 0, c0));
+  TEST_ASSERT_EQUAL_size_t(tableMsgWireLen(3), tableChunkBuild(t, 1, c1));
+  TEST_ASSERT_EQUAL_UINT8(2, c0.chunks);
+  TEST_ASSERT_EQUAL_UINT8(2, c1.chunks);
+  TEST_ASSERT_EQUAL_UINT8(1, c1.chunk);
+  // Chunk 1's first row is table entry 17 — the split loses and repeats nothing.
+  uint8_t want[6];
+  macN(want, TABLE_ROWS_PER_MSG);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(want, c1.rows[0].mac, 6);
+  TEST_ASSERT_EQUAL_FLOAT((float)TABLE_ROWS_PER_MSG, c1.rows[0].x);
+}
+
+void test_table_msg_len_validation() {
+  const int hdr_len = (int)offsetof(TableMsg, rows);
+  // Step 1 (before the copy): raw length inside struct bounds.
+  TEST_ASSERT_FALSE(tableMsgLenPlausible(0));
+  TEST_ASSERT_FALSE(tableMsgLenPlausible(hdr_len - 1));
+  TEST_ASSERT_TRUE(tableMsgLenPlausible(hdr_len));
+  TEST_ASSERT_TRUE(tableMsgLenPlausible((int)sizeof(TableMsg)));
+  TEST_ASSERT_FALSE(tableMsgLenPlausible((int)sizeof(TableMsg) + 1));
+  // Step 2 (after the copy): declared row count must match the length exactly.
+  TEST_ASSERT_TRUE(tableMsgLenValid((int)tableMsgWireLen(2), 2));
+  TEST_ASSERT_FALSE(tableMsgLenValid((int)tableMsgWireLen(2) - 1, 2));  // truncated
+  TEST_ASSERT_FALSE(tableMsgLenValid((int)tableMsgWireLen(2) + 1, 2));  // padded
+  TEST_ASSERT_FALSE(tableMsgLenValid((int)tableMsgWireLen(3), 2));      // n lies low
+  // n that would overrun rows[] is rejected no matter the length.
+  TEST_ASSERT_FALSE(tableMsgLenValid((int)sizeof(TableMsg), TABLE_ROWS_PER_MSG + 1));
+}
+
+void test_table_msg_find_row() {
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6], b[6], absent[6];
+  macN(a, 1);
+  macN(b, 2);
+  macN(absent, 99);
+  tableSet(t, a, 1.0f, 2.0f);
+  tableSet(t, b, -7.5f, 0.25f);
+  TableMsg m;
+  tableChunkBuild(t, 0, m);
+
+  float x = 0, y = 0;
+  TEST_ASSERT_TRUE(tableMsgFindRow(m, b, x, y));   // "find our own row"
+  TEST_ASSERT_EQUAL_FLOAT(-7.5f, x);
+  TEST_ASSERT_EQUAL_FLOAT(0.25f, y);
+  TEST_ASSERT_FALSE(tableMsgFindRow(m, absent, x, y));
+  // Defensive clamp: a lying n can't walk the scan past rows[].
+  m.n = 200;
+  TEST_ASSERT_FALSE(tableMsgFindRow(m, absent, x, y));
+}
+
+// ---- Table broadcast cadence (table_wire.h) -------------------------------------
+// Steady-state is slow (positions are static, nodes cache them in NVS); a new
+// node registering pulls the next broadcast forward; a mass rejoin after a
+// conductor reboot is rate-limited by the minimum spacing.
+
+void test_table_sched_first_immediate_then_interval() {
+  TableSched s = {0, 0};
+  const int64_t I = 60 * S, SP = 2 * S;
+  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));   // boot: advertise now
+  TEST_ASSERT_FALSE(tableSchedDue(s, 30 * S, false, I, SP));
+  TEST_ASSERT_FALSE(tableSchedDue(s, I - 1, false, I, SP));
+  TEST_ASSERT_TRUE(tableSchedDue(s, I, false, I, SP));   // steady cadence
+}
+
+void test_table_sched_burst_pulls_forward() {
+  TableSched s = {0, 0};
+  const int64_t I = 60 * S, SP = 2 * S;
+  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));
+  // New node at t=10s: burst fires immediately (spacing long since satisfied)…
+  TEST_ASSERT_TRUE(tableSchedBurstReady(s, 10 * S));
+  TEST_ASSERT_TRUE(tableSchedDue(s, 10 * S, true, I, SP));
+  // …and resets the steady-state clock: next periodic send is a full interval out.
+  TEST_ASSERT_FALSE(tableSchedDue(s, 60 * S, false, I, SP));
+  TEST_ASSERT_TRUE(tableSchedDue(s, 10 * S + I, false, I, SP));
+}
+
+void test_table_sched_burst_respects_spacing_without_losing_it() {
+  TableSched s = {0, 0};
+  const int64_t I = 60 * S, SP = 2 * S;
+  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));
+  // A second new node lands right after the burst above. Inside the hold-off
+  // the caller must NOT consume the flag (burstReady false)…
+  bool pending = true;
+  TEST_ASSERT_FALSE(tableSchedBurstReady(s, 1 * S));
+  TEST_ASSERT_FALSE(tableSchedDue(s, 1 * S, false, I, SP));  // flag left pending
+  // …so when the hold-off expires the burst still fires — deferred, not dropped.
+  TEST_ASSERT_TRUE(tableSchedBurstReady(s, 2 * S));
+  TEST_ASSERT_TRUE(tableSchedDue(s, 2 * S, pending, I, SP));
+}
+
+// ---- Boot classification (bootplan.h) --------------------------------------------
+// Timer wake = dusk resample rendezvous (quick re-sleep, no serial grace);
+// everything else = a human (awake, long hold-off, full provisioning grace).
+
+// Realistic config: 10 s timer min-awake, 10 min cold, 5 min dusk grace, 30 s nap.
+static const BootPlanConfig BOOTC = {10 * S, 600 * S, 300 * S, 30 * S};
+
+void test_boot_cold_boot_is_awake_and_provisionable() {
+  const int64_t boot = 1000 * S;
+  // rtc_was_day=true simulates stale RTC garbage surviving a flash/brownout —
+  // a non-timer boot must ignore it AND clear it.
+  BootPlan p = bootClassify(/*timer_wake*/ false, /*rtc_was_day*/ true, boot, BOOTC);
+  TEST_ASSERT_FALSE(p.dusk_start_day);              // starts night: awake
+  TEST_ASSERT_FALSE(p.rtc_day_flag);                // stale flag cleared
+  TEST_ASSERT_EQUAL_INT64(boot + 600 * S, p.dusk_earliest_us);  // 10 min hold-off
+  // Serial seed = boot: both the nap grace and the dusk grace start ACTIVE, so
+  // a fresh flash has a responsive provisioning window and diag output.
+  TEST_ASSERT_EQUAL_INT64(boot, p.serial_seed_us);
+}
+
+void test_boot_timer_wake_resamples_quickly() {
+  const int64_t boot = 1000 * S;
+  BootPlan p = bootClassify(/*timer_wake*/ true, /*rtc_was_day*/ true, boot, BOOTC);
+  TEST_ASSERT_TRUE(p.dusk_start_day);               // resume the day state
+  TEST_ASSERT_TRUE(p.rtc_day_flag);                 // flag survives for the next wake
+  TEST_ASSERT_EQUAL_INT64(boot + 10 * S, p.dusk_earliest_us);  // short min-awake
+  // Serial seed pre-expires BOTH graces — nothing is typing at a node that
+  // woke itself in a field, and a lingering grace would block the re-sleep.
+  TEST_ASSERT_TRUE(boot - p.serial_seed_us > BOOTC.dusk_serial_grace_us);
+  TEST_ASSERT_TRUE(boot - p.serial_seed_us > BOOTC.nap_serial_grace_us);
+}
+
+void test_boot_timer_wake_without_day_flag_fails_awake() {
+  // A timer wake whose RTC day flag reads false (corrupt RTC memory, future
+  // code path) must fail toward awake: start in night like a human boot.
+  BootPlan p = bootClassify(true, false, 1000 * S, BOOTC);
+  TEST_ASSERT_FALSE(p.dusk_start_day);
+  TEST_ASSERT_FALSE(p.rtc_day_flag);
+}
+
+void test_boot_serial_seed_expires_longest_grace() {
+  // The old inline code subtracted only the dusk grace, silently relying on it
+  // being the longer one. Flip the config (nap grace longer) and the seed must
+  // still clear both — the invariant is gone, not just labeled.
+  BootPlanConfig flipped = {10 * S, 600 * S, /*dusk*/ 30 * S, /*nap*/ 300 * S};
+  const int64_t boot = 1000 * S;
+  BootPlan p = bootClassify(true, true, boot, flipped);
+  TEST_ASSERT_TRUE(boot - p.serial_seed_us > flipped.dusk_serial_grace_us);
+  TEST_ASSERT_TRUE(boot - p.serial_seed_us > flipped.nap_serial_grace_us);
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -939,5 +1201,23 @@ int main(int, char**) {
   RUN_TEST(test_power_plausible_flags_reboot_inflated_avg);
   RUN_TEST(test_power_sched_first_report_immediate_then_interval);
   RUN_TEST(test_power_sched_defers_while_cannot_send_no_burst);
+  RUN_TEST(test_mac_parse_valid_any_case);
+  RUN_TEST(test_mac_parse_rejects_malformed);
+  RUN_TEST(test_mac_parse_rejects_out_of_range_group);
+  RUN_TEST(test_mac_format_roundtrip);
+  RUN_TEST(test_pattern_boot_safe);
+  RUN_TEST(test_table_wire_len_fits_espnow);
+  RUN_TEST(test_table_chunk_count);
+  RUN_TEST(test_table_chunk_build_single_chunk);
+  RUN_TEST(test_table_chunk_build_splits_across_chunks);
+  RUN_TEST(test_table_msg_len_validation);
+  RUN_TEST(test_table_msg_find_row);
+  RUN_TEST(test_table_sched_first_immediate_then_interval);
+  RUN_TEST(test_table_sched_burst_pulls_forward);
+  RUN_TEST(test_table_sched_burst_respects_spacing_without_losing_it);
+  RUN_TEST(test_boot_cold_boot_is_awake_and_provisionable);
+  RUN_TEST(test_boot_timer_wake_resamples_quickly);
+  RUN_TEST(test_boot_timer_wake_without_day_flag_fails_awake);
+  RUN_TEST(test_boot_serial_seed_expires_longest_grace);
   return UNITY_END();
 }

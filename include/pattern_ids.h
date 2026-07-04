@@ -28,4 +28,14 @@ inline bool patternIsStatic(uint16_t pattern_id) {
   return pattern_id == SOLID || pattern_id == GLOW;
 }
 
+// Boot guard: SOLID (full-white worst case) is a live-only bench pattern,
+// never a show. A node must not power up rendering it — that would drain the
+// battery on all four channels — so a persisted SOLID falls back to a safe
+// pattern at boot. `pattern 3` still works live for a deliberate on-bench
+// measurement. Every other id (including unknown/future ones) passes through
+// untouched — the renderer, not the boot path, decides what they mean.
+inline uint16_t patternBootSafe(uint16_t pattern_id) {
+  return pattern_id == SOLID ? (uint16_t)SWEEP : pattern_id;
+}
+
 }  // namespace patterns

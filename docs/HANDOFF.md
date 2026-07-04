@@ -8,10 +8,14 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**65 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
-`main` (all pushed, working tree clean as of 2026-07-04, `4949a10`): **INA228
+(**83 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
+build clean. Latest on `main` (2026-07-04): **review-debt paydown** — the
+host-unreachable logic extracted out of `main.cpp` into pure tested headers
+(`macaddr.h`, `table_wire.h`, `bootplan.h`, `patternBootSafe`), `field-*` build
+envs (`-D HEARTBEAT_LED=0`), and the table rebroadcast stretched 5 s → 60 s
+steady-state with a new-node burst. Before that: **INA228
 power-telemetry firmware (code-complete, host-tested, 8-angle-reviewed — built
-ahead of the chip, see "INA228 power telemetry" below)**. Before that:
+ahead of the chip, see "INA228 power telemetry" below)**,
 Stage-A radio duty-cycle (measured), **Stage-B CPU light-sleep
 (hardware-verified on bench 2026-07-03)**, **Lever-2 daytime deep-sleep
 (code-complete, default off, awaiting the pilot phototransistors)**, a
@@ -21,19 +25,16 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
 ## ▶ Next session: pick up here (updated 2026-07-04)
 
-Priority order (the INA228 firmware, previously item 1 here, landed 2026-07-04):
-1. **Review debt** (list in "Self code-review" section below): extract
-   host-unreachable logic from main.cpp (boot classification, `parseMac`, table
-   chunk math, SOLID boot-guard) into tested pure headers; add a `field` build
-   env with `-D HEARTBEAT_LED=0`; stretch table rebroadcast cadence.
-2. **Monday (parts in hand):** wire a phototransistor → calibrate
+Priority order (the INA228 firmware and the review-debt paydown, previously
+items here, both landed 2026-07-04):
+1. **Monday (parts in hand):** wire a phototransistor → calibrate
    `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
    verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
    wire INA228 on one reference node (SDA→21, SCL→22, chip in series between
    battery+ and buck input) → run the INA228 bench checklist below → first
    real Wh integral; first flash of the `firebeetle` env on real FireBeetle
    hardware.
-3. **User task, anytime (needs hands + DMM):** re-measure the 12 V
+2. **User task, anytime (needs hands + DMM):** re-measure the 12 V
    battery-side draw with naps running, **USB disconnected** (USB backfeeds the
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
    51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
@@ -48,7 +49,10 @@ pattern persistence → protocol foundation Half 1 & 2 → battery go/no-go + wo
 power measurement):
 - **One firmware image for every node** (`src/main.cpp`); role is a runtime NVS
   value (default performer), set over serial. Build envs: `devkitc`, `firebeetle`,
-  `native`.
+  `native`, plus `field-devkitc` / `field-firebeetle` — identical firmware with
+  `-D HEARTBEAT_LED=0` (the onboard blink is invisible inside an opaque lantern,
+  burns LED current, and caps every Stage-B nap at 500 ms). Bench flashes keep
+  the heartbeat; flash `field-*` for deployment.
 - **Sync:** conductor broadcasts a clock beacon; performers lock an offset and
   render against synced time; **free-run on missed beacon** (no blackout), re-lock
   on return. Verified: `LOCKED`, stable offset ~±100 µs, `gaps=0`.
@@ -87,10 +91,12 @@ power measurement):
 - **Wire protocol is v2** (`PROTO_VERSION 2`, beacon grew a `flags` byte for
   FIELD_AWAKE). v1 and v2 nodes silently reject each other — **flash every
   board together** (all 3 bench boards are on v2 as of 2026-07-03).
-- **Host unit tests** (`test/test_logic/`, 65): sync core, pattern math, roster,
+- **Host unit tests** (`test/test_logic/`, 83): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
-  fail-awake gates (Lever 2), pattern static-ids, glow warm-hue color, power
-  telemetry (conversions / plausibility gate / report scheduler).
+  fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
+  color, power telemetry (conversions / plausibility gate / report scheduler),
+  MAC text parsing, table wire (chunking / length validation / own-row scan /
+  broadcast cadence), and boot classification.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -204,8 +210,10 @@ reset` then verify E climbs from 0.
 **Code layout:** `include/` — `config.h` (pins/constants), `beacon.h` (wire
 packets), `sync.h` (clock core, tested), `pattern_math.h` (pure pattern fns,
 tested), `patterns.h` (LED binding), `roster.h` + `table.h` (pure, tested),
+`table_wire.h` (table chunking / validation / broadcast cadence, pure, tested),
 `powersave.h` (radio duty-cycle schedule, pure, tested), `powermon.h` (INA228
-telemetry logic, pure, tested), `identity.h`
+telemetry logic, pure, tested), `macaddr.h` (MAC text parse/format, pure,
+tested), `bootplan.h` (Lever-2 boot classification, pure, tested), `identity.h`
 (NodeIdentity). `src/main.cpp`
 is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 `pat`/`bri`/`p0`..`p3` for the recipe, `table` blob on the conductor).
@@ -265,7 +273,7 @@ dimming real shows. Watts are fine; the gating issue is *hours* → daytime slee
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 58 host tests
+pio test -e native                                  # 83 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -488,21 +496,29 @@ runs before `dutyStep` in loop()); (6) static patterns no longer re-render at
 within 5 min of serial activity — **hit Enter on a monitor to revive a quiet
 node's diag** (headless nodes no longer burn ~13 ms/s of UART drain).
 
+**Debt PAID 2026-07-04 (the review-debt session):**
+- ✅ **Field build envs** `field-devkitc` / `field-firebeetle` set
+  `-D HEARTBEAT_LED=0` (see "Build envs" near the top).
+- ✅ **Table rebroadcast stretched** 5 s → 60 s steady-state
+  (`TABLE_INTERVAL_US`), with a **burst** when a REGISTER adds a new MAC to the
+  roster (and `assign` still broadcasts immediately), rate-limited by
+  `TABLE_BURST_SPACING_US` (2 s) so a mass rejoin can't storm the air.
+- ✅ **Host-unreachable logic extracted + tested** (18 new tests, 83 total):
+  `parseMac`/`macStr` → `macaddr.h`; `broadcastTable` chunk math, MSG_TABLE
+  length validation, own-row scan, and the new broadcast-cadence scheduler →
+  `table_wire.h`; the Lever-2 boot classification → `bootplan.h` (the seed now
+  pre-expires `max(dusk, nap)` serial grace, so the old unlabeled
+  `DUSK_SERIAL_GRACE_US > SERIAL_NAP_GRACE_US` invariant is *gone*, not just
+  labeled); the SOLID boot-guard → `patternBootSafe` in `pattern_ids.h`.
+
 **Known debt (deliberate, not yet done):**
-- **Field build must set `-D HEARTBEAT_LED=0`** — the default heartbeat caps
-  every Stage-B nap at 500 ms and burns LED current inside an opaque lantern.
-  Consider a dedicated `field` build env or a runtime NVS toggle before the pilot.
-- **Table rebroadcast every 5 s is wasteful** — stretch steady-state to ~60 s
-  and burst only after `assign`/new-MAC REGISTER.
-- **Host-unreachable logic in main.cpp** (CLAUDE.md rule): the Lever-2 boot
-  classification in setup() (timer-wake seeding — its correctness depends on
-  `DUSK_SERIAL_GRACE_US > SERIAL_NAP_GRACE_US`, an unlabeled invariant),
-  `parseMac`, `broadcastTable` chunk math, MSG_TABLE length validation, and the
-  SOLID boot-guard in `patternConfigLoad` — extract to pure headers + test.
 - Dead wire artifacts: `palette_id` unused, `MSG_ROSTER`/`MSG_ACK` unsent,
   `TableMsg.chunk/chunks` written but never read, roster `fw` can never differ
   from PROTO_VERSION (the version gate rejects stragglers before dispatch — a
   stale-firmware node just vanishes from the roster instead of being flagged).
+  Removing the wire fields would change layout → PROTO_VERSION bump → reflash
+  every board together; fold it into the next deliberate protocol rev instead
+  of doing it standalone.
 
 ### After Milestone 3
 Milestone 4 — battery enclosure + final go/no-go on the **FireBeetle** (lower draw

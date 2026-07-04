@@ -28,8 +28,10 @@
 
 #include "config.h"
 #include "beacon.h"
+#include "bootplan.h"
 #include "dusk.h"
 #include "identity.h"
+#include "macaddr.h"
 #include "napsched.h"
 #include "patterns.h"
 #include "powermon.h"
@@ -37,8 +39,7 @@
 #include "roster.h"
 #include "sync.h"
 #include "table.h"
-
-#include <stddef.h>  // offsetof (table chunk sizing)
+#include "table_wire.h"
 
 // 16x SK6812 RGBW ring. RMT channel 0 with SK6812 timing.
 NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method> strip(LED_COUNT, LED_PIN);
@@ -127,13 +128,6 @@ static LayoutTable  g_table;
 
 static inline bool isConductor() { return g_role == ROLE_CONDUCTOR; }
 
-// Format a MAC into a caller-supplied 18-byte buffer ("AA:BB:CC:DD:EE:FF").
-static const char* macStr(const uint8_t mac[6], char out[18]) {
-  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2],
-           mac[3], mac[4], mac[5]);
-  return out;
-}
-
 static void configLoad() {
   g_prefs.begin("node", /*readonly*/ true);
   g_id.id = g_prefs.getUShort("id", 0);
@@ -194,18 +188,6 @@ static void tableSave() {
   g_prefs.end();
 }
 
-// Parse "AA:BB:CC:DD:EE:FF" (any case) into 6 bytes. Returns false on malformed.
-static bool parseMac(const char* s, uint8_t out[6]) {
-  unsigned v[6];
-  if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
-    return false;
-  for (int i = 0; i < 6; i++) {
-    if (v[i] > 255) return false;
-    out[i] = (uint8_t)v[i];
-  }
-  return true;
-}
-
 // ---- Sync state --------------------------------------------------------------
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
 // so 64-bit fields can't tear across the two contexts.
@@ -230,6 +212,11 @@ static int64_t  g_next_register_us = 0;
 // command). The lock wraps each access, mirroring g_sync_mux around syncOnBeacon.
 static Roster       g_roster;
 static portMUX_TYPE g_roster_mux = portMUX_INITIALIZER_UNLOCKED;
+// Table-burst request: set by the recv callback (under g_roster_mux) when a
+// REGISTER adds a NEW MAC to the roster, consumed by loop() to pull the next
+// table broadcast forward — a fresh node gets its position in seconds instead
+// of waiting out the slow steady-state cadence (TABLE_INTERVAL_US).
+static bool         g_table_burst = false;
 
 // Performer position adopted from a MSG_TABLE row. The recv callback can't write
 // flash, so it stashes the new (x,y) here (under g_sync_mux) and loop() applies +
@@ -247,12 +234,10 @@ static inline int64_t now_us() { return esp_timer_get_time(); }
 // its tuning intact, and this seeds the show-program storage later.
 static void patternConfigLoad() {
   g_prefs.begin("node", /*readonly*/ true);
-  g_beacon.pattern_id = g_prefs.getUShort("pat", patterns::SWEEP);
-  // SOLID (full-white worst case) is a live-only bench pattern, never a show. A
-  // node must not power up rendering it — that would drain the battery on all four
-  // channels — so a persisted SOLID falls back to a safe pattern at boot. `pattern
-  // 3` still works live for a deliberate on-bench measurement.
-  if (g_beacon.pattern_id == patterns::SOLID) g_beacon.pattern_id = patterns::SWEEP;
+  // patternBootSafe (pattern_ids.h, host-tested): a persisted SOLID must not
+  // survive a power-cycle — see its comment.
+  g_beacon.pattern_id =
+      patterns::patternBootSafe(g_prefs.getUShort("pat", patterns::SWEEP));
   g_beacon.brightness = g_prefs.getUChar("bri", 48);
   if (g_beacon.brightness > MAX_BRIGHTNESS) g_beacon.brightness = MAX_BRIGHTNESS;
   g_beacon.params[0] = g_prefs.getUShort("p0", 0);
@@ -317,28 +302,31 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       RegisterMsg r;
       memcpy(&r, data, sizeof(r));
       portENTER_CRITICAL(&g_roster_mux);
+      uint8_t before = g_roster.count;
       rosterUpsert(g_roster, r.mac, r.id, r.fw, now_us());
+      // A count change means a NEW node just appeared (a re-register updates in
+      // place): request a table burst so it gets its position in seconds, not
+      // after a full steady-state interval. loop() consumes the flag.
+      if (g_roster.count != before) g_table_burst = true;
       portEXIT_CRITICAL(&g_roster_mux);
       break;
     }
     case MSG_TABLE: {
       if (isConductor()) return;  // conductor is the source, never adopts
-      if (len < (int)offsetof(TableMsg, rows) || len > (int)sizeof(TableMsg)) return;
+      // Two-step validation (table_wire.h, host-tested): bounds before the
+      // copy, exact length-vs-row-count after it.
+      if (!tableMsgLenPlausible(len)) return;
       TableMsg m;
       memcpy(&m, data, len);
-      if (m.n > TABLE_ROWS_PER_MSG) return;
-      if (len != (int)(offsetof(TableMsg, rows) + (size_t)m.n * sizeof(TableRow)))
-        return;
+      if (!tableMsgLenValid(len, m.n)) return;
       // Find our own row; stash the position for loop() to adopt + persist.
-      for (uint8_t i = 0; i < m.n; i++) {
-        if (memcmp(m.rows[i].mac, g_mac, 6) == 0) {
-          portENTER_CRITICAL(&g_sync_mux);
-          g_pos_pending = true;
-          g_pos_pending_x = m.rows[i].x;
-          g_pos_pending_y = m.rows[i].y;
-          portEXIT_CRITICAL(&g_sync_mux);
-          break;
-        }
+      float px, py;
+      if (tableMsgFindRow(m, g_mac, px, py)) {
+        portENTER_CRITICAL(&g_sync_mux);
+        g_pos_pending = true;
+        g_pos_pending_x = px;
+        g_pos_pending_y = py;
+        portEXIT_CRITICAL(&g_sync_mux);
       }
       break;
     }
@@ -543,27 +531,13 @@ static void drainPowerReports() {
 
 // Conductor: broadcast the authoritative layout table, split into chunks that fit
 // one ESP-NOW payload. Sent occasionally (positions are static); a node hears it,
-// adopts its own row, and caches to NVS.
+// adopts its own row, and caches to NVS. Chunk math lives in table_wire.h
+// (host-tested); this is just the radio call per chunk.
 static void broadcastTable() {
-  if (g_table.count == 0) return;  // nothing to advertise
-  uint8_t chunks = (g_table.count + TABLE_ROWS_PER_MSG - 1) / TABLE_ROWS_PER_MSG;
+  uint8_t chunks = tableChunkCount(g_table.count);  // 0 when table empty
   for (uint8_t c = 0; c < chunks; c++) {
     TableMsg m;
-    m.hdr.magic = BEACON_MAGIC;
-    m.hdr.version = PROTO_VERSION;
-    m.hdr.type = MSG_TABLE;
-    m.chunk = c;
-    m.chunks = chunks;
-    uint8_t start = c * TABLE_ROWS_PER_MSG;
-    uint8_t n = g_table.count - start;
-    if (n > TABLE_ROWS_PER_MSG) n = TABLE_ROWS_PER_MSG;
-    m.n = n;
-    for (uint8_t i = 0; i < n; i++) {
-      memcpy(m.rows[i].mac, g_table.entries[start + i].mac, 6);
-      m.rows[i].x = g_table.entries[start + i].x;
-      m.rows[i].y = g_table.entries[start + i].y;
-    }
-    size_t len = offsetof(TableMsg, rows) + (size_t)n * sizeof(TableRow);
+    size_t len = tableChunkBuild(g_table, c, m);
     esp_now_send(BROADCAST_ADDR, (const uint8_t*)&m, len);
   }
 }
@@ -970,21 +944,22 @@ void setup() {
   uart_set_wakeup_threshold(UART_NUM_0, 3);
   esp_sleep_enable_uart_wakeup(UART_NUM_0);
 
-  // Lever 2 boot classification. A timer wake is a dusk resample rendezvous:
-  // start the detector in "day" (the RTC flag survived the sleep), allow
-  // re-sleep after a short min-awake, and DON'T seed the serial grace — the
-  // node should check light + beacon flag and vanish again in ~10 s. Any other
-  // boot (power-cycle, flash, brownout) is a human: start in "night" (awake),
-  // hold dusk-sleep off for 10 minutes, and seed the serial/nap grace so a
-  // fresh flash always has a responsive provisioning window. This is the
-  // power-cycle-always-wakes guarantee.
+  // Lever 2 boot classification (bootplan.h, host-tested): timer wake = dusk
+  // resample rendezvous (start in "day", short min-awake, serial grace
+  // pre-expired); anything else = a human (start awake in "night", long
+  // hold-off, full provisioning grace — the power-cycle-always-wakes
+  // guarantee). This is pure glue; the reasoning lives in the header.
   int64_t boot = now_us();
   bool timer_wake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
-  duskInit(g_dusk, timer_wake && g_rtc_was_day, boot);
-  g_dusk_earliest_us =
-      boot + (timer_wake ? DUSK_MIN_AWAKE_TIMER_US : DUSK_MIN_AWAKE_COLD_US);
-  if (!timer_wake) g_rtc_was_day = false;
-  g_last_serial_us = timer_wake ? boot - DUSK_SERIAL_GRACE_US - 1 : boot;
+  static const BootPlanConfig BOOT_CFG = {DUSK_MIN_AWAKE_TIMER_US,
+                                          DUSK_MIN_AWAKE_COLD_US,
+                                          DUSK_SERIAL_GRACE_US,
+                                          SERIAL_NAP_GRACE_US};
+  BootPlan plan = bootClassify(timer_wake, g_rtc_was_day, boot, BOOT_CFG);
+  duskInit(g_dusk, plan.dusk_start_day, boot);
+  g_dusk_earliest_us = plan.dusk_earliest_us;
+  g_rtc_was_day = plan.rtc_day_flag;
+  g_last_serial_us = plan.serial_seed_us;
   if (timer_wake)
     Serial.println("[dusk] timer wake — re-sampling daylight + listening for FIELD_AWAKE");
   analogSetPinAttenuation(PIN_LDR, ADC_11db);   // full ~0-3.1V range
@@ -1036,10 +1011,22 @@ void loop() {
       broadcastBeacon();
       next_beacon = t + BEACON_INTERVAL_US;
     }
-    static int64_t next_table = 0;
-    if (t >= next_table) {
+    // Table cadence (table_wire.h, host-tested): slow steady-state rebroadcast,
+    // pulled forward when a new node registers (the burst flag), rate-limited
+    // so a mass rejoin after a conductor reboot can't storm the air. The flag
+    // is only CONSUMED when the scheduler may act on it — a burst landing
+    // inside the hold-off stays pending instead of being dropped.
+    static TableSched table_sched = {0, 0};
+    bool table_burst = false;
+    if (tableSchedBurstReady(table_sched, t)) {
+      portENTER_CRITICAL(&g_roster_mux);
+      table_burst = g_table_burst;
+      g_table_burst = false;
+      portEXIT_CRITICAL(&g_roster_mux);
+    }
+    if (tableSchedDue(table_sched, t, table_burst, TABLE_INTERVAL_US,
+                      TABLE_BURST_SPACING_US)) {
       broadcastTable();
-      next_table = t + TABLE_INTERVAL_US;
     }
     drainPowerReports();  // log performers' MSG_POWER (ungated — overnight audit)
     // A conductor carrying the chip logs its own draw on the same cadence, so a

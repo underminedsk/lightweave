@@ -144,11 +144,19 @@ re-arrange the whole field.
   for the table just as it is for the clock and the pattern recipe.
 - Resilient: a node needs to hear the table only once, then survives on the cache.
 - Cheap: 14 B/node on the wire (`TableRow`) → ~840 B for 60 nodes → ~4 `MSG_TABLE`
-  packets (17 rows each), sent every `TABLE_INTERVAL_US` (positions are static).
+  packets (17 rows each). Steady-state rebroadcast is slow (`TABLE_INTERVAL_US`,
+  60 s — positions are static and cached); the moments that actually need the
+  table travel by **burst** instead: `assign` broadcasts immediately, and a
+  REGISTER from a new MAC pulls the next broadcast forward (rate-limited by
+  `TABLE_BURST_SPACING_US` so a mass rejoin after a conductor reboot can't storm
+  the air).
 
 Implementation: the table logic is the dependency-free, host-tested
-`include/table.h` (`tableSet`/`tableLookup`/`tableRemove`); `main.cpp` owns the NVS
-blob, the chunked broadcast, and the node-side adoption. The conductor edits it
+`include/table.h` (`tableSet`/`tableLookup`/`tableRemove`); the wire side —
+chunk math, receive-side length validation, own-row scan, and the
+broadcast-cadence scheduler — is the equally pure, host-tested
+`include/table_wire.h`; `main.cpp` owns the NVS
+blob, the radio calls, and the node-side adoption. The conductor edits it
 over serial — `assign <mac> <x> <y>`, `table`, `forget <mac>` — and pushes the
 change immediately. A node stashes its row in the recv callback and applies +
 `identitySave()`s it from `loop()` (no flash write in the callback). Verified on
