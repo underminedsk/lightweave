@@ -20,11 +20,14 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
-#include <esp_mac.h>  // esp_read_mac / ESP_MAC_WIFI_STA
+#include <esp_mac.h>    // esp_read_mac / ESP_MAC_WIFI_STA
+#include <esp_sleep.h>  // light-sleep + timer/UART wakeup (Stage B naps)
+#include <driver/uart.h>  // uart_set_wakeup_threshold
 
 #include "config.h"
 #include "beacon.h"
 #include "identity.h"
+#include "napsched.h"
 #include "patterns.h"
 #include "powersave.h"
 #include "roster.h"
@@ -51,6 +54,19 @@ static bool         g_powersave = (POWERSAVE_DEFAULT != 0);
 static bool         g_radio_on  = true;  // radio is powered after radioBegin()
 static DutyCycle    g_duty;
 static const DutyConfig DUTY_CFG = {DUTY_OFF_US, DUTY_LISTEN_US};
+
+// Stage B: CPU light-sleep between work while the radio is off (napsched.h
+// logic, host-tested). g_last_serial_us holds naps off around serial traffic so
+// USB provisioning always wins; the nap counters feed the [nap] diag line —
+// g_napped_us is MEASURED across each sleep (esp_timer delta), so it doubles as
+// the on-hardware check that the clock is compensated across light sleep (if it
+// weren't, slept-time would read ~0 while the nap count climbs, and synced time
+// would visibly stall).
+static const NapConfig NAP_CFG = {NAP_FRAME_US, NAP_MIN_US, NAP_MAX_US,
+                                  SERIAL_NAP_GRACE_US};
+static int64_t  g_last_serial_us = 0;
+static uint32_t g_naps = 0;        // completed light-sleeps
+static int64_t  g_napped_us = 0;   // total time measured asleep
 
 // Conductor's authoritative layout table (table.h logic, host-tested). Declared
 // here so the NVS load/save below can reach it; edited only over serial on the
@@ -428,10 +444,13 @@ static void printDiag() {
       (unsigned long)s.seq_gaps, (unsigned long)s.last_seq);
   if (g_powersave) {
     // windows/missed_windows tell whether the listen window is reliably catching a
-    // beacon — the main risk of the duty-cycle (HANDOFF gotcha #1).
-    Serial.printf("  [duty] radio=%s  windows=%lu  missed=%lu\n",
+    // beacon — the main risk of the duty-cycle (HANDOFF gotcha #1). naps/slept are
+    // Stage B: slept is measured, so slept≈0 with a climbing nap count would mean
+    // esp_timer is NOT compensated across light sleep (the Stage-B hardware risk).
+    Serial.printf("  [duty] radio=%s  windows=%lu  missed=%lu  [nap] n=%lu  slept=%.1fs\n",
                   g_radio_on ? "ON " : "off", (unsigned long)g_duty.windows,
-                  (unsigned long)g_duty.missed_windows);
+                  (unsigned long)g_duty.missed_windows, (unsigned long)g_naps,
+                  (double)g_napped_us / 1e6);
   }
 }
 
@@ -611,6 +630,7 @@ static void handleCommand(char* line) {
 static void pollSerialCommands() {
   static char buf[64];
   static uint8_t len = 0;
+  if (Serial.available()) g_last_serial_us = now_us();  // hold Stage-B naps off
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
@@ -648,6 +668,14 @@ void setup() {
 
   radioBegin();
   dutyInit(g_duty, DUTY_CFG, now_us());  // performer radio duty-cycle (no-op for conductor)
+
+  // Stage B naps: typing on serial wakes a sleeping node (threshold = a few RX
+  // edges, so line noise doesn't), and the wake handler below then holds naps
+  // off for the grace window. Seed the grace from boot so a fresh flash always
+  // has a responsive provisioning window before the first nap.
+  uart_set_wakeup_threshold(UART_NUM_0, 3);
+  esp_sleep_enable_uart_wakeup(UART_NUM_0);
+  g_last_serial_us = now_us();
 }
 
 void loop() {
@@ -712,5 +740,42 @@ void loop() {
     next_diag = t + DIAG_INTERVAL_US;
   }
 
-  delay(16);  // ~60 fps render cap; keeps the CPU mostly idle for modem-sleep
+  // Stage B: while the radio is off (performer, powersave on), light-sleep until
+  // the next real deadline instead of spinning delay(16) — the CPU floor is the
+  // biggest constant draw after Stage A. napPlan (host-tested) picks the length;
+  // 0 means "stay awake" (radio on, serial grace, or nothing worth sleeping for).
+  int64_t nap = 0;
+  if (!isConductor() && g_powersave) {
+    NapInputs in;
+    in.now_us = now_us();
+    in.synced_us = syncedTime(s, in.now_us);
+    in.radio_on = g_radio_on;
+    in.radio_change_at_us = g_duty.change_at_us;
+    in.pattern_static = patterns::patternIsStatic(b.pattern_id);
+    in.last_serial_us = g_last_serial_us;
+    in.heartbeat_half_us = HEARTBEAT_LED ? HEARTBEAT_HALF_US : 0;
+    nap = napPlan(NAP_CFG, in);
+  }
+  if (nap > 0) {
+    // The RMT transfer from strip.Show() runs in the background — sleeping mid-
+    // frame would truncate it and glitch the pixels, so wait for it to finish
+    // (16 RGBW pixels ≈ 0.7 ms, a bounded wait). Same for the UART TX FIFO:
+    // light sleep drops chars still shifting out, garbling the diag lines.
+    while (!strip.CanShow()) delayMicroseconds(50);
+    Serial.flush();
+    int64_t before = now_us();
+    esp_sleep_enable_timer_wakeup((uint64_t)nap);
+    esp_light_sleep_start();
+    g_naps++;
+    g_napped_us += now_us() - before;  // measured, not requested (see NAP_CFG note)
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART) {
+      // Someone's typing: hold naps off for the grace window so the next chars
+      // land. (The waking keystroke itself is consumed by the wake — hit Enter
+      // once, then type commands normally.)
+      g_last_serial_us = now_us();
+      Serial.println("[nap] UART wake — naps held off for provisioning");
+    }
+  } else {
+    delay(16);  // ~60 fps render cap; keeps the CPU mostly idle for modem-sleep
+  }
 }

@@ -264,8 +264,33 @@ wall-powered; gate all of this on `role == performer`.
   worth doing: widening `DUTY_OFF_US` (4 s → 8 s/60 s) — at 13% duty we already
   removed ~30 of the ~34 mA radio term, so a 60 s wake saves only ~4 mA more while
   multiplying recipe-update latency. Diminishing returns; leave it at 4 s.
-- **Stage B — cut the CPU floor (now the biggest constant term).** Two flavors,
-  gated on whether the current scene is animated:
+- **Stage B — cut the CPU floor (now the biggest constant term). 🛠 CODE-COMPLETE
+  (2026-07-03), host-tested (48 native tests green), both device envs build —
+  NOT yet hardware-verified or measured.** What landed: `include/napsched.h`
+  (pure `napPlan()` — how long may the CPU light-sleep right now; 9 host tests)
+  + `include/pattern_ids.h` (PatternId enum extracted from Arduino-bound
+  patterns.h so `patternIsStatic` is host-reachable) + glue in `main.cpp`
+  (replaces the `delay(16)` loop tail). Behavior: naps happen only on a
+  performer with `powersave on` and **only while the radio is already off**
+  (never into a listen window); a nap ends at the earliest of the next radio
+  duty transition, the next ~30 fps frame (animated patterns only — GLOW/SOLID
+  skip this and sleep clear through), the next heartbeat edge (keeps the GPIO2
+  sync blink square), or a 1 s safety cap. Serial safety: any serial byte holds
+  naps off for 30 s, a UART wakeup (typing at a sleeping node — hit Enter once,
+  then type) does the same, and boot seeds the grace so a fresh flash has a
+  provisioning window. Glue details: waits for the RMT LED transfer +
+  `Serial.flush()` before sleeping (sleep truncates both), knobs in config.h
+  (`NAP_*`, `SERIAL_NAP_GRACE_US`).
+  **Bench checklist for the next hardware session:** (1) `[nap]` diag —
+  `slept` should track wall time (measured via esp_timer delta; **slept≈0 with a
+  climbing nap count means esp_timer is NOT compensated across light sleep**,
+  the known Stage-B risk — fix would be adding slept RTC time back); (2) sync
+  must stay `LOCKED`, `missed=0`, offset stable across naps; (3) heartbeat still
+  square @ 1 Hz; (4) serial: confirm Enter-then-type works on a napping node;
+  (5) re-measure the 12 V USB-disconnected draw on GLOW — expect the ~50 mA
+  CPU floor to drop meaningfully; compare `powersave on` vs `off`.
+  Original design notes (kept for context) — two flavors, gated on whether the
+  current scene is animated:
   - **Animated patterns (pulse/sweep/drift):** CPU must re-render ~20–30 Hz, so the
     play is **light-sleep between rendered frames**. SK6812 latch their last color,
     so LEDs hold during the nap. Harder part: verify whether `esp_timer`/systimer

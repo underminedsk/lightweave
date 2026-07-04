@@ -9,6 +9,8 @@
 #include <unity.h>
 
 #include "sync.h"
+#include "napsched.h"
+#include "pattern_ids.h"
 #include "pattern_math.h"
 #include "powersave.h"
 #include "roster.h"
@@ -516,6 +518,105 @@ void test_duty_note_beacon_ignored_while_off() {
   TEST_ASSERT_FALSE(d.caught);
 }
 
+// ---- Stage B nap scheduler (CPU light-sleep between work) ---------------------
+
+// Config used throughout: 30fps frames, 5ms floor, 1s cap, 30s serial grace.
+static const NapConfig NAPC = {33'333, 5'000, 1'000'000, 30'000'000};
+
+// Baseline inputs: radio off with the next wake far away, static pattern, serial
+// long quiet, heartbeat disabled. Tests override single fields from here.
+static NapInputs napBase(int64_t now) {
+  NapInputs in;
+  in.now_us = now;
+  in.synced_us = now;
+  in.radio_on = false;
+  in.radio_change_at_us = now + 4'000'000;
+  in.pattern_static = true;
+  in.last_serial_us = now - 60'000'000;
+  in.heartbeat_half_us = 0;
+  return in;
+}
+
+// A listen window needs RX hot the whole time — never nap while the radio is on.
+void test_nap_never_while_radio_on() {
+  NapInputs in = napBase(1'000'000);
+  in.radio_on = true;
+  TEST_ASSERT_EQUAL_INT64(0, napPlan(NAPC, in));
+}
+
+// Serial traffic within the grace window blocks naps (light sleep drops UART
+// chars; a human provisioning over USB must win over power).
+void test_nap_never_during_serial_grace() {
+  NapInputs in = napBase(1'000'000);
+  in.last_serial_us = in.now_us - 1'000'000;  // typed 1s ago, grace is 30s
+  TEST_ASSERT_EQUAL_INT64(0, napPlan(NAPC, in));
+  in.last_serial_us = in.now_us - 31'000'000;  // grace expired
+  TEST_ASSERT_TRUE(napPlan(NAPC, in) > 0);
+}
+
+// Static pattern, nothing sooner: nap runs to the safety cap, not to the (later)
+// radio wake — no math bug may sleep a node unboundedly.
+void test_nap_static_hits_safety_cap() {
+  NapInputs in = napBase(1'000'000);  // radio wake 4s out, cap 1s
+  TEST_ASSERT_EQUAL_INT64(1'000'000, napPlan(NAPC, in));
+}
+
+// The next radio wake bounds the nap when it's sooner than the cap: the listen
+// window must never be slept through.
+void test_nap_ends_at_radio_wake() {
+  NapInputs in = napBase(1'000'000);
+  in.radio_change_at_us = in.now_us + 200'000;
+  TEST_ASSERT_EQUAL_INT64(200'000, napPlan(NAPC, in));
+}
+
+// Animated f(x,y,t) must re-render at frame cadence, so naps cap at one frame.
+void test_nap_animated_caps_at_frame() {
+  NapInputs in = napBase(1'000'000);
+  in.pattern_static = false;
+  TEST_ASSERT_EQUAL_INT64(33'333, napPlan(NAPC, in));
+}
+
+// With the heartbeat enabled, naps end at the next heartbeat edge (on the synced
+// clock) so the zero-wiring sync blink stays square.
+void test_nap_ends_at_heartbeat_edge() {
+  NapInputs in = napBase(1'000'000);
+  in.heartbeat_half_us = 500'000;
+  in.synced_us = 1'234'567;  // mid-phase: 234'567 into the half-period
+  TEST_ASSERT_EQUAL_INT64(500'000 - 234'567, napPlan(NAPC, in));
+  // Exactly ON an edge: the NEXT edge is a full half-period away, never 0.
+  in.synced_us = 1'500'000;
+  TEST_ASSERT_EQUAL_INT64(500'000, napPlan(NAPC, in));
+}
+
+// Synced time can be briefly negative right after boot (offset lock). The edge
+// math must still yield a delta in (0, half] — floored, not truncated, division.
+void test_nap_heartbeat_edge_on_negative_synced_time() {
+  NapInputs in = napBase(1'000'000);
+  in.heartbeat_half_us = 500'000;
+  in.synced_us = -100'000;  // 400'000 into the [-500'000, 0) half-period
+  TEST_ASSERT_EQUAL_INT64(100'000, napPlan(NAPC, in));
+}
+
+// Naps shorter than the floor aren't worth the sleep/wake transition.
+void test_nap_skips_tiny_naps() {
+  NapInputs in = napBase(1'000'000);
+  in.radio_change_at_us = in.now_us + 2'000;  // wake due in 2ms, floor is 5ms
+  TEST_ASSERT_EQUAL_INT64(0, napPlan(NAPC, in));
+  in.radio_change_at_us = in.now_us - 1;  // transition overdue: stay awake
+  TEST_ASSERT_EQUAL_INT64(0, napPlan(NAPC, in));
+}
+
+// SOLID and GLOW have no time term (LEDs latch, no re-render needed); everything
+// else animates. Unknown future ids must read as animated — the safe direction.
+void test_pattern_static_ids() {
+  TEST_ASSERT_TRUE(patterns::patternIsStatic(patterns::SOLID));
+  TEST_ASSERT_TRUE(patterns::patternIsStatic(patterns::GLOW));
+  TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::PULSE));
+  TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::PALETTE_DRIFT));
+  TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::SWEEP));
+  TEST_ASSERT_FALSE(patterns::patternIsStatic(999));  // unknown => animated
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -559,5 +660,14 @@ int main(int, char**) {
   RUN_TEST(test_duty_sleeps_after_catch_then_wakes);
   RUN_TEST(test_duty_sleeps_even_when_window_misses_after_acquire);
   RUN_TEST(test_duty_note_beacon_ignored_while_off);
+  RUN_TEST(test_nap_never_while_radio_on);
+  RUN_TEST(test_nap_never_during_serial_grace);
+  RUN_TEST(test_nap_static_hits_safety_cap);
+  RUN_TEST(test_nap_ends_at_radio_wake);
+  RUN_TEST(test_nap_animated_caps_at_frame);
+  RUN_TEST(test_nap_ends_at_heartbeat_edge);
+  RUN_TEST(test_nap_heartbeat_edge_on_negative_synced_time);
+  RUN_TEST(test_nap_skips_tiny_naps);
+  RUN_TEST(test_pattern_static_ids);
   return UNITY_END();
 }

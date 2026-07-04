@@ -7,19 +7,10 @@
 #include <NeoPixelBus.h>
 
 #include "beacon.h"
+#include "pattern_ids.h"  // PatternId enum + patternIsStatic (dependency-free)
 #include "pattern_math.h"
 
 namespace patterns {
-
-enum PatternId : uint16_t {
-  PULSE = 0,         // uniform slow breathing pulse (all nodes in unison)
-  PALETTE_DRIFT = 1, // smooth rainbow hue cycle (optionally traveling by position)
-  SWEEP = 2,         // brightness wave that travels across the field by position
-  SOLID = 3,         // every pixel full RGBW at `brightness` — the worst-case
-                     // power draw, for bench-measuring the per-node ceiling
-  GLOW = 4           // steady solid color at a fixed hue (no time term): the
-                     // field holds one calm warm color, flat (non-pulsing) draw
-};
 
 // Uniform breathing pulse in the white channel — every node in unison.
 inline RgbwColor pulse(int64_t synced_us, uint8_t brightness) {

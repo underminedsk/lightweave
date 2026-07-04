@@ -102,6 +102,21 @@ static constexpr int64_t TABLE_INTERVAL_US = 5000000;  // 5s
 static constexpr int64_t DUTY_OFF_US    = 4000000;  // 4s radio off between listens
 static constexpr int64_t DUTY_LISTEN_US = 600000;   // 600ms listen window
 
+// ---- Performer CPU light-sleep (Milestone 3, Lever 1, Stage B) ---------------
+// While the radio is off (Stage A above), the CPU light-sleeps between the
+// moments it has real work instead of spinning delay(16): until the next
+// animation frame on animated patterns, or clear to the next radio window /
+// heartbeat edge on static ones (GLOW — SK6812s latch, so nothing needs the
+// CPU). Decision logic is the dependency-free, host-tested include/napsched.h;
+// main.cpp owns esp_light_sleep_start(). Gated on the same `powersave` toggle
+// as Stage A (naps only ever happen inside radio-off spans, which only exist
+// when powersave is on). Serial traffic (or a UART wakeup) holds naps off for a
+// grace window so USB provisioning always wins over power.
+static constexpr int64_t NAP_FRAME_US        = 33333;     // ~30 fps animated render
+static constexpr int64_t NAP_MIN_US          = 5000;      // shorter isn't worth it
+static constexpr int64_t NAP_MAX_US          = 1000000;   // safety cap per nap
+static constexpr int64_t SERIAL_NAP_GRACE_US = 30000000;  // 30 s after serial traffic
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s
