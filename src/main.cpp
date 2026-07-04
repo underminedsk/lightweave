@@ -212,11 +212,20 @@ static int64_t  g_next_register_us = 0;
 // command). The lock wraps each access, mirroring g_sync_mux around syncOnBeacon.
 static Roster       g_roster;
 static portMUX_TYPE g_roster_mux = portMUX_INITIALIZER_UNLOCKED;
-// Table-burst request: set by the recv callback (under g_roster_mux) when a
-// REGISTER adds a NEW MAC to the roster, consumed by loop() to pull the next
-// table broadcast forward — a fresh node gets its position in seconds instead
-// of waiting out the slow steady-state cadence (TABLE_INTERVAL_US).
-static bool         g_table_burst = false;
+// Row-reply requests: the recv callback stashes the MAC of a REGISTER that
+// earns an immediate single-row table reply (tableRowReplyWanted — new to the
+// roster or unprovisioned), and loop() drains + broadcasts the rows. Same
+// stash-under-lock/drain-in-loop shape as the power-report queue: no radio
+// work in the callback. Written under g_roster_mux (the REGISTER path already
+// holds it). Overflow just drops the request — the node's next REGISTER (10 s)
+// retries it, so nothing is permanently lost.
+static constexpr uint8_t ROWREQ_MAX = 8;
+static uint8_t      g_rowreq[ROWREQ_MAX][6];
+static volatile uint8_t g_rowreq_n = 0;
+// Next steady-state table broadcast. File-scope (not a loop-local static) so
+// the `role` command can zero it: a re-promoted conductor must advertise the
+// table immediately, not resume a stale schedule up to 60 s in the future.
+static int64_t      g_next_table_us = 0;
 
 // Performer position adopted from a MSG_TABLE row. The recv callback can't write
 // flash, so it stashes the new (x,y) here (under g_sync_mux) and loop() applies +
@@ -302,12 +311,18 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       RegisterMsg r;
       memcpy(&r, data, sizeof(r));
       portENTER_CRITICAL(&g_roster_mux);
-      uint8_t before = g_roster.count;
+      // Known-ness is checked BEFORE the upsert so a full roster (which drops
+      // the insert without a count change) can't mask a new node.
+      bool known = rosterFind(g_roster, r.mac) >= 0;
       rosterUpsert(g_roster, r.mac, r.id, r.fw, now_us());
-      // A count change means a NEW node just appeared (a re-register updates in
-      // place): request a table burst so it gets its position in seconds, not
-      // after a full steady-state interval. loop() consumes the flag.
-      if (g_roster.count != before) g_table_burst = true;
+      // A first-join or unprovisioned node needs its table row NOW — its radio
+      // is provably on (it just transmitted), and the 60 s steady-state
+      // rebroadcast is a lottery through the ~13% radio duty cycle. Stash the
+      // MAC; loop() replies with just its row (tableRowBuild).
+      if (tableRowReplyWanted(known, r.id) && g_rowreq_n < ROWREQ_MAX) {
+        memcpy(g_rowreq[g_rowreq_n], r.mac, 6);
+        g_rowreq_n = g_rowreq_n + 1;
+      }
       portEXIT_CRITICAL(&g_roster_mux);
       break;
     }
@@ -769,9 +784,12 @@ static void handleCommand(char* line) {
       // the radio up to beacon, and a (re-)performer must not resume a stale
       // duty schedule (frozen change_at_us => spurious instant sleep). Bringing
       // the radio up and re-initing the duty machine covers both directions;
-      // dutyInit assumes a powered radio, so order matters.
+      // dutyInit assumes a powered radio, so order matters. The table schedule
+      // resets too: a (re-)promoted conductor advertises immediately instead
+      // of resuming a schedule frozen up to 60 s in the future.
       if (!g_radio_on) radioWake();
       dutyInit(g_duty, DUTY_CFG, now_us());
+      g_next_table_us = 0;
       printInfo();
     }
   } else if (!strcmp(cmd, "id")) {
@@ -1011,22 +1029,31 @@ void loop() {
       broadcastBeacon();
       next_beacon = t + BEACON_INTERVAL_US;
     }
-    // Table cadence (table_wire.h, host-tested): slow steady-state rebroadcast,
-    // pulled forward when a new node registers (the burst flag), rate-limited
-    // so a mass rejoin after a conductor reboot can't storm the air. The flag
-    // is only CONSUMED when the scheduler may act on it — a burst landing
-    // inside the hold-off stays pending instead of being dropped.
-    static TableSched table_sched = {0, 0};
-    bool table_burst = false;
-    if (tableSchedBurstReady(table_sched, t)) {
-      portENTER_CRITICAL(&g_roster_mux);
-      table_burst = g_table_burst;
-      g_table_burst = false;
-      portEXIT_CRITICAL(&g_roster_mux);
-    }
-    if (tableSchedDue(table_sched, t, table_burst, TABLE_INTERVAL_US,
-                      TABLE_BURST_SPACING_US)) {
+    // Slow steady-state table rebroadcast — a backstop only; targeted delivery
+    // happens via the row replies below and `assign`'s immediate broadcast.
+    if (t >= g_next_table_us) {
       broadcastTable();
+      g_next_table_us = t + TABLE_INTERVAL_US;
+    }
+    // Row replies: answer each queued first-join/unprovisioned REGISTER with
+    // just that node's row, while its radio is still up (it transmitted
+    // moments ago). The volatile pre-check keeps the ~60 Hz loop from taking
+    // the spinlock when the queue is empty (nearly always); at worst a request
+    // is seen one 16 ms pass late.
+    if (g_rowreq_n) {
+      uint8_t req[ROWREQ_MAX][6];
+      uint8_t n;
+      portENTER_CRITICAL(&g_roster_mux);
+      n = g_rowreq_n;
+      if (n) memcpy(req, g_rowreq, sizeof(uint8_t) * 6 * n);
+      g_rowreq_n = 0;
+      portEXIT_CRITICAL(&g_roster_mux);
+      for (uint8_t i = 0; i < n; i++) {
+        TableMsg m;
+        size_t len = tableRowBuild(g_table, req[i], m);
+        if (len) esp_now_send(BROADCAST_ADDR, (const uint8_t*)&m, len);
+        // len == 0: no row assigned yet — `assign` broadcasts when there is.
+      }
     }
     drainPowerReports();  // log performers' MSG_POWER (ungated — overnight audit)
     // A conductor carrying the chip logs its own draw on the same cadence, so a

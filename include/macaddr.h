@@ -10,11 +10,19 @@
 #include <stdio.h>
 
 // Parse "AA:BB:CC:DD:EE:FF" (any case) into 6 bytes. Returns false on anything
-// malformed: too few groups, a non-hex group, or a group value above 0xFF.
+// malformed: too few groups, a non-hex group, a group value above 0xFF, or
+// trailing characters after the sixth group (a pasted EUI-64 or concatenated
+// string must be rejected whole, never silently truncated to its prefix MAC —
+// that would move the wrong lantern). The %n + terminator check enforces the
+// full-token match; sscanf alone stops at the sixth conversion and ignores the
+// rest.
 inline bool parseMac(const char* s, uint8_t out[6]) {
   unsigned v[6];
-  if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+  int used = 0;
+  if (sscanf(s, "%x:%x:%x:%x:%x:%x%n", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+             &used) != 6)
     return false;
+  if (s[used] != '\0') return false;
   for (int i = 0; i < 6; i++) {
     if (v[i] > 255) return false;
     out[i] = (uint8_t)v[i];

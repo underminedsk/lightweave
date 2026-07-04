@@ -898,6 +898,17 @@ void test_mac_parse_rejects_malformed() {
   TEST_ASSERT_FALSE(parseMac("GG:94:DF:57:7F:14", m));    // non-hex group
 }
 
+// Trailing input after the sixth group must reject the WHOLE token — silently
+// truncating a pasted EUI-64 to its prefix would assign/forget the wrong
+// lantern (sscanf alone stops at the sixth conversion and would accept these).
+void test_mac_parse_rejects_trailing_garbage() {
+  uint8_t m[6];
+  TEST_ASSERT_FALSE(parseMac("8C:94:DF:57:7F:14:22:31", m));  // EUI-64 paste
+  TEST_ASSERT_FALSE(parseMac("8C:94:DF:57:7F:14zz", m));      // junk suffix
+  TEST_ASSERT_FALSE(parseMac("8C:94:DF:57:7F:14 ", m));       // trailing space
+  TEST_ASSERT_TRUE(parseMac("8C:94:DF:57:7F:14", m));         // clean still parses
+}
+
 void test_mac_parse_rejects_out_of_range_group() {
   uint8_t m[6];
   TEST_ASSERT_FALSE(parseMac("1FF:94:DF:57:7F:14", m));   // group > 0xFF
@@ -1041,44 +1052,52 @@ void test_table_msg_find_row() {
   TEST_ASSERT_FALSE(tableMsgFindRow(m, absent, x, y));
 }
 
-// ---- Table broadcast cadence (table_wire.h) -------------------------------------
-// Steady-state is slow (positions are static, nodes cache them in NVS); a new
-// node registering pulls the next broadcast forward; a mass rejoin after a
-// conductor reboot is rate-limited by the minimum spacing.
+// ---- Targeted row reply (table_wire.h) -------------------------------------
+// A REGISTER is the one moment the conductor knows the sender's radio is on,
+// so a node that needs its position gets a single-row reply right then —
+// deterministic delivery instead of the 60 s broadcast lottery through the
+// ~13% radio duty cycle.
 
-void test_table_sched_first_immediate_then_interval() {
-  TableSched s = {0, 0};
-  const int64_t I = 60 * S, SP = 2 * S;
-  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));   // boot: advertise now
-  TEST_ASSERT_FALSE(tableSchedDue(s, 30 * S, false, I, SP));
-  TEST_ASSERT_FALSE(tableSchedDue(s, I - 1, false, I, SP));
-  TEST_ASSERT_TRUE(tableSchedDue(s, I, false, I, SP));   // steady cadence
+void test_table_row_reply_wanted() {
+  // First join since conductor boot (or a full roster dropped the insert —
+  // known-ness is computed BEFORE the upsert, so full can't mask new).
+  TEST_ASSERT_TRUE(tableRowReplyWanted(/*mac_known*/ false, /*id*/ 7));
+  // Unprovisioned (id 0): fresh flash / erase_flash recovery — its NVS
+  // position cache is gone even though the conductor has seen the MAC.
+  TEST_ASSERT_TRUE(tableRowReplyWanted(true, 0));
+  // Known + provisioned re-register (every 10 s, all night): no reply —
+  // steady state costs zero table traffic.
+  TEST_ASSERT_FALSE(tableRowReplyWanted(true, 7));
 }
 
-void test_table_sched_burst_pulls_forward() {
-  TableSched s = {0, 0};
-  const int64_t I = 60 * S, SP = 2 * S;
-  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));
-  // New node at t=10s: burst fires immediately (spacing long since satisfied)…
-  TEST_ASSERT_TRUE(tableSchedBurstReady(s, 10 * S));
-  TEST_ASSERT_TRUE(tableSchedDue(s, 10 * S, true, I, SP));
-  // …and resets the steady-state clock: next periodic send is a full interval out.
-  TEST_ASSERT_FALSE(tableSchedDue(s, 60 * S, false, I, SP));
-  TEST_ASSERT_TRUE(tableSchedDue(s, 10 * S + I, false, I, SP));
-}
+void test_table_row_build() {
+  LayoutTable t;
+  tableInit(t);
+  uint8_t a[6], b[6], absent[6];
+  macN(a, 1);
+  macN(b, 2);
+  macN(absent, 99);
+  tableSet(t, a, 1.0f, 2.0f);
+  tableSet(t, b, -7.5f, 0.25f);
 
-void test_table_sched_burst_respects_spacing_without_losing_it() {
-  TableSched s = {0, 0};
-  const int64_t I = 60 * S, SP = 2 * S;
-  TEST_ASSERT_TRUE(tableSchedDue(s, 0, false, I, SP));
-  // A second new node lands right after the burst above. Inside the hold-off
-  // the caller must NOT consume the flag (burstReady false)…
-  bool pending = true;
-  TEST_ASSERT_FALSE(tableSchedBurstReady(s, 1 * S));
-  TEST_ASSERT_FALSE(tableSchedDue(s, 1 * S, false, I, SP));  // flag left pending
-  // …so when the hold-off expires the burst still fires — deferred, not dropped.
-  TEST_ASSERT_TRUE(tableSchedBurstReady(s, 2 * S));
-  TEST_ASSERT_TRUE(tableSchedDue(s, 2 * S, pending, I, SP));
+  TableMsg m;
+  size_t len = tableRowBuild(t, b, m);
+  TEST_ASSERT_EQUAL_size_t(tableMsgWireLen(1), len);  // 23 B on the wire
+  TEST_ASSERT_EQUAL_UINT32(BEACON_MAGIC, m.hdr.magic);
+  TEST_ASSERT_EQUAL_UINT8(PROTO_VERSION, m.hdr.version);
+  TEST_ASSERT_EQUAL_UINT8(MSG_TABLE, m.hdr.type);
+  TEST_ASSERT_EQUAL_UINT8(1, m.n);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(b, m.rows[0].mac, 6);
+  TEST_ASSERT_EQUAL_FLOAT(-7.5f, m.rows[0].x);
+  TEST_ASSERT_EQUAL_FLOAT(0.25f, m.rows[0].y);
+  // The receiver-side path accepts it end to end: length gates + own-row scan.
+  TEST_ASSERT_TRUE(tableMsgLenPlausible((int)len));
+  TEST_ASSERT_TRUE(tableMsgLenValid((int)len, m.n));
+  float x = 0, y = 0;
+  TEST_ASSERT_TRUE(tableMsgFindRow(m, b, x, y));
+  TEST_ASSERT_EQUAL_FLOAT(-7.5f, x);
+  // No row assigned yet: nothing to say (assign broadcasts when there is).
+  TEST_ASSERT_EQUAL_size_t(0, tableRowBuild(t, absent, m));
 }
 
 // ---- Boot classification (bootplan.h) --------------------------------------------
@@ -1203,6 +1222,7 @@ int main(int, char**) {
   RUN_TEST(test_power_sched_defers_while_cannot_send_no_burst);
   RUN_TEST(test_mac_parse_valid_any_case);
   RUN_TEST(test_mac_parse_rejects_malformed);
+  RUN_TEST(test_mac_parse_rejects_trailing_garbage);
   RUN_TEST(test_mac_parse_rejects_out_of_range_group);
   RUN_TEST(test_mac_format_roundtrip);
   RUN_TEST(test_pattern_boot_safe);
@@ -1212,9 +1232,8 @@ int main(int, char**) {
   RUN_TEST(test_table_chunk_build_splits_across_chunks);
   RUN_TEST(test_table_msg_len_validation);
   RUN_TEST(test_table_msg_find_row);
-  RUN_TEST(test_table_sched_first_immediate_then_interval);
-  RUN_TEST(test_table_sched_burst_pulls_forward);
-  RUN_TEST(test_table_sched_burst_respects_spacing_without_losing_it);
+  RUN_TEST(test_table_row_reply_wanted);
+  RUN_TEST(test_table_row_build);
   RUN_TEST(test_boot_cold_boot_is_awake_and_provisionable);
   RUN_TEST(test_boot_timer_wake_resamples_quickly);
   RUN_TEST(test_boot_timer_wake_without_day_flag_fails_awake);

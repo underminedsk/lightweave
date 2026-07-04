@@ -43,9 +43,11 @@ struct DutyCycle {
   uint32_t missed_windows;  // of those, how many ended catching no beacon
 };
 
-// Start in the ON state, listening, so a node locks (and adopts its table
-// position) before it ever sleeps — the "battery swap looks like a single blink"
-// guarantee. The radio is assumed already powered by the caller's initial setup.
+// Start in the ON state, listening, so a node locks before it ever sleeps —
+// the "battery swap looks like a single blink" guarantee. (Its table position
+// survives in NVS across the swap; a node that lacks one gets a targeted row
+// reply to its first REGISTER, which also happens before the first sleep — see
+// table_wire.h.) The radio is assumed already powered by the caller's setup.
 inline void dutyInit(DutyCycle& d, const DutyConfig& c, int64_t now_us) {
   d.radio_on = true;
   d.ever_caught = false;

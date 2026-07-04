@@ -144,19 +144,25 @@ re-arrange the whole field.
   for the table just as it is for the clock and the pattern recipe.
 - Resilient: a node needs to hear the table only once, then survives on the cache.
 - Cheap: 14 B/node on the wire (`TableRow`) → ~840 B for 60 nodes → ~4 `MSG_TABLE`
-  packets (17 rows each). Steady-state rebroadcast is slow (`TABLE_INTERVAL_US`,
-  60 s — positions are static and cached); the moments that actually need the
-  table travel by **burst** instead: `assign` broadcasts immediately, and a
-  REGISTER from a new MAC pulls the next broadcast forward (rate-limited by
-  `TABLE_BURST_SPACING_US` so a mass rejoin after a conductor reboot can't storm
-  the air).
+  packets (17 rows each). Steady-state rebroadcast is a slow backstop
+  (`TABLE_INTERVAL_US`, 60 s — positions are static and cached in NVS); the
+  moments that actually need the table travel out of band: `assign` broadcasts
+  the full table immediately, and a REGISTER from a node that is **new to the
+  roster or unprovisioned (id 0)** gets an immediate **single-row reply**
+  (23 B). The row reply is the delivery guarantee under radio duty-cycling: a
+  REGISTER is the one moment the conductor provably knows that node's radio is
+  on (TX is gated on radio-up), so the reply lands inside the sender's open
+  listen window instead of playing the ~13%-per-broadcast lottery, and a missed
+  reply is retried for free by the node's next REGISTER (10 s). Steady state
+  (all nodes known + provisioned) costs zero table traffic beyond the backstop.
 
 Implementation: the table logic is the dependency-free, host-tested
 `include/table.h` (`tableSet`/`tableLookup`/`tableRemove`); the wire side —
-chunk math, receive-side length validation, own-row scan, and the
-broadcast-cadence scheduler — is the equally pure, host-tested
-`include/table_wire.h`; `main.cpp` owns the NVS
-blob, the radio calls, and the node-side adoption. The conductor edits it
+chunk math, receive-side length validation, own-row scan, and the row-reply
+decision + builder (`tableRowReplyWanted`/`tableRowBuild`) — is the equally
+pure, host-tested `include/table_wire.h`; `main.cpp` owns the NVS
+blob, the radio calls, the reply queue (stash in the recv callback, drain in
+`loop()` — same shape as the power-report queue), and the node-side adoption. The conductor edits it
 over serial — `assign <mac> <x> <y>`, `table`, `forget <mac>` — and pushes the
 change immediately. A node stashes its row in the recv callback and applies +
 `identitySave()`s it from `loop()` (no flash write in the callback). Verified on

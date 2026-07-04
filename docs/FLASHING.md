@@ -150,10 +150,18 @@ and a flashed board still blinks its GPIO2 LED.
 
 | Env | Target |
 |---|---|
-| `devkitc` | DOIT ESP32 DevKit V1 (`esp32dev`) |
-| `firebeetle` | FireBeetle 2 ESP32-E |
+| `devkitc` | DOIT ESP32 DevKit V1 (`esp32dev`) — bench (heartbeat LED on) |
+| `firebeetle` | FireBeetle 2 ESP32-E — bench (heartbeat LED on) |
+| `field-devkitc` | DevKit V1 **for deployment** (`-D HEARTBEAT_LED=0`) |
+| `field-firebeetle` | FireBeetle 2 **for deployment** (`-D HEARTBEAT_LED=0`) |
 | `native` | host unit tests (`pio test -e native`) |
 
 One image per board; **role is set at runtime** over serial (`role
 conductor|performer`, default performer). Multi-board setup = flash everywhere,
 then set exactly one node to `role conductor`.
+
+**Bench vs field:** the `field-*` envs are identical except the onboard
+heartbeat LED is compiled out — inside an opaque lantern it is invisible, burns
+LED current all night, and caps every Stage-B nap at 500 ms. Flash `field-*`
+onto anything that ships to the field; keep the bench envs for desk work (the
+GPIO2 blink is the zero-wiring sync check).

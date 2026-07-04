@@ -7,10 +7,8 @@
 //     chunk (header, indices, rows, exact wire length);
 //   - receiver side: validating a chunk's length against its declared row
 //     count BEFORE trusting it, and scanning it for this node's own row;
-//   - cadence: positions are static, so steady-state rebroadcast is slow
-//     (TABLE_INTERVAL_US); a burst request (new node registered, `assign`)
-//     pulls the next broadcast forward, rate-limited by a minimum spacing so
-//     a mass rejoin after a conductor reboot can't turn into a packet storm.
+//   - targeted delivery: deciding when a REGISTER earns an immediate
+//     single-row reply, and building that reply (see the section comment).
 // Dependency-free beyond sibling pure headers; main.cpp owns the radio calls.
 #pragma once
 
@@ -89,30 +87,47 @@ inline bool tableMsgFindRow(const TableMsg& m, const uint8_t mac[6], float& x,
   return false;
 }
 
-// ---- Broadcast cadence ------------------------------------------------------
+// ---- Targeted row reply -----------------------------------------------------
+// The steady-state rebroadcast is slow (TABLE_INTERVAL_US, 60 s) because nodes
+// cache their position in NVS — but a node that LACKS its position (first join,
+// erase_flash recovery) must not wait out that cadence through a ~13% radio
+// duty cycle. A REGISTER is the one moment the conductor provably knows the
+// sender's radio is on RIGHT NOW (TX is gated on radio-up), so the fix is a
+// targeted reply: broadcast just that node's row (23 B) immediately. Any
+// single broadcast the node missed is retried for free by its next REGISTER
+// (10 s cadence), so delivery needs no scheduler, no burst flag, and no
+// rate-limit machinery.
 
-// Steady-state rebroadcast every interval; a burst request (new node in the
-// roster) pulls the next broadcast forward but never violates the minimum
-// spacing. Zero-init ({0, 0}) makes the first check due immediately, so a
-// freshly booted conductor advertises the table right away.
-struct TableSched {
-  int64_t next_us;      // next steady-state broadcast
-  int64_t earliest_us;  // hold-off: no broadcast (even a burst) before this
-};
-
-// May a pending burst request be consumed right now? While this returns false
-// the caller must LEAVE the request flagged, so the burst fires when the
-// hold-off expires instead of being silently dropped.
-inline bool tableSchedBurstReady(const TableSched& s, int64_t t) {
-  return t >= s.earliest_us;
+// Should a REGISTER trigger a row reply? Reply when the sender is new to the
+// roster (first join since conductor boot, or a REGISTER dropped by a full
+// roster — mac_known is computed BEFORE the upsert, so a full roster can't
+// mask a new node) or is unprovisioned (id == 0: a fresh flash / erase_flash
+// recovery — its NVS position cache is gone even though the conductor has
+// seen the MAC before). Provisioned, known nodes re-registering every 10 s
+// get no reply: they hold their position in NVS, so steady state costs zero
+// table traffic. Worst case an unprovisioned node re-triggers one 23 B packet
+// per REGISTER interval until someone provisions it — bounded, and the roster
+// shows id=0 so the cause is visible.
+inline bool tableRowReplyWanted(bool mac_known, uint16_t id) {
+  return !mac_known || id == 0;
 }
 
-// Should the table be broadcast now? Advances the schedule when it says yes.
-inline bool tableSchedDue(TableSched& s, int64_t t, bool burst,
-                          int64_t interval_us, int64_t spacing_us) {
-  if (t < s.earliest_us) return false;
-  if (!burst && t < s.next_us) return false;
-  s.next_us = t + interval_us;
-  s.earliest_us = t + spacing_us;
-  return true;
+// Fill `m` with a single-row MSG_TABLE carrying this MAC's position. Returns
+// the wire length to send, or 0 when the MAC has no row (nothing to say —
+// the operator hasn't assigned it yet; `assign` broadcasts when they do).
+// Receivers treat it exactly like a full-table chunk: scan for their own MAC.
+inline size_t tableRowBuild(const LayoutTable& t, const uint8_t mac[6],
+                            TableMsg& m) {
+  float x, y;
+  if (!tableLookup(t, mac, x, y)) return 0;
+  m.hdr.magic = BEACON_MAGIC;
+  m.hdr.version = PROTO_VERSION;
+  m.hdr.type = MSG_TABLE;
+  m.chunk = 0;
+  m.chunks = 1;
+  m.n = 1;
+  memcpy(m.rows[0].mac, mac, 6);
+  m.rows[0].x = x;
+  m.rows[0].y = y;
+  return tableMsgWireLen(1);
 }

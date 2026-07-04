@@ -13,7 +13,10 @@ build clean. Latest on `main` (2026-07-04): **review-debt paydown** — the
 host-unreachable logic extracted out of `main.cpp` into pure tested headers
 (`macaddr.h`, `table_wire.h`, `bootplan.h`, `patternBootSafe`), `field-*` build
 envs (`-D HEARTBEAT_LED=0`), and the table rebroadcast stretched 5 s → 60 s
-steady-state with a new-node burst. Before that: **INA228
+steady-state with **targeted single-row replies to needy REGISTERs** (the
+initial new-MAC-burst design was replaced the same day after an 8-angle
+adversarial review confirmed three delivery holes in it — see "Self
+code-review" below). Before that: **INA228
 power-telemetry firmware (code-complete, host-tested, 8-angle-reviewed — built
 ahead of the chip, see "INA228 power telemetry" below)**,
 Stage-A radio duty-cycle (measured), **Stage-B CPU light-sleep
@@ -33,7 +36,11 @@ items here, both landed 2026-07-04):
    wire INA228 on one reference node (SDA→21, SCL→22, chip in series between
    battery+ and buck input) → run the INA228 bench checklist below → first
    real Wh integral; first flash of the `firebeetle` env on real FireBeetle
-   hardware.
+   hardware. **Plus one new 2-minute check:** with the conductor up and a
+   table row assigned, `erase_flash` + reflash a performer and confirm it
+   re-adopts its position within ~10 s of registering (the new single-row
+   `[table]` reply; code-reviewed + host-tested but the radio path itself
+   isn't hardware-verified yet).
 2. **User task, anytime (needs hands + DMM):** re-measure the 12 V
    battery-side draw with naps running, **USB disconnected** (USB backfeeds the
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
@@ -96,7 +103,7 @@ power measurement):
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
   MAC text parsing, table wire (chunking / length validation / own-row scan /
-  broadcast cadence), and boot classification.
+  row-reply decision + builder), and boot classification.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -497,19 +504,40 @@ within 5 min of serial activity — **hit Enter on a monitor to revive a quiet
 node's diag** (headless nodes no longer burn ~13 ms/s of UART drain).
 
 **Debt PAID 2026-07-04 (the review-debt session):**
-- ✅ **Field build envs** `field-devkitc` / `field-firebeetle` set
-  `-D HEARTBEAT_LED=0` (see "Build envs" near the top).
-- ✅ **Table rebroadcast stretched** 5 s → 60 s steady-state
-  (`TABLE_INTERVAL_US`), with a **burst** when a REGISTER adds a new MAC to the
-  roster (and `assign` still broadcasts immediately), rate-limited by
-  `TABLE_BURST_SPACING_US` (2 s) so a mass rejoin can't storm the air.
-- ✅ **Host-unreachable logic extracted + tested** (18 new tests, 83 total):
-  `parseMac`/`macStr` → `macaddr.h`; `broadcastTable` chunk math, MSG_TABLE
-  length validation, own-row scan, and the new broadcast-cadence scheduler →
-  `table_wire.h`; the Lever-2 boot classification → `bootplan.h` (the seed now
-  pre-expires `max(dusk, nap)` serial grace, so the old unlabeled
-  `DUSK_SERIAL_GRACE_US > SERIAL_NAP_GRACE_US` invariant is *gone*, not just
-  labeled); the SOLID boot-guard → `patternBootSafe` in `pattern_ids.h`.
+- ✅ **Field build envs** `field-devkitc` / `field-firebeetle` (`extends` the
+  bench envs + `-D HEARTBEAT_LED=0`; see "Build envs" near the top and
+  FLASHING.md's env table).
+- ✅ **Table rebroadcast stretched** 5 s → 60 s steady-state backstop
+  (`TABLE_INTERVAL_US`); targeted delivery is a **single-row MSG_TABLE reply
+  (23 B, broadcast)** to any REGISTER from a node that is *new to the roster
+  or unprovisioned (id 0)* — sent while that node's radio is provably up (it
+  just transmitted), retried for free by its next REGISTER, zero table traffic
+  in steady state. `assign` still broadcasts the full table immediately.
+- ✅ **Host-unreachable logic extracted + tested** (83 total):
+  `parseMac`/`macStr` → `macaddr.h` (parseMac rejects trailing garbage — a
+  pasted EUI-64 must not silently truncate to its prefix MAC); `broadcastTable`
+  chunk math, MSG_TABLE length validation, own-row scan, and the row-reply
+  decision/builder → `table_wire.h`; the Lever-2 boot classification →
+  `bootplan.h` (the seed now pre-expires `max(dusk, nap)` serial grace, so the
+  old unlabeled `DUSK_SERIAL_GRACE_US > SERIAL_NAP_GRACE_US` invariant is
+  *gone*, not just labeled); the SOLID boot-guard → `patternBootSafe` in
+  `pattern_ids.h`.
+
+**Same-day adversarial review of the paydown (8 finder angles + 1-vote
+verify, 10 findings, 7 CONFIRMED) — all fixed the same day:** the first
+cadence design (burst on new-MAC, inferred from a roster count change) had
+three confirmed delivery holes — a reflashed node (known MAC, wiped NVS) never
+got a burst and waited ~5-8 min for its position; a full roster (never pruned,
+64 slots vs 60 nodes + swaps) silently suppressed the burst; and a burst
+deferred by the 2 s rate limit could fire into the requester's radio-off gap
+with no retry. The row-reply design above replaced it (simpler AND covers all
+three: reply keyed on pre-upsert known-ness + id, not on count inference; no
+hold-off to miss). Also fixed from the review: `parseMac` trailing-garbage
+acceptance (empirically confirmed — `forget <EUI-64 paste>` would have
+operated on the wrong lantern), the `role` round-trip resuming a stale table
+schedule (now file-scope `g_next_table_us`, zeroed on role change), FLASHING.md
+missing the field-* envs, and the field envs copy-pasting instead of
+`extends`-ing the bench envs.
 
 **Known debt (deliberate, not yet done):**
 - Dead wire artifacts: `palette_id` unused, `MSG_ROSTER`/`MSG_ACK` unsent,

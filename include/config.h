@@ -75,15 +75,14 @@ static constexpr int64_t BEACON_STALE_US = 2000000;  // 2s
 // capacity ROSTER_MAX live in the dependency-free, host-tested include/roster.h.)
 static constexpr int64_t REGISTER_INTERVAL_US = 10000000;  // 10s
 
-// The conductor re-broadcasts the layout table this often. Positions are static
-// and every node caches its row in NVS, so steady-state is slow — the periodic
-// send only covers a node that somehow missed everything else. The moments that
-// actually need the table travel by BURST instead: `assign` broadcasts
-// immediately, and a REGISTER from a new MAC pulls the next broadcast forward
-// (scheduler in table_wire.h), rate-limited by TABLE_BURST_SPACING_US so a mass
-// rejoin after a conductor reboot can't storm the air.
-static constexpr int64_t TABLE_INTERVAL_US      = 60000000;  // 60s steady-state
-static constexpr int64_t TABLE_BURST_SPACING_US = 2000000;   // >= 2s between bursts
+// The conductor re-broadcasts the full layout table this often. Positions are
+// static and every node caches its row in NVS, so steady-state is a slow
+// backstop — the moments that actually need the table travel out of band:
+// `assign` broadcasts the table immediately, and a REGISTER from a node that
+// is new to the roster or unprovisioned gets an immediate single-row reply
+// (table_wire.h, tableRowReplyWanted/tableRowBuild) — sent while that node's
+// radio is provably on, and retried for free by its next REGISTER.
+static constexpr int64_t TABLE_INTERVAL_US = 60000000;  // 60s steady-state backstop
 
 // ---- Performer radio duty-cycle (Milestone 3, Lever 1, Stage A) --------------
 // A performer free-runs f(x,y,t) from the synced clock, so it does not need the
