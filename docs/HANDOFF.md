@@ -8,10 +8,11 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**65 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest
-work (2026-07-04): **INA228 power-telemetry firmware (code-complete,
-host-tested — built ahead of the chip, see below)**. Before that, on `main` as
-of 2026-07-03: Stage-A radio duty-cycle (measured), **Stage-B CPU light-sleep
+(**65 pass**) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
+`main` (all pushed, working tree clean as of 2026-07-04, `4949a10`): **INA228
+power-telemetry firmware (code-complete, host-tested, 8-angle-reviewed — built
+ahead of the chip, see "INA228 power telemetry" below)**. Before that:
+Stage-A radio duty-cycle (measured), **Stage-B CPU light-sleep
 (hardware-verified on bench 2026-07-03)**, **Lever-2 daytime deep-sleep
 (code-complete, default off, awaiting the pilot phototransistors)**, a
 full-repo adversarial self-review with all 5 correctness findings fixed, the
@@ -20,9 +21,7 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
 ## ▶ Next session: pick up here (updated 2026-07-04)
 
-~~1. Build the INA228 telemetry firmware NOW, before the chip arrives~~ —
-**DONE 2026-07-04** (details in "INA228 power telemetry" below). Remaining, in
-order:
+Priority order (the INA228 firmware, previously item 1 here, landed 2026-07-04):
 1. **Review debt** (list in "Self code-review" section below): extract
    host-unreachable logic from main.cpp (boot classification, `parseMac`, table
    chunk math, SOLID boot-guard) into tested pure headers; add a `field` build
