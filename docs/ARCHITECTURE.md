@@ -93,6 +93,37 @@ logic. Open considerations: smooth **transitions/crossfades** between patterns
 (would need a blend factor in the recipe), and the schedule's **time base**
 (uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
 
+### 4.2 Power instrumentation — INA228 **[planned]**
+
+A precision power monitor (**INA228** breakout, 15 mΩ on-board shunt) wired in series
+between battery+ and the buck input, on **1–2 instrumented reference nodes only** —
+not all 60 field units. Unlike the INA219, it has real hardware **energy/charge
+accumulation registers**: a background digital engine integrates continuously in
+**continuous conversion mode**, so there's no firmware polling-rate/aliasing math —
+`readEnergy()` (÷3600 for Wh) is a true continuous integral regardless of when it's
+called. `resetAccumulators()` at the start of a night's run gives a clean per-night
+Wh figure; `readCharge()` gives Ah as a free cross-check. Must stay in continuous
+mode — triggered mode invalidates the accumulators since the device stops tracking
+elapsed time.
+
+**Readout path**, cheapest to most capable:
+1. **Bench/USB-tethered:** print `readEnergy()` to serial — validates the sensor,
+   not useful for a battery-only overnight run.
+2. **Single-night validation:** run untethered overnight, reconnect USB the next
+   morning and read the accumulator (plugging in USB adds power alongside the
+   battery rather than replacing it, so this doesn't reset the reading — but never
+   disconnect the battery first, since any power gap zeroes the registers).
+3. **Fleet-scale (build before multi-node tests):** each performer returns its
+   accumulated Wh to the conductor as a small ESP-NOW unicast, piggybacking on the
+   existing bidirectional-ESP-NOW path used by `MSG_REGISTER` (§7) — the conductor
+   logs every node's overnight draw automatically, turning any sync test into a
+   full-fleet power audit with no need to visit each lantern.
+4. **Future field diagnostic (optional):** expose the current Wh reading over BLE
+   for a phone-app spot-check, independent of the conductor link.
+
+This is a validation tool for sizing Milestone 3's power levers (§8.1, Lever 2
+below) against real overnight draw — not a field-wide telemetry system.
+
 ## 5. Layout table — conductor-authoritative `MAC → (x,y)` **[done]**
 
 The conductor holds the authoritative field map and broadcasts it; each node finds
@@ -278,7 +309,7 @@ and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
 | Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
-| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified (0% missed windows steady-state; power-draw number still to be metered); Stage B + Lever 2 planned |
+| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B + Lever 2 + INA228 instrumentation (§4.2) planned |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 📐 planned |
 

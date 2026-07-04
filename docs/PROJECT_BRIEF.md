@@ -24,7 +24,8 @@ prove it first, in isolation.
 | LEDs | 16× **SK6812 RGBW** ring | data on **GPIO18**, through a 470Ω series resistor |
 | LED power cap | 1000µF across the ring's 5V/GND | at the ring |
 | Dusk sensor | LDR + 10kΩ divider | **GPIO34** (ADC1) |
-| Battery sense | 47kΩ/10kΩ divider off the 12V line | **GPIO35** (ADC1) |
+| Battery sense (coarse) | 47kΩ/10kΩ divider off the 12V line | **GPIO35** (ADC1) — cheap voltage-only backup |
+| Power monitor (precise) | **INA228** breakout (15mΩ shunt on-board, hardware energy/charge accumulation) | I2C: VCC→3.3V, GND→GND, SDA/SCL→ESP32 I2C pins; wired in series between battery+ and buck input |
 | Power | 12V LiFePO4 (TalentCell 12Ah) → buck → 5V | 5V to ESP32 VIN + ring; common ground |
 
 **Hard pin/ADC constraint:** the LDR and battery sense **must** use ADC1 pins
@@ -81,6 +82,45 @@ preferred but its RGBW support is rougher.
 
 **OTA (later phase).** On-demand WiFi AP (button or scheduled window) → ArduinoOTA.
 Don't depend on field-wide WiFi.
+
+**Getting the reading out (readout path).** The INA228 accumulates in hardware, but that
+number still needs to reach a human:
+- **Bench/bring-up:** print `readEnergy() / 3600.0` (Wh) to serial while USB-tethered.
+  Fine for validating the sensor itself, not for overnight battery-only runs.
+- **Single-night validation:** let the node run untethered on battery overnight, then
+  reconnect USB the next morning and read the live value off serial — the accumulator
+  kept counting all night regardless of whether anything was listening. Plugging in USB
+  typically adds power alongside the battery rather than replacing it, so this usually
+  doesn't reset the accumulator — but don't disconnect the battery first, since any power
+  gap zeroes the registers.
+- **Fleet-scale (build this in before the multi-node tests):** have each performer send
+  its accumulated Wh back to the conductor periodically as a small ESP-NOW return packet
+  (ESP-NOW supports bidirectional unicast once nodes know each other as peers — this is a
+  firmware addition, not new hardware). The conductor, kept on USB, logs every node's
+  energy reading to serial automatically. This turns every overnight sync test into a
+  full-fleet power audit with no need to physically visit each lantern.
+- **Future field diagnostic (optional):** expose the current Wh reading over BLE so any
+  deployed lantern's draw can be spot-checked with a phone app, independent of the
+  conductor link.
+
+**How the INA228 accumulation works.** Unlike the INA219, the INA228 has real hardware
+ENERGY and CHARGE accumulation registers — a background digital engine integrates
+continuously while the device is in **continuous conversion mode** (the library default),
+independent of when firmware happens to check in. This eliminates the polling-rate/aliasing
+question entirely — no firmware integration math needed:
+- Init once via `Adafruit_INA228` library (STEMMA QT, no soldering needed).
+- To read a night's total: just call `readEnergy()` (Joules — divide by 3600 for Wh) once,
+  whenever convenient (once at wake, once at the end of the night, or periodically for
+  logging — the number is the same either way since it's a true continuous integral).
+- Call `resetAccumulators()` at the start of each night's run for a clean "Wh consumed
+  last night" figure, same reasoning as before — don't bother persisting a cross-day total.
+- **Must stay in continuous mode, not triggered mode** — in triggered mode the
+  accumulation registers are invalid, since the device doesn't track elapsed time.
+- Bonus: `readCharge()` gives Ah for free as a cross-check against the Wh figure.
+- Same telemetry idea applies: fold the nightly energy reading into the ESP-NOW beacon so
+  the conductor collects every node's overnight draw automatically during the sync test.
+- This is a validation-only component — not intended for all 60 field units, just the
+  1–2 instrumented prototype/reference nodes.
 
 ---
 

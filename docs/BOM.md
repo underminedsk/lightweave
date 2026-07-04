@@ -7,7 +7,8 @@ Parts list + cost model for the production field. Companion to
 **Scope:** 50 deployed lanterns + 5 spares (**55 nodes**) + 1 conductor + 1 admin host.
 **Status:** first costed pass (2026-06-28). Decisions locked except the enclosure
 (art-side) and the level-shifter (recommended-optional). Verify every price at
-checkout — see the price caveat at the bottom.
+checkout — see the price caveat at the bottom. **See the [Pilot batch](#pilot-batch-57-units--hardware-validation-before-the-full-order)
+section for the near-term 5–7 unit order that precedes this full 55-node buy.**
 
 ---
 
@@ -82,6 +83,58 @@ LED ring and the buck (the fixed-vs-adjustable choice, below).
 
 Enclosures are the remaining unknown and could rival the battery line depending on
 how the baskets are built — owned on the art side, left as a placeholder here.
+
+---
+
+## Pilot batch (5–7 units) — hardware validation before the full order
+
+**Status: ORDERED 2026-07-03** — receipts in `receipts/`. Deltas from the table
+below: 5 batteries / 4 RGBW rings bought (6th node uses already-owned bench
+hardware); 2× INA228 (both Adafruit invoices — the first also had wrong RGB
+rings; confirm that order's cancelled); JST-SM kit + fuse holders **not yet
+ordered**; extras added (IP65 junction boxes ×5, grommets, sealant, 150 A power
+analyzer). Details in `HANDOFF.md` → "Pilot batch: ORDERED".
+
+**Purpose:** bridge from "one bench-verified node" to the 55-node production buy.
+Proves multi-node roster/sync behavior beyond 1–2 performers, gets one node
+instrumented with the INA228 for a real continuous-Wh measurement (replacing
+one-off ET900/DMM snapshots), and starts the Pi-based control-plane build (§5.2 in
+`ARCHITECTURE.md`) in parallel with firmware work. Hand-built on **perfboard**, not
+the fabbed carrier PCB — that's a 55-node-scale investment, not a 6-node one.
+
+Sized for **6 nodes** (middle of the 5–7 range). Scale the per-node rows (1–4)
+±1 trivially; every shared pack below (5, 7, 9, 11–13) already has spare headroom
+across 5–7 units.
+
+| # | Part | Qty to buy | Est. total | Notes |
+|---|---|---|---|---|
+| 1 | FireBeetle 2 ESP32-E | 6 | $49.80 | DFRobot direct, same as production pick |
+| 2 | SK6812 RGBW ring | 6 | $64.56 | Adafruit direct |
+| 3 | UCTRONICS buck 9–36V→5V | 3× 2-packs | $39.00 | covers exactly 6 |
+| 4 | TalentCell LF120A1 battery | 6 | $288.00 | |
+| 5 | Level shifter 74AHCT125 (optional) | 1× 10-pack | ~$10 | covers 6 + spares |
+| 6 | Resistor assortment (data + divider) | 1 kit | ~$14 | reuse across many builds, not consumed by 6 |
+| 7 | 1000µF 16V bulk cap | 1× 10-pack | ~$7 | covers 6 + spares |
+| 8 | PT334-6C phototransistor | 1× 20-pack | ~$7 | covers 6 + spares |
+| 9 | **Perfboard** (replaces the Carrier PCB line for this batch) | 1× 30-pack, T Tulead 5×7cm ([B07V9LSJLZ](https://www.amazon.com/Tulead-Perfboard-Prototyping-Circuit-Experiment/dp/B07V9LSJLZ)) | ~$8–13 (price unconfirmed — Amazon blocks the read) | covers all 6–7 + spares |
+| 10 | JST-SM connector kit | 1 kit | ~$6 | covers 6 |
+| 11 | Fuse holder + fuse | 1 kit (10 holders) | ~$16 | covers 6 + spares |
+| 12 | SPST toggle switch | 1× 8-pack | ~$9 | covers 6, 2 spare |
+| 13 | Misc (wire, heatshrink, standoffs, header pins) | — | ~$15 | |
+| 14 | **INA228 power monitor** *(new)* | 1, Adafruit **#5832** ([adafruit.com/product/5832](https://www.adafruit.com/product/5832)) | **$14.95** (confirmed, manufacturer-direct) | goes on 1 reference node only — see `ARCHITECTURE.md` §4.2 |
+| 15 | **Raspberry Pi 3 Model B+ starter kit** *(new)* | 1, CanaKit complete kit ([B0778CZ97B](https://www.amazon.com/CanaKit-Raspberry-Complete-Starter-Kit/dp/B0778CZ97B)) | ~$124.95 (CanaKit-direct price anchor; confirm at checkout) | admin-host / control-plane build (§5.2); picked over the Pi Zero 2 W production pick for reliable current stock — kit includes a case/HDMI cable/heatsinks not needed for headless use, so a bare board+PSU+SD bundle would run cheaper if you find one in stock |
+
+**Estimated pilot total: ≈ $639** (6 nodes + INA228 + Pi, excl. tax/shipping/enclosure) —
+node hardware ≈ $499 (electronics ≈ $211 incl. perfboard, batteries $288), + $14.95
+INA228, + ~$125 Pi kit.
+
+**Not included / deliberately deferred for this batch:**
+- **Conductor hardware** — reuse the 3 already-owned bench DevKitC boards; no new
+  purchase needed to prove out per-node builds + INA228 + Pi. The Lonely Binary
+  external-antenna conductor board (~$15, see Shared infrastructure above) is worth
+  adding only if this batch also needs a range test.
+- **Enclosures** — this batch is a bench/indoor validation run, not a field test;
+  enclosure design is still the open art-side track (see Open items below).
 
 ---
 

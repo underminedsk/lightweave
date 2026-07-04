@@ -8,10 +8,10 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(39 pass) and `pio run -e devkitc` / `-e firebeetle` build clean. Everything is
-committed and pushed (`main` @ `5089d33` — Stage-A radio duty-cycle + SOLID
-boot-guard + `GLOW` pattern, all hardware-verified incl. the 12 V power measurement
-below).
+(39 pass) and `pio run -e devkitc` / `-e firebeetle` build clean. Latest on
+`main`: Stage-A radio duty-cycle + SOLID boot-guard + `GLOW` pattern (all
+hardware-verified incl. the 12 V power measurement below), production BOM, and
+the **pilot-batch order placed 2026-07-03** (see "Pilot batch: ORDERED" below).
 
 ---
 
@@ -125,7 +125,10 @@ is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 
 **Not built yet:** structured machine Pi↔conductor serial (lands with the Pi UI),
 auto-calibration, show program / scheduling, the Pi web UI, power management
-(modem-sleep is on, but no deep-sleep/LDR/ADC), OTA.
+(modem-sleep is on, but no deep-sleep/LDR/ADC), OTA, **INA228 precision power
+monitor** (I2C, hardware energy/charge accumulation; ARCHITECTURE.md §4.2) —
+planned for 1–2 instrumented reference nodes to validate Stage B / Lever 2 against
+real overnight draw, not a field-wide component.
 
 ## Hardware state
 
@@ -186,6 +189,32 @@ defined *below* the global they touch. `patternConfigLoad/Save` sit *after*
 other config globals for exactly this reason. Don't move these loads into
 `configLoad()` or forward-declare the globals — a prior attempt broke the build.
 
+## Pilot batch: ORDERED 2026-07-03 (receipts in `receipts/`)
+
+The **`docs/BOM.md` → "Pilot batch (5–7 units)"** order went out 2026-07-03,
+across three carts (~$732 incl. tax/shipping):
+- **DFRobot** — 6× FireBeetle 2 ESP32-E, $57 (invoice `366209`).
+- **Adafruit** — 4× SK6812 **RGBW** rings (PID 2855, Natural White) + **2×
+  INA228** total across two invoices (`3705934`, `3705946`). The first invoice
+  was a mis-order (**RGB** PID 1463 rings) corrected 33 min later — ⚠ **confirm
+  the RGB order was cancelled/refunded.** 2 INA228s is fine (plan is 1–2
+  instrumented reference nodes).
+- **Amazon** (`111-8959596-4536221`, $600.40) — 5× TalentCell LF120A1 batteries
+  (arriving Jul 10), 3× buck 2-packs, CanaKit Pi 3 B+ kit, preloaded Pi OS SD
+  card, 74AHCT125 10-pack, perfboard 30-pack, PT334-6C phototransistors,
+  resistor kit, 1000 µF caps, toggle switches, plus beyond-BOM extras: 5× IP65
+  junction boxes, grommet kit, silicone sealant, and a 150 A inline power
+  analyzer. Most of it arriving Mon Jul 6.
+
+**Follow-ups from the receipts:**
+- ⚠ **The battery line is on Subscribe & Save ("every 2 weeks") — cancel the
+  subscription after the first delivery** or it re-ships 5 batteries (~$220)
+  every two weeks.
+- Ordered **5 batteries / 4 RGBW rings**, not 6 — the 6th node is covered by
+  already-owned bench hardware (2 rings are mounted on the DevKitC boards).
+- **Not ordered anywhere: JST-SM connector kit and fuse holders + fuses** (BOM
+  pilot rows 10–11) — add to a future cart before field wiring.
+
 ## Next task: Milestone 3 — power management (Lever 1 Stage A done)
 
 **Lever 1 Stage A (performer radio duty-cycle) is done, hardware-verified, measured,
@@ -207,6 +236,16 @@ includes CP2102 + power-LED overhead absent on battery. Re-measure `bri 0` rest 
 the **12 V battery rig, USB disconnected** for the true MCU floor before sizing the
 sleep work. (FireBeetle, the M4 candidate, has a lower quiescent draw and shrinks
 this floor further.)
+
+**Also planned: INA228 precision power monitor** (see `PROJECT_BRIEF.md` hardware
+table + readout-path section, and `ARCHITECTURE.md` §4.2) — an I2C breakout with
+hardware energy/charge accumulation, wired in series between battery+ and the buck
+input on 1–2 reference nodes. Once wired up, it replaces one-off ET900/DMM snapshots
+with a true continuous Wh integral per night (`readEnergy()`/`resetAccumulators()`),
+and the plan is to have performers report their accumulated Wh back to the conductor
+over ESP-NOW so every overnight sync test doubles as a fleet-wide power audit. Not
+built yet — this is the next instrumentation task, useful before/alongside sizing
+Stage B and Lever 2.
 
 ### Lever 1 (do first): radio off between beacons — performer-only
 
