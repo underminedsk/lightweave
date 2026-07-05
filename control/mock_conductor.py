@@ -152,12 +152,26 @@ class MockConductor:
         new = self._find(new_mac)
         if not old or not new:
             return {"ok": False, "error": "old or new lantern not found"}
+        if old.x is None or old.y is None:
+            return {"ok": False, "error": "old lantern has no position to replace"}
+        if new.x is not None or new.y is not None:
+            return {"ok": False, "error": "replacement lantern already has a position"}
+        if new.status != "alive":
+            return {"ok": False, "error": "replacement lantern is not awake"}
+        old_label = old.label
         new.x = old.x
         new.y = old.y
+        new.label = old_label
         old.x = None
         old.y = None
-        self._event(f"replace old={old.mac} new={new.mac}")
-        return {"ok": True, "message": f"moved position from {old.label} to {new.label}"}
+        old.label = f"{old_label} retired"
+        self._event(f"replace old={old.mac} new={new.mac} label={old_label}")
+        return {
+            "ok": True,
+            "message": f"moved {old_label} to replacement lantern",
+            "old_mac": old.mac,
+            "new_mac": new.mac,
+        }
 
     def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]:
         self.pattern = {"pattern": pattern, "brightness": brightness, "params": dict(params)}

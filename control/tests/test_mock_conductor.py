@@ -38,3 +38,38 @@ def test_blackout_preserves_pattern_and_sets_brightness_zero() -> None:
         "brightness": 0,
         "params": {"period": 8000},
     }
+
+
+def test_replace_moves_label_and_position_to_unpositioned_spare() -> None:
+    conductor = MockConductor()
+    old_mac = "A0:B7:65:11:44:91"
+    new_mac = "8C:94:DF:57:7F:14"
+
+    ack = conductor.replace(old_mac, new_mac)
+    lanterns = conductor.lanterns()
+    old = next(item for item in lanterns if item["mac"] == old_mac)
+    new = next(item for item in lanterns if item["mac"] == new_mac)
+
+    assert ack["ok"] is True
+    assert old["position"] == "Missing"
+    assert old["label"] == "#18 retired"
+    assert new["position"] == "Set"
+    assert new["label"] == "#18"
+    assert new["x"] == 0.66
+    assert new["y"] == 0.69
+
+
+def test_replace_rejects_positioned_replacement() -> None:
+    conductor = MockConductor()
+
+    ack = conductor.replace("A0:B7:65:11:44:91", "30:76:F5:93:67:3C")
+
+    assert ack == {"ok": False, "error": "replacement lantern already has a position"}
+
+
+def test_replace_rejects_unpositioned_old_lantern() -> None:
+    conductor = MockConductor()
+
+    ack = conductor.replace("8C:94:DF:57:7F:14", "A0:B7:65:11:44:91")
+
+    assert ack == {"ok": False, "error": "old lantern has no position to replace"}

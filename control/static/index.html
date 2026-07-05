@@ -40,6 +40,7 @@
             <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
           </div>
           <div class="map-content" id="map-content"></div>
+          <div class="unpositioned-tray" id="unpositioned-tray" aria-label="Unpositioned lanterns"></div>
           <div class="floating-actions">
             <button class="primary" data-action="identify">Identify</button>
             <button data-action="move">Move</button>
@@ -112,6 +113,19 @@
         <button data-action="replace">Replace</button>
         <button data-action="details">Details</button>
         <button class="danger" data-action="forget">Forget</button>
+      </div>
+      <div class="replace-panel" id="replace-panel" hidden>
+        <div class="replace-head">
+          <div>
+            <div class="label">Replacement</div>
+            <p id="replace-summary"></p>
+          </div>
+          <button type="button" data-replace-cancel>Cancel</button>
+        </div>
+        <div class="replace-candidates" id="replace-candidates"></div>
+        <div class="button-row">
+          <button class="primary" type="button" id="replace-confirm" disabled>Use selected spare</button>
+        </div>
       </div>
       <div class="details" id="detail-tech"></div>
     </section>

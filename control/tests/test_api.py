@@ -49,3 +49,20 @@ def test_assign_endpoint_updates_lantern_position() -> None:
     assert response.status_code == 200
     assert lantern["position"] == "Set"
     assert lantern["attention"] == "None"
+
+
+def test_replace_endpoint_moves_position_to_spare() -> None:
+    client = TestClient(create_app(MockConductor()))
+    old_mac = "A0:B7:65:11:44:91"
+    new_mac = "8C:94:DF:57:7F:14"
+
+    response = client.post("/api/lanterns/replace", json={"old_mac": old_mac, "new_mac": new_mac})
+    lanterns = client.get("/api/lanterns").json()
+    old = next(item for item in lanterns if item["mac"] == old_mac)
+    new = next(item for item in lanterns if item["mac"] == new_mac)
+
+    assert response.status_code == 200
+    assert response.json()["new_mac"] == new_mac
+    assert old["position"] == "Missing"
+    assert new["position"] == "Set"
+    assert new["label"] == "#18"

@@ -9,6 +9,8 @@ let pinchStartZoom = 1;
 let dragStart = null;
 let movingLanternMac = null;
 let movingDrag = null;
+let replaceMode = false;
+let replacementMac = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -35,6 +37,15 @@ function lanterns() {
 
 function selectedLantern() {
   return lanterns().find((lantern) => lantern.mac === selectedMac) || lanterns()[0] || null;
+}
+
+function isPositioned(lantern) {
+  if (!lantern) return false;
+  return lantern.x !== null && lantern.x !== undefined && lantern.y !== null && lantern.y !== undefined;
+}
+
+function replacementCandidates() {
+  return lanterns().filter((lantern) => lantern.mac !== selectedMac && lantern.status === "alive" && !isPositioned(lantern));
 }
 
 function statusText(lantern) {
@@ -64,6 +75,7 @@ function render() {
 
   renderPatternControls();
   renderMap();
+  renderUnpositionedTray();
   renderRows();
   renderDetail();
   renderEvents();
@@ -84,17 +96,15 @@ function renderMap() {
   const map = $("#map-content");
   $$(".node").forEach((node) => node.remove());
   $$(".selection-ring").forEach((ring) => ring.remove());
-  lanterns().forEach((lantern, index) => {
+  lanterns().filter(isPositioned).forEach((lantern) => {
     const button = document.createElement("button");
     button.className = `node ${cssStatus(lantern)}`;
     if (movingLanternMac === lantern.mac) button.classList.add("move-target");
     button.dataset.mac = lantern.mac;
     button.type = "button";
     button.ariaLabel = lantern.label;
-    const fallbackX = 0.18 + (index % 7) * 0.11;
-    const fallbackY = 0.28 + Math.floor(index / 7) * 0.18;
-    button.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
-    button.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
+    button.style.left = `${mapCoord(lantern.x) * 100}%`;
+    button.style.top = `${mapCoord(lantern.y) * 100}%`;
     button.addEventListener("click", () => selectLantern(lantern.mac));
     button.addEventListener("pointerdown", startLanternMove);
     button.addEventListener("mousedown", startLanternMove);
@@ -102,6 +112,27 @@ function renderMap() {
   });
   ensureSelectionRing();
   renderMapZoom();
+}
+
+function renderUnpositionedTray() {
+  const tray = $("#unpositioned-tray");
+  const unpositioned = lanterns().filter((lantern) => !isPositioned(lantern));
+  if (!unpositioned.length) {
+    tray.hidden = true;
+    tray.innerHTML = "";
+    return;
+  }
+  tray.hidden = false;
+  tray.innerHTML = [
+    `<span class="tray-label">Unpositioned</span>`,
+    ...unpositioned.map((lantern) => `<button type="button" class="tray-node ${lantern.mac === selectedMac ? "selected" : ""}" data-mac="${escapeHtml(lantern.mac)}">
+      <span class="dot ${lantern.status === "missing" ? "bad" : "warn"}"></span>
+      <span>${escapeHtml(lantern.label)}</span>
+    </button>`),
+  ].join("");
+  $$("#unpositioned-tray .tray-node").forEach((button) => {
+    button.addEventListener("click", () => selectLantern(button.dataset.mac));
+  });
 }
 
 function renderRows() {
@@ -142,6 +173,7 @@ function renderDetail() {
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
   document.body.classList.toggle("move-mode", movingLanternMac !== null);
+  renderReplacePanel();
   renderSelectionRing();
 }
 
@@ -169,7 +201,9 @@ function renderEvents() {
 
 function selectLantern(mac) {
   selectedMac = mac;
+  closeReplacePanel();
   ensureSelectionRing();
+  renderUnpositionedTray();
   renderRows();
   renderDetail();
 }
@@ -244,17 +278,19 @@ function setLanternPreview(mac, x, y) {
 
 function renderSelectionRing() {
   const lantern = selectedLantern();
+  if (!isPositioned(lantern)) {
+    $(".selection-ring")?.remove();
+    return;
+  }
   const ring = ensureSelectionRing();
-  if (!lantern || !ring) return;
-  const fallbackIndex = Math.max(0, lanterns().findIndex((item) => item.mac === lantern.mac));
-  const fallbackX = 0.18 + (fallbackIndex % 7) * 0.11;
-  const fallbackY = 0.28 + Math.floor(fallbackIndex / 7) * 0.18;
-  ring.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
-  ring.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
+  if (!ring) return;
+  ring.style.left = `${mapCoord(lantern.x) * 100}%`;
+  ring.style.top = `${mapCoord(lantern.y) * 100}%`;
 }
 
 function ensureSelectionRing() {
-  if (!selectedLantern()) return null;
+  const lantern = selectedLantern();
+  if (!lantern || !isPositioned(lantern)) return null;
   let ring = $(".selection-ring");
   if (!ring) {
     ring = document.createElement("div");
@@ -262,6 +298,64 @@ function ensureSelectionRing() {
     $("#map-content").prepend(ring);
   }
   return ring;
+}
+
+function openReplacePanel() {
+  const lantern = selectedLantern();
+  if (!lantern) return;
+  if (!isPositioned(lantern)) {
+    toast(`${lantern.label} has no position to replace`, true);
+    return;
+  }
+  replaceMode = true;
+  replacementMac = replacementCandidates()[0]?.mac || null;
+  renderReplacePanel();
+}
+
+function closeReplacePanel() {
+  replaceMode = false;
+  replacementMac = null;
+  renderReplacePanel();
+}
+
+function renderReplacePanel() {
+  const panel = $("#replace-panel");
+  if (!panel) return;
+  const oldLantern = selectedLantern();
+  panel.hidden = !replaceMode || !oldLantern;
+  if (panel.hidden) return;
+
+  const candidates = replacementCandidates();
+  $("#replace-summary").textContent = candidates.length
+    ? `Move ${oldLantern.label}'s position to an awake unpositioned spare.`
+    : `No awake unpositioned spare is available. Turn on a spare lantern and wait for it to register.`;
+  $("#replace-candidates").innerHTML = candidates.map((lantern) => `<button type="button" class="candidate ${lantern.mac === replacementMac ? "selected" : ""}" data-mac="${escapeHtml(lantern.mac)}">
+    <strong>${escapeHtml(lantern.label)}</strong>
+    <span class="mono">${escapeHtml(lantern.mac)}</span>
+    <span>${escapeHtml(lantern.last_seen_label)}</span>
+  </button>`).join("");
+  $$("#replace-candidates .candidate").forEach((button) => {
+    button.addEventListener("click", () => {
+      replacementMac = button.dataset.mac;
+      renderReplacePanel();
+    });
+  });
+  $("#replace-confirm").disabled = !replacementMac;
+}
+
+async function confirmReplace() {
+  const oldLantern = selectedLantern();
+  if (!oldLantern || !replacementMac) return;
+  const oldMac = oldLantern.mac;
+  const newMac = replacementMac;
+  const ack = await api("/api/lanterns/replace", {
+    method: "POST",
+    body: JSON.stringify({ old_mac: oldMac, new_mac: newMac }),
+  });
+  selectedMac = ack.new_mac || newMac;
+  closeReplacePanel();
+  toast(ack.message);
+  await refresh();
 }
 
 function startMoveMode() {
@@ -336,7 +430,7 @@ async function runAction(action) {
       return;
     }
     if (action === "replace") {
-      toast("replace flow will pick a spare lantern next", true);
+      openReplacePanel();
       return;
     }
     if (action === "forget") {
@@ -449,6 +543,11 @@ document.addEventListener("click", (event) => {
 
 $$("[data-action]").forEach((button) => {
   button.addEventListener("click", () => runAction(button.dataset.action));
+});
+
+$("[data-replace-cancel]").addEventListener("click", closeReplacePanel);
+$("#replace-confirm").addEventListener("click", () => {
+  confirmReplace().catch((error) => toast(error.message, true));
 });
 
 $("#brightness").addEventListener("input", (event) => {
