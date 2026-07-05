@@ -474,7 +474,10 @@ function detailSummary(lantern) {
 }
 
 function renderEvents() {
-  $("#event-log").innerHTML = (state.events || []).map((event) => {
+  const log = $("#event-log");
+  const events = state.events || [];
+  log.hidden = events.length === 0;
+  log.innerHTML = events.map((event) => {
     const time = new Date(event.ts * 1000).toLocaleTimeString();
     return `<div><span class="mono">${time}</span> ${escapeHtml(event.message)}</div>`;
   }).join("");
