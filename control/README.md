@@ -30,7 +30,7 @@ pio test -e native
 
 - FastAPI app with HTTP + WebSocket state updates
 - Mock conductor adapter
-- API-backed Map/Table/Show/Ops UI shell
+- API-backed Map/Node List/Patterns/Operations UI shell
 - Shared lantern detail sheet
 - Mock actions for identify, assign, forget, pattern broadcast, and blackout
 

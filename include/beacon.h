@@ -32,7 +32,7 @@ static constexpr uint8_t PROTO_VERSION = 2;
 static constexpr uint8_t BEACON_FLAG_FIELD_AWAKE = 0x01;
 
 enum MsgType : uint8_t {
-  MSG_BEACON   = 0,  // conductor -> all: clock + pattern recipe (hot path)
+  MSG_BEACON   = 0,  // conductor -> all: clock + pattern config (hot path)
   MSG_REGISTER = 1,  // performer -> conductor: announce my MAC + firmware
   MSG_ROSTER   = 2,  // conductor -> all: finalized roster        (Half 2)
   MSG_TABLE    = 3,  // conductor -> all: MAC->(x,y) layout chunk  (Half 2)
@@ -46,7 +46,7 @@ typedef struct __attribute__((packed)) {
   uint8_t  type;     // MsgType
 } MsgHeader;
 
-// type = MSG_BEACON. The conductor's clock plus the pattern recipe every node
+// type = MSG_BEACON. The conductor's clock plus the pattern config every node
 // renders. Fields after the header are unchanged from the original beacon, so
 // the sync hot path (sync.h consumes epoch_us + seq) is untouched.
 typedef struct __attribute__((packed)) {

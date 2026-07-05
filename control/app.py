@@ -18,7 +18,7 @@ from .mock_conductor import MockConductor
 STATIC_DIR = Path(__file__).with_name("static")
 
 
-class RecipeUpdate(BaseModel):
+class PatternUpdate(BaseModel):
     pattern: str = Field(min_length=1)
     brightness: int = Field(ge=0, le=192)
     params: dict[str, int | float | str] = Field(default_factory=dict)
@@ -113,10 +113,10 @@ def create_app(conductor: MockConductor | None = None) -> FastAPI:
         await publish({"type": "state", "action": "replace", "state": app.state.conductor.snapshot()})
         return ack
 
-    @app.post("/api/show/recipe")
-    async def update_recipe(request: RecipeUpdate) -> dict[str, Any]:
-        ack = app.state.conductor.update_recipe(request.pattern, request.brightness, request.params)
-        await publish({"type": "state", "action": "recipe", "state": app.state.conductor.snapshot()})
+    @app.post("/api/show/pattern")
+    async def update_pattern(request: PatternUpdate) -> dict[str, Any]:
+        ack = app.state.conductor.update_pattern(request.pattern, request.brightness, request.params)
+        await publish({"type": "state", "action": "pattern", "state": app.state.conductor.snapshot()})
         return ack
 
     @app.post("/api/show/blackout")

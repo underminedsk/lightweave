@@ -60,7 +60,7 @@ class MockConductor:
     seq: int = 184221
     wake: bool = True
     connected: bool = True
-    recipe: dict[str, Any] = field(
+    pattern: dict[str, Any] = field(
         default_factory=lambda: {
             "pattern": "Glow",
             "brightness": 48,
@@ -107,7 +107,7 @@ class MockConductor:
                 "attention": attention,
                 "table_rows": sum(1 for item in lanterns if item["position"] == "Set"),
             },
-            "recipe": deepcopy(self.recipe),
+            "pattern": deepcopy(self.pattern),
             "lanterns": lanterns,
             "events": list(reversed(self.events[-20:])),
         }
@@ -120,7 +120,7 @@ class MockConductor:
         self.seq += 20
         for lantern in self._lanterns:
             lantern.last_seen_s += 5
-        self._event(f"beacon seq={self.seq} pattern={self.recipe['pattern'].upper()} bri={self.recipe['brightness']}")
+        self._event(f"beacon seq={self.seq} pattern={self.pattern['pattern'].upper()} bri={self.pattern['brightness']}")
 
     def identify(self, mac: str) -> dict[str, Any]:
         lantern = self._find(mac)
@@ -159,15 +159,15 @@ class MockConductor:
         self._event(f"replace old={old.mac} new={new.mac}")
         return {"ok": True, "message": f"moved position from {old.label} to {new.label}"}
 
-    def update_recipe(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]:
-        self.recipe = {"pattern": pattern, "brightness": brightness, "params": dict(params)}
+    def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]:
+        self.pattern = {"pattern": pattern, "brightness": brightness, "params": dict(params)}
         self._event(f"pattern={pattern} bri={brightness}")
-        return {"ok": True, "message": f"broadcast {pattern}", "recipe": deepcopy(self.recipe)}
+        return {"ok": True, "message": f"broadcast {pattern}", "pattern": deepcopy(self.pattern)}
 
     def blackout(self) -> dict[str, Any]:
-        self.recipe = {"pattern": self.recipe["pattern"], "brightness": 0, "params": deepcopy(self.recipe["params"])}
+        self.pattern = {"pattern": self.pattern["pattern"], "brightness": 0, "params": deepcopy(self.pattern["params"])}
         self._event("blackout bri=0")
-        return {"ok": True, "message": "blackout broadcast", "recipe": deepcopy(self.recipe)}
+        return {"ok": True, "message": "blackout broadcast", "pattern": deepcopy(self.pattern)}
 
     def _find(self, mac: str) -> Lantern | None:
         normalized = mac.upper()

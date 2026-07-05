@@ -19,7 +19,7 @@ enum PatternId : uint16_t {
 };
 
 // True when f(x,y,t) has no time term: the rendered color never changes until
-// the recipe does, so the LEDs (which latch their last color) don't need to be
+// the pattern does, so the LEDs (which latch their last color) don't need to be
 // re-rendered every frame. Stage B uses this to let the CPU sleep through whole
 // radio-off spans on calm scenes instead of waking ~30x/second to redraw the
 // same pixels. An unknown/future pattern id must return false (assume animated —

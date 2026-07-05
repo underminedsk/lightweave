@@ -67,9 +67,9 @@ power measurement):
   rainbow hue cycle; `params[0]`=period ms, `params[1]`=spatial hue offset ×100 so
   the rainbow travels or runs in unison), `SWEEP` (1-D traveling wave), and
   `SOLID` (`pattern 3`: every pixel full RGBW — the worst-case power draw, for
-  bench-measuring the LED ceiling). Conductor broadcasts the recipe
+  bench-measuring the LED ceiling). Conductor broadcasts the pattern
   (`pattern_id`/`brightness`/`params[4]`); performers render it. Every node
-  hard-clamps brightness to `MAX_BRIGHTNESS` (config.h, **192**) so no recipe can
+  hard-clamps brightness to `MAX_BRIGHTNESS` (config.h, **192**) so no pattern can
   exceed the per-node power budget (see the worst-case measurement below).
 - **NVS identity:** `id` + `(x,y)` persist across reboot; set over serial.
 - **Pattern config persists** too: `pattern_id`/`brightness`/`params` survive a
@@ -223,7 +223,7 @@ telemetry logic, pure, tested), `macaddr.h` (MAC text parse/format, pure,
 tested), `bootplan.h` (Lever-2 boot classification, pure, tested), `identity.h`
 (NodeIdentity). `src/main.cpp`
 is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
-`pat`/`bri`/`p0`..`p3` for the recipe, `table` blob on the conductor).
+`pat`/`bri`/`p0`..`p3` for the pattern, `table` blob on the conductor).
 
 **Not built yet:** structured machine Pi↔conductor serial (lands with the Pi UI),
 auto-calibration, show program / scheduling, the Pi web UI, OTA. (INA228
@@ -235,7 +235,7 @@ chip.)
 - 3× DOIT ESP32 DevKit V1, all on the unified image. Rings on 2 of them; LED data
   on **GPIO13 (`D13`)**, USB 5V (no 12 V / buck yet).
 - **As of 2026-07-03 (all reflashed to protocol v2 together):**
-  - `8C:94:DF:57:7F:14` — **CONDUCTOR**, id 0, GLOW recipe (pat 4, bri 48,
+  - `8C:94:DF:57:7F:14` — **CONDUCTOR**, id 0, GLOW pattern (pat 4, bri 48,
     params [40 100]). Needed a fresh `erase_flash` (clock-scramble gotcha) —
     **its NVS layout table was lost; re-`assign` positions when they matter.**
   - `30:76:F5:93:67:3C` — performer, id 2.
@@ -358,7 +358,7 @@ sync test doubles as a fleet-wide power audit. Awaiting the physical chip
 
 **Why it works:** a performer free-runs `f(x,y,t)` from the synced clock, so it does
 *not* need continuous RX — only periodic beacons for clock-drift correction and
-recipe/table updates. So turn the radio **off** most of the time and wake it briefly
+pattern/table updates. So turn the radio **off** most of the time and wake it briefly
 to resync. This attacks the dominant RX term (modem-sleep can't, see power note).
 **Conductor is exempt** — it must beacon every 250 ms (TX), and is typically
 wall-powered; gate all of this on `role == performer`.
@@ -370,7 +370,7 @@ wall-powered; gate all of this on `role == performer`.
   diag. Implementation notes preserved in §8.1 / the commit. The one thing *not*
   worth doing: widening `DUTY_OFF_US` (4 s → 8 s/60 s) — at 13% duty we already
   removed ~30 of the ~34 mA radio term, so a 60 s wake saves only ~4 mA more while
-  multiplying recipe-update latency. Diminishing returns; leave it at 4 s.
+  multiplying pattern-update latency. Diminishing returns; leave it at 4 s.
 - **Stage B — cut the CPU floor (now the biggest constant term). ✅ HARDWARE-VERIFIED
   (2026-07-03 bench, conductor + 2 performers, all on protocol v2): naps run
   ~2/s on GLOW (heartbeat-capped ~0.5 s each), measured slept time tracks wall
@@ -424,12 +424,12 @@ wall-powered; gate all of this on `role == performer`.
 **Scheduled-wake + deep-sleep protocol (design thread, not yet built):** because
 every node shares the synced clock, instead of each performer waking on its own
 ~4.6 s timer, have them **all wake at a shared wall-clock boundary** (e.g. each
-synced-time minute), the conductor **bursts the current recipe during that window**,
+synced-time minute), the conductor **bursts the current pattern during that window**,
 nodes catch it and sleep again. No "subscribe" handshake is needed — ESP-NOW is
 broadcast and the shared clock *is* the coordination. The real prize isn't more
 radio savings (Stage A already got those) but that a known next-wake time lets a
 node **deep-sleep between windows on static scenes** (LEDs latched), and it makes
-Lever 2's deep-sleep/rejoin coherent. Costs to design around: recipe/show updates
+Lever 2's deep-sleep/rejoin coherent. Costs to design around: pattern/show updates
 land up to one wake-interval late (fine for a programmed show, painful for live
 tuning), and each window gets more critical (miss → longer free-run + delayed
 update; mitigate with a longer burst + the conductor repeating it).
@@ -499,7 +499,7 @@ double-init); (3) serial `pattern`/`bri`/`param` raced the recv callback's
 snapshot); (4) role switches left a stale duty schedule (role command now
 re-inits the duty machine); (5) `missed_windows` overcounted (beacon credit now
 runs before `dutyStep` in loop()); (6) static patterns no longer re-render at
-60 Hz (recipe-change detection + 1 Hz safety refresh); (7) diag prints only
+60 Hz (pattern-change detection + 1 Hz safety refresh); (7) diag prints only
 within 5 min of serial activity — **hit Enter on a monitor to revive a quiet
 node's diag** (headless nodes no longer burn ~13 ms/s of UART drain).
 

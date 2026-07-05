@@ -23,19 +23,19 @@ def test_identify_unknown_lantern_is_404() -> None:
     assert response.status_code == 404
 
 
-def test_recipe_update_round_trips_to_state() -> None:
+def test_pattern_update_round_trips_to_state() -> None:
     client = TestClient(create_app(MockConductor()))
 
     response = client.post(
-        "/api/show/recipe",
+        "/api/show/pattern",
         json={"pattern": "Sweep", "brightness": 64, "params": {"period": 8000}},
     )
     state = client.get("/api/state").json()
 
     assert response.status_code == 200
-    assert state["recipe"]["pattern"] == "Sweep"
-    assert state["recipe"]["brightness"] == 64
-    assert state["recipe"]["params"] == {"period": 8000}
+    assert state["pattern"]["pattern"] == "Sweep"
+    assert state["pattern"]["brightness"] == 64
+    assert state["pattern"]["params"] == {"period": 8000}
 
 
 def test_assign_endpoint_updates_lantern_position() -> None:

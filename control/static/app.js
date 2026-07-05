@@ -55,12 +55,12 @@ function render() {
 
   $("#connection-status").textContent = state.conductor.connected ? "mock connected" : "disconnected";
   $("#field-count").textContent = `${state.summary.alive} / ${state.summary.total}`;
-  $("#show-name").textContent = state.recipe.pattern;
+  $("#show-name").textContent = state.pattern.pattern;
   $("#attention-count").textContent = `${state.summary.attention} lights`;
   $("#sync-status").textContent = `sync ${state.conductor.sync}`;
   $("#table-sync-status").textContent = `sync ${state.conductor.sync}`;
-  $("#brightness").value = state.recipe.brightness;
-  $("#brightness-value").textContent = state.recipe.brightness;
+  $("#brightness").value = state.pattern.brightness;
+  $("#brightness-value").textContent = state.pattern.brightness;
 
   renderPatternControls();
   renderMap();
@@ -72,9 +72,9 @@ function render() {
 
 function renderPatternControls() {
   $$("#pattern-picker button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.pattern === state.recipe.pattern);
+    button.classList.toggle("active", button.dataset.pattern === state.pattern.pattern);
   });
-  const hue = String(state.recipe.params?.hue ?? "40");
+  const hue = String(state.pattern.params?.hue ?? "40");
   $$("#hue-picker button").forEach((button) => {
     button.classList.toggle("active", button.dataset.hue === hue);
   });
@@ -138,7 +138,7 @@ function renderDetail() {
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
     `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(lantern.status)}`,
-    `pattern=${escapeHtml(state.recipe.pattern)} bri=${state.recipe.brightness} · seq=${state.conductor.seq}`,
+    `pattern=${escapeHtml(state.pattern.pattern)} bri=${state.pattern.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
   document.body.classList.toggle("move-mode", movingLanternMac !== null);
@@ -347,10 +347,10 @@ async function runAction(action) {
       return;
     }
     if (action === "broadcast") {
-      const pattern = $("#pattern-picker button.active")?.dataset.pattern || state.recipe.pattern;
-      const hue = Number($("#hue-picker button.active")?.dataset.hue || state.recipe.params?.hue || 40);
+      const pattern = $("#pattern-picker button.active")?.dataset.pattern || state.pattern.pattern;
+      const hue = Number($("#hue-picker button.active")?.dataset.hue || state.pattern.params?.hue || 40);
       const brightness = Number($("#brightness").value);
-      const ack = await api("/api/show/recipe", {
+      const ack = await api("/api/show/pattern", {
         method: "POST",
         body: JSON.stringify({ pattern, brightness, params: { hue, saturation: 100 } }),
       });

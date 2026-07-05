@@ -2,7 +2,7 @@
 //
 // A performer free-runs f(x,y,t) from the synced clock, so it does NOT need the
 // radio on continuously: it only needs periodic beacons for clock-drift
-// correction and recipe/table updates. So the radio is powered down most of the
+// correction and pattern/table updates. So the radio is powered down most of the
 // time and woken for a brief listen window every few seconds to resync. This is
 // the main attack on the RX-dominated night draw — modem-sleep can't help
 // connectionless ESP-NOW (no AP/DTIM, so RX otherwise stays on).

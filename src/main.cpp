@@ -236,9 +236,9 @@ static float g_pos_pending_y = 0.0f;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
 
-// ---- Pattern config in NVS (the broadcast recipe; tweaked live over serial) ---
+// ---- Pattern config in NVS (the broadcast pattern; tweaked live over serial) ---
 // Defined here, *after* g_beacon, so it can touch it — configLoad() above can't
-// (it's defined before g_beacon). Only the conductor's recipe drives the field,
+// (it's defined before g_beacon). Only the conductor's pattern drives the field,
 // but every node persists/restores it so a conductor survives a power-cycle with
 // its tuning intact, and this seeds the show-program storage later.
 static void patternConfigLoad() {
@@ -1101,7 +1101,7 @@ void loop() {
   }
 
   // Power safety: hard-clamp the rendered brightness to MAX_BRIGHTNESS on every
-  // node, so the per-node draw is bounded no matter what a recipe asks for.
+  // node, so the per-node draw is bounded no matter what a pattern asks for.
   if (b.brightness > MAX_BRIGHTNESS) b.brightness = MAX_BRIGHTNESS;
 
   // Conductor renders against its own clock; a performer against synced time
@@ -1110,16 +1110,16 @@ void loop() {
 
   // Static patterns (GLOW/SOLID) latch: pushing the identical frame at 60 Hz is
   // pure RMT + CPU waste, and it delays every Stage-B nap behind the CanShow()
-  // wait. Re-render them only when the recipe changes, plus a ~1 Hz safety
+  // wait. Re-render them only when the pattern changes, plus a ~1 Hz safety
   // refresh (self-heals a noise-glitched pixel). Animated patterns render every
   // pass as before.
   static BeaconMsg last_shown = {};
   static bool shown_once = false;
   static int64_t next_static_refresh = 0;
-  bool recipe_changed = !shown_once || last_shown.pattern_id != b.pattern_id ||
+  bool pattern_changed = !shown_once || last_shown.pattern_id != b.pattern_id ||
                         last_shown.brightness != b.brightness ||
                         memcmp(last_shown.params, b.params, sizeof(b.params)) != 0;
-  if (!patterns::patternIsStatic(b.pattern_id) || recipe_changed ||
+  if (!patterns::patternIsStatic(b.pattern_id) || pattern_changed ||
       t >= next_static_refresh) {
     patterns::render(strip, b, render_us, g_id.x, g_id.y);
     strip.Show();

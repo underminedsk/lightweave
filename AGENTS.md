@@ -1,7 +1,7 @@
 # Agent onboarding
 
 Firmware for **Do Baskets Dream** — a synchronized ESP32 LED-lantern installation.
-One conductor broadcasts a clock + pattern recipe over ESP-NOW; every performer
+One conductor broadcasts a clock + pattern config over ESP-NOW; every performer
 renders `f(x, y, t)` locally and free-runs through dropped beacons. One firmware
 image runs on every node; role is a runtime NVS value.
 

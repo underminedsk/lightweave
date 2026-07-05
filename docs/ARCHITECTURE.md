@@ -9,7 +9,7 @@ while building it. Status tags: **[done]** shipped, **[wip]** in progress,
 
 ## 1. Design philosophy: parametric field, not addressed pixels
 
-The conductor broadcasts a compact **recipe** (which pattern + a few knobs + the
+The conductor broadcasts a compact **pattern config** (which pattern + a few knobs + the
 clock); every node computes its own color locally from **`f(x, y, t)`** using its
 stored position. We deliberately do **not** push per-node frames.
 
@@ -32,7 +32,7 @@ Every board runs **one identical firmware image**. Role is a runtime value in NV
 conductor per field; it is typically a **ring-less, headless timekeeper** so all
 visible rings are on performers.
 
-- Conductor: broadcasts the clock beacon + pattern recipe; renders against its own
+- Conductor: broadcasts the clock beacon + pattern config; renders against its own
   clock (if it has a ring).
 - Performer: locks an offset to the conductor's clock; renders against synced time;
   free-runs on missed beacons.
@@ -56,12 +56,12 @@ two conductors at once). One image + NVS role removes that entirely.
 
 ## 4. Pattern model **[done for 1-D; 2-D planned]**
 
-Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
+Conductor broadcasts the pattern in the beacon: `pattern_id`, `brightness`,
 `palette_id`, `params[4]`, plus the clock (`epoch_us`, `seq`).
 
 - `params` are pattern-specific knobs for live tuning (e.g. sweep period in ms,
   wavelength ×100). Persisted in NVS on the conductor so a power-cycle keeps the
-  tuned look. **[done]** (every node persists/restores the recipe; keys
+  tuned look. **[done]** (every node persists/restores the pattern; keys
   `pat`/`bri`/`p0`..`p3` in the `"node"` namespace.)
 - Patterns are `f(x, y, t)`:
   - `PULSE` — uniform breathing, all nodes in unison. **[done]**
@@ -75,7 +75,7 @@ Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
     from a center point. `params` encode direction/center.
 
 Every node hard-clamps rendered brightness to `MAX_BRIGHTNESS` (config.h, **192**),
-so no pattern or recipe can exceed the per-node power budget regardless of what is
+so no pattern or broadcast config can exceed the per-node power budget regardless of what is
 authored. Set from the worst-case bench measurement (solid white at 255 drew
 0.76 A @ 5 V); see power management below.
 
@@ -84,13 +84,13 @@ LED-library binding is in `include/patterns.h`.
 
 ### 4.1 Show program (pattern scheduling) **[planned]**
 
-Beyond a single live recipe, the conductor holds a **show program** in NVS — a
+Beyond a single live pattern, the conductor holds a **show program** in NVS — a
 schedule of *what plays when* (e.g. pattern A for a while, then B; calmer/dimmer
 late; brightness ramps). The conductor walks the program against its clock and
-**broadcasts the current recipe each beacon**; nodes render whatever arrives and
+**broadcasts the current pattern each beacon**; nodes render whatever arrives and
 stay dumb. So scheduling lives entirely on the conductor and needs no per-node
 logic. Open considerations: smooth **transitions/crossfades** between patterns
-(would need a blend factor in the recipe), and the schedule's **time base**
+(would need a blend factor in the pattern), and the schedule's **time base**
 (uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
 
 ### 4.2 Power instrumentation — INA228 **[done — firmware; awaiting the chip]**
@@ -141,7 +141,7 @@ re-arrange the whole field.
 
 - **The conductor is authoritative and stores the table in its own NVS.** The
   field runs with **no laptop present** — the conductor is the coordination point
-  for the table just as it is for the clock and the pattern recipe.
+  for the table just as it is for the clock and the pattern config.
 - Resilient: a node needs to hear the table only once, then survives on the cache.
 - Cheap: 14 B/node on the wire (`TableRow`) → ~840 B for 60 nodes → ~4 `MSG_TABLE`
   packets (17 rows each). Steady-state rebroadcast is a slow backstop
@@ -278,7 +278,7 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
   on every packet; receiver validates magic+version then dispatches on `type`.
   Types: `MSG_BEACON` (hot path), `MSG_REGISTER`, `MSG_TABLE` (live);
   `MSG_ROSTER`/`MSG_ACK` reserved. `PROTO_VERSION` is rejected on mismatch.
-- **[done]** `MSG_BEACON` (clock + recipe) broadcast on a fixed channel to
+- **[done]** `MSG_BEACON` (clock + pattern) broadcast on a fixed channel to
   `FF:FF:FF:FF:FF:FF`, `WIFI_STA`. The hot path (sync.h) reads `epoch_us`+`seq`.
 - **[done]** Bidirectional ESP-NOW: a performer learns the conductor's MAC from the
   recv-info, adds it as a peer, and unicasts `MSG_REGISTER {mac, id, fw}` every 10 s;
@@ -308,7 +308,7 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 The free-run property (a performer renders `f(x,y,t)` from the synced clock without
 needing live RF) is what lets us **power the radio off** most of the time. A
 performer wakes the radio for a brief listen window every few seconds — just long
-enough to catch a beacon and re-lock the clock (and pick up any recipe/table
+enough to catch a beacon and re-lock the clock (and pick up any pattern/table
 change) — then sleeps it and keeps rendering from the coasting clock. This is the
 right lever for the night draw because the radio is RX-dominated and **modem-sleep
 is ineffective in connectionless ESP-NOW** (no AP/DTIM, so RX otherwise stays on).
@@ -321,7 +321,7 @@ until the first beacon is caught, so a battery swap still re-locks fast (the
 "single blink" guarantee) before any sleeping begins. The **conductor is exempt**
 (it must beacon at 4 Hz and is wall-powered) — gated on `role == performer`. A
 runtime/NVS toggle (`powersave on|off`) exists so the night draw can be A/B'd on
-the meter. Trade-off: a recipe/position change lands up to one OFF interval (~4 s)
+the meter. Trade-off: a pattern/position change lands up to one OFF interval (~4 s)
 late — acceptable for a slow art piece. Stage B (CPU light-sleep between frames)
 and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 

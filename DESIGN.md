@@ -21,7 +21,7 @@ understand. The UI should be calm, precise, and hard to misread.
 - **Environment:** night use, phone on Pi hotspot, no internet, no router, unreliable
   USB/radio conditions.
 - **Primary jobs:** know whether the field is alive, edit the layout table, tune the
-  live recipe, reset/read power telemetry, and escape to raw serial when needed.
+  live pattern, reset/read power telemetry, and escape to raw serial when needed.
 - **Trust rule:** every mutation must surface the conductor ack or failure. The UI
   never pretends a write landed.
 
@@ -56,7 +56,7 @@ reserve saturated color for state, alerts, live nodes, and active controls.
 | `muted` | `#a7b0aa` | secondary labels |
 | `dim` | `#69746d` | disabled/inactive text |
 | `live` | `#54d67a` | alive/healthy nodes, successful ack |
-| `sync` | `#5eb7ff` | locked sync, current clock/recipe state |
+| `sync` | `#5eb7ff` | locked sync, current clock/pattern state |
 | `amber` | `#f0b35a` | warnings, unsaved changes, show warmth |
 | `alert` | `#ff5d52` | stale/dead nodes, failed writes, blackout danger |
 | `violet` | `#9f8cff` | rare calibration/identify accent only |
@@ -66,7 +66,7 @@ Color discipline:
 - One semantic color per state. Do not invent new greens/reds by screen.
 - Green means alive or acked. Red means dead, failed, or destructive.
 - Amber means attention needed but recoverable.
-- Cyan means sync/time/recipe, not generic decoration.
+- Cyan means sync/time/pattern, not generic decoration.
 - Keep body text off pure white to preserve night vision.
 
 ## Typography
@@ -106,19 +106,19 @@ operator questions without exposing every diagnostic:
 
 Detailed MACs, serial lines, power internals, table cross-checks, and raw logs are
 still available, but they live one interaction deeper: node inspector, expandable
-diagnostic panels, or the Ops tab. The UI should feel approachable to a non-technical
+diagnostic panels, or the Operations tab. The UI should feel approachable to a non-technical
 helper while still letting the builder get every useful byte when needed.
 
 ### Mobile
 
-- Bottom tab bar: `Map`, `Table`, `Show`, `Ops`.
+- Bottom tab bar: `Map`, `Node List`, `Patterns`, `Operations`.
 - `Map` and `Table` are peer multi-lantern views over the same roster/table data.
 - `Map` opens to the layout map with a compact status strip above it.
 - `Table` shows the same lanterns as sortable/filterable rows for count checks,
   missing-node triage, and precise data review.
 - Selecting a node opens a bottom sheet, not a separate page.
 - The single-lantern detail sheet appears only in `Map` and `Table`; hide it in
-  global screens like `Show` and `Ops`.
+  global screens like `Patterns` and `Operations`.
 - Risky actions require large, deliberate controls and clear result feedback.
 - Avoid multi-column layouts below tablet width.
 
@@ -126,7 +126,7 @@ helper while still letting the builder get every useful byte when needed.
 
 - Left rail or top status bar for global health.
 - Center: selected multi-lantern view, either map or table.
-- Right inspector is **collapsible** and appears when a node, recipe, or warning is
+- Right inspector is **collapsible** and appears when a node, pattern, or warning is
   selected. When nothing is selected, keep the screen map-first and show only a
   compact "field summary" panel.
 - Logs/serial console can sit in a resizable bottom drawer.
@@ -151,7 +151,7 @@ Show the state the operator needs before touching anything:
 
 - alive count, for example `58 / 60 alive`
 - conductor connection
-- current recipe
+- current pattern
 - wake flag
 - one current attention item, if any
 
@@ -170,7 +170,7 @@ The map should look like a working field plot:
   color continues to mean status
 - unpositioned nodes in a side/bottom queue
 - stale nodes dimmed or red-rimmed
-- current recipe preview rendered directly on nodes when possible
+- current pattern preview rendered directly on nodes when possible
 - zoom controls with pinch-to-zoom on touch devices and wheel/trackpad zoom on
   desktop; click-hold-drag / one-finger drag pans the map like a familiar map app;
   map controls remain fixed while the field content scales
@@ -214,7 +214,7 @@ surface**:
   selected lantern on the map, release, and send the new normalized `(x,y)`
   assignment. Avoid raw coordinate prompts in the normal operator flow.
 
-Show:
+Patterns:
 
 - MAC, friendly id, `(x,y)`
 - last seen age

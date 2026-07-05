@@ -9,7 +9,7 @@ def test_snapshot_counts_attention_and_alive_nodes() -> None:
     assert snapshot["summary"]["alive"] == 9
     assert snapshot["summary"]["total"] == 60
     assert snapshot["summary"]["attention"] == 2
-    assert snapshot["recipe"]["pattern"] == "Glow"
+    assert snapshot["pattern"]["pattern"] == "Glow"
 
 
 def test_assign_sets_position_and_clears_attention() -> None:
@@ -29,11 +29,11 @@ def test_assign_sets_position_and_clears_attention() -> None:
 def test_blackout_preserves_pattern_and_sets_brightness_zero() -> None:
     conductor = MockConductor()
 
-    conductor.update_recipe("Sweep", 72, {"period": 8000})
+    conductor.update_pattern("Sweep", 72, {"period": 8000})
     ack = conductor.blackout()
 
     assert ack["ok"] is True
-    assert conductor.snapshot()["recipe"] == {
+    assert conductor.snapshot()["pattern"] == {
         "pattern": "Sweep",
         "brightness": 0,
         "params": {"period": 8000},

@@ -25,7 +25,7 @@ static constexpr uint16_t LED_COUNT = 16;
 static constexpr uint8_t  LED_PIN   = 13;
 
 // Power guardrail. Every node clamps the rendered brightness to this, so no
-// pattern or broadcast recipe can exceed the per-node power budget no matter what
+// pattern or broadcast config can exceed the per-node power budget no matter what
 // gets authored. Set to 192 (75%) after the worst-case bench measurement: solid
 // white at 255 measured 0.76 A @ 5 V (~3 nights sustained), which is safe for the
 // hardware but a battery risk if a pathological all-white show ran all night; 192
@@ -86,7 +86,7 @@ static constexpr int64_t TABLE_INTERVAL_US = 60000000;  // 60s steady-state back
 
 // ---- Performer radio duty-cycle (Milestone 3, Lever 1, Stage A) --------------
 // A performer free-runs f(x,y,t) from the synced clock, so it does not need the
-// radio on continuously — only periodic beacons for drift correction and recipe/
+// radio on continuously — only periodic beacons for drift correction and pattern/
 // table updates. So power the radio down between brief listen windows: this is the
 // main attack on the RX-dominated night draw (modem-sleep can't help
 // connectionless ESP-NOW — no AP/DTIM, so RX otherwise stays on). The conductor is
@@ -101,7 +101,7 @@ static constexpr int64_t TABLE_INTERVAL_US = 60000000;  // 60s steady-state back
 // = 250 ms (4 Hz), a 600 ms window spans ~2 beacons, so one is caught even with
 // wake latency + jitter. ~600 ms ON / 4 s OFF ≈ 13% radio duty. Drift over a 4 s
 // free-run on a ~tens-of-ppm crystal is sub-millisecond — invisible in the slow
-// patterns. A recipe/position change now lands up to one OFF interval late, which
+// patterns. A pattern/position change now lands up to one OFF interval late, which
 // is acceptable for the installation (noted in HANDOFF).
 static constexpr int64_t DUTY_OFF_US    = 4000000;  // 4s radio off between listens
 static constexpr int64_t DUTY_LISTEN_US = 600000;   // 600ms listen window
