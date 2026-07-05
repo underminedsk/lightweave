@@ -7,6 +7,7 @@ let mapPanY = 0;
 let pinchStartDistance = null;
 let pinchStartZoom = 1;
 let dragStart = null;
+let movingLanternMac = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -93,6 +94,7 @@ function renderMap() {
     button.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
     button.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
     button.addEventListener("click", () => selectLantern(lantern.mac));
+    button.addEventListener("pointerdown", startLanternMove);
     map.appendChild(button);
   });
   renderMapZoom();
@@ -135,6 +137,7 @@ function renderDetail() {
     `recipe=${escapeHtml(state.recipe.pattern)} bri=${state.recipe.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
+  document.body.classList.toggle("move-mode", movingLanternMac !== null);
 }
 
 function renderDetailVisibility() {
@@ -179,6 +182,10 @@ function mapCoord(value) {
   return MAP_PADDING + value * (1 - MAP_PADDING * 2);
 }
 
+function unmapCoord(value) {
+  return Math.min(1, Math.max(0, (value - MAP_PADDING) / (1 - MAP_PADDING * 2)));
+}
+
 function setMapZoom(nextZoom) {
   mapZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
   setMapPan(mapPanX, mapPanY);
@@ -209,6 +216,59 @@ function touchDistance(touches) {
   return Math.hypot(dx, dy);
 }
 
+function pointToField(clientX, clientY) {
+  const rect = $("#map").getBoundingClientRect();
+  const normalizedX = ((clientX - rect.left - mapPanX) / mapZoom) / rect.width;
+  const normalizedY = ((clientY - rect.top - mapPanY) / mapZoom) / rect.height;
+  return { x: unmapCoord(normalizedX), y: unmapCoord(normalizedY) };
+}
+
+function setLanternPreview(mac, x, y) {
+  const node = $(`.node[data-mac="${cssEscape(mac)}"]`);
+  if (!node) return;
+  node.style.left = `${mapCoord(x) * 100}%`;
+  node.style.top = `${mapCoord(y) * 100}%`;
+}
+
+function startMoveMode() {
+  const lantern = selectedLantern();
+  if (!lantern) return;
+  movingLanternMac = lantern.mac;
+  document.body.classList.add("move-mode");
+  toast(`Drag ${lantern.label} to its new position`);
+}
+
+function startLanternMove(event) {
+  if (event.pointerType === "touch" || event.button !== 0 || movingLanternMac !== event.currentTarget.dataset.mac) return;
+  event.stopPropagation();
+  event.preventDefault();
+  event.currentTarget.setPointerCapture(event.pointerId);
+}
+
+async function finishLanternMove(clientX, clientY) {
+  if (!movingLanternMac) return;
+  const mac = movingLanternMac;
+  const position = pointToField(clientX, clientY);
+  movingLanternMac = null;
+  document.body.classList.remove("move-mode");
+  setLanternPreview(mac, position.x, position.y);
+  try {
+    const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/assign`, {
+      method: "POST",
+      body: JSON.stringify(position),
+    });
+    toast(ack.message);
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+    await refresh();
+  }
+}
+
+function cssEscape(value) {
+  return window.CSS?.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
 async function refresh() {
   state = await api("/api/state");
   render();
@@ -232,15 +292,7 @@ async function runAction(action) {
       return;
     }
     if (action === "move") {
-      const x = Number(prompt("x position, 0.0 to 1.0", fmt(lantern.x)));
-      const y = Number(prompt("y position, 0.0 to 1.0", fmt(lantern.y)));
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      const ack = await api(`/api/lanterns/${encodeURIComponent(lantern.mac)}/assign`, {
-        method: "POST",
-        body: JSON.stringify({ x, y }),
-      });
-      toast(ack.message);
-      await refresh();
+      startMoveMode();
       return;
     }
     if (action === "replace") {
@@ -394,6 +446,13 @@ $("#map").addEventListener("touchstart", (event) => {
 }, { passive: true });
 
 $("#map").addEventListener("touchmove", (event) => {
+  if (event.touches.length === 1 && movingLanternMac) {
+    event.preventDefault();
+    const touch = event.touches[0];
+    const position = pointToField(touch.clientX, touch.clientY);
+    setLanternPreview(movingLanternMac, position.x, position.y);
+    return;
+  }
   if (event.touches.length === 2 && pinchStartDistance) {
     event.preventDefault();
     setMapZoom(pinchStartZoom * (touchDistance(event.touches) / pinchStartDistance));
@@ -407,22 +466,36 @@ $("#map").addEventListener("touchmove", (event) => {
 }, { passive: false });
 
 $("#map").addEventListener("touchend", (event) => {
+  if (movingLanternMac && event.changedTouches.length) {
+    const touch = event.changedTouches[0];
+    finishLanternMove(touch.clientX, touch.clientY);
+    return;
+  }
   if (event.touches.length < 2) pinchStartDistance = null;
   if (event.touches.length === 0) dragStart = null;
 }, { passive: true });
 
 $("#map").addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node")) return;
+  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node") || movingLanternMac) return;
   dragStart = { x: event.clientX, y: event.clientY, panX: mapPanX, panY: mapPanY };
   $("#map").setPointerCapture(event.pointerId);
 });
 
 $("#map").addEventListener("pointermove", (event) => {
+  if (movingLanternMac && event.pointerType !== "touch") {
+    const position = pointToField(event.clientX, event.clientY);
+    setLanternPreview(movingLanternMac, position.x, position.y);
+    return;
+  }
   if (!dragStart || event.pointerType === "touch") return;
   setMapPan(dragStart.panX + event.clientX - dragStart.x, dragStart.panY + event.clientY - dragStart.y);
 });
 
 $("#map").addEventListener("pointerup", (event) => {
+  if (movingLanternMac && event.pointerType !== "touch") {
+    finishLanternMove(event.clientX, event.clientY);
+    return;
+  }
   if (event.pointerType !== "touch") dragStart = null;
 });
 

@@ -70,6 +70,12 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
 .node.selected { width: 30px; height: 30px; background: var(--amber); box-shadow: 0 0 0 7px rgba(240, 179, 90, .18), 0 0 28px rgba(240, 179, 90, .8); }
 .node.missing { background: var(--alert); box-shadow: 0 0 18px rgba(255, 93, 82, .75); }
 .node.unpositioned { background: var(--dim); box-shadow: none; }
+body.move-mode .node.selected {
+  cursor: grab;
+  box-shadow: 0 0 0 9px rgba(94, 183, 255, .18), 0 0 30px rgba(94, 183, 255, .8);
+  background: var(--sync);
+}
+body.move-mode .map { cursor: crosshair; }
 .zoom-controls {
   position: absolute;
   right: 16px;

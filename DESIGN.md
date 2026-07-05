@@ -208,6 +208,9 @@ surface**:
   raw events, replace/forget.
 - Keep global actions out of the lantern detail surface unless they relate directly
   to the selected lantern.
+- `Move` should enter direct manipulation mode: drag the selected lantern on the
+  map, release, then send the new normalized `(x,y)` assignment. Avoid raw coordinate
+  prompts in the normal operator flow.
 
 Show:
 
