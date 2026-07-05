@@ -65,6 +65,7 @@ function render() {
   renderRows();
   renderDetail();
   renderEvents();
+  renderDetailVisibility();
 }
 
 function renderPatternControls() {
@@ -136,6 +137,11 @@ function renderDetail() {
   ].join("<br>");
 }
 
+function renderDetailVisibility() {
+  const activeView = $(".tabs button.active")?.dataset.view;
+  $("#detail-sheet").hidden = !(activeView === "map" || activeView === "table");
+}
+
 function detailSummary(lantern) {
   if (lantern.status === "missing") {
     return `Last seen ${lantern.last_seen_label}. Use Identify after it returns, or Replace if this lantern is physically gone.`;
@@ -175,10 +181,7 @@ function mapCoord(value) {
 
 function setMapZoom(nextZoom) {
   mapZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
-  if (mapZoom === 1) {
-    mapPanX = 0;
-    mapPanY = 0;
-  }
+  setMapPan(mapPanX, mapPanY);
   renderMapZoom();
 }
 
@@ -191,16 +194,12 @@ function renderMapZoom() {
 }
 
 function setMapPan(x, y) {
-  if (mapZoom === 1) {
-    mapPanX = 0;
-    mapPanY = 0;
-  } else {
-    const map = $("#map");
-    const maxX = map.clientWidth * (mapZoom - 1) * 0.5;
-    const maxY = map.clientHeight * (mapZoom - 1) * 0.5;
-    mapPanX = Math.min(maxX, Math.max(-maxX, x));
-    mapPanY = Math.min(maxY, Math.max(-maxY, y));
-  }
+  const map = $("#map");
+  const basePan = 0.16;
+  const maxX = map.clientWidth * (basePan + (mapZoom - 1) * 0.5);
+  const maxY = map.clientHeight * (basePan + (mapZoom - 1) * 0.5);
+  mapPanX = Math.min(maxX, Math.max(-maxX, x));
+  mapPanY = Math.min(maxY, Math.max(-maxY, y));
   renderMapZoom();
 }
 
@@ -327,6 +326,7 @@ $$(".tabs button").forEach((tab) => {
     tab.classList.add("active");
     $$(".view").forEach((view) => view.classList.remove("active"));
     $(`#view-${tab.dataset.view}`).classList.add("active");
+    renderDetailVisibility();
   });
 });
 
@@ -383,7 +383,7 @@ $("#map").addEventListener("touchstart", (event) => {
     pinchStartZoom = mapZoom;
     return;
   }
-  if (event.touches.length === 1 && mapZoom > 1 && !event.target.classList.contains("node")) {
+  if (event.touches.length === 1 && !event.target.classList.contains("node")) {
     const touch = event.touches[0];
     dragStart = { x: touch.clientX, y: touch.clientY, panX: mapPanX, panY: mapPanY };
   }
@@ -408,7 +408,7 @@ $("#map").addEventListener("touchend", (event) => {
 }, { passive: true });
 
 $("#map").addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "touch" || event.button !== 0 || mapZoom === 1 || event.target.classList.contains("node")) return;
+  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node")) return;
   dragStart = { x: event.clientX, y: event.clientY, panX: mapPanX, panY: mapPanY };
   $("#map").setPointerCapture(event.pointerId);
 });

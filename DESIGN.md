@@ -117,6 +117,8 @@ helper while still letting the builder get every useful byte when needed.
 - `Table` shows the same lanterns as sortable/filterable rows for count checks,
   missing-node triage, and precise data review.
 - Selecting a node opens a bottom sheet, not a separate page.
+- The single-lantern detail sheet appears only in `Map` and `Table`; hide it in
+  global screens like `Show` and `Ops`.
 - Risky actions require large, deliberate controls and clear result feedback.
 - Avoid multi-column layouts below tablet width.
 
@@ -168,8 +170,8 @@ The map should look like a working field plot:
 - stale nodes dimmed or red-rimmed
 - current recipe preview rendered directly on nodes when possible
 - zoom controls with pinch-to-zoom on touch devices and wheel/trackpad zoom on
-  desktop; click-drag / one-finger drag pans the zoomed map; map controls remain
-  fixed while the field content scales
+  desktop; click-hold-drag / one-finger drag pans the map like a familiar map app;
+  map controls remain fixed while the field content scales
 
 Node labels should appear on selection, hover, or zoom. Do not clutter the default
 view with 60 always-visible MAC labels.
