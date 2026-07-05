@@ -395,6 +395,19 @@ function renderPowerPolicy() {
       : "deep sleep window";
 }
 
+function powerWindowActive(power) {
+  const minute = Number(power.current_min ?? currentMinuteOfDay()) % 1440;
+  const start = Number(power.led_on_start_min ?? 18 * 60) % 1440;
+  const end = Number(power.led_on_end_min ?? 6 * 60) % 1440;
+  if (start === end) return true;
+  if (start < end) return minute >= start && minute < end;
+  return minute >= start || minute < end;
+}
+
+function powerLedsOn(power) {
+  return Boolean(power.force_awake) || !Boolean(power.schedule_enabled) || powerWindowActive(power);
+}
+
 function powerPolicyFromForm(forceAwake = state?.power?.force_awake) {
   return {
     light_sleep_check_s: Number($("#light-check").value || 4),
@@ -767,9 +780,13 @@ async function runAction(action) {
     }
     if (action === "toggle-force-awake") {
       const force = !Boolean(state?.power?.force_awake);
+      const optimisticPower = { ...state.power, ...powerPolicyFromForm(force), force_awake: force };
+      optimisticPower.leds_on = powerLedsOn(optimisticPower);
+      state = { ...state, power: optimisticPower, conductor: { ...state.conductor, wake: force } };
+      renderPowerPolicy();
       const ack = await api("/api/operations/power-policy", {
         method: "POST",
-        body: JSON.stringify(powerPolicyFromForm(force)),
+        body: JSON.stringify(optimisticPower),
       });
       toast(force ? "boards forced on" : ack.message);
       await refresh();
