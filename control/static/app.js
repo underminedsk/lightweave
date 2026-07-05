@@ -84,17 +84,6 @@ function renderMap() {
   const map = $("#map-content");
   $$(".node").forEach((node) => node.remove());
   $$(".selection-ring").forEach((ring) => ring.remove());
-  const selected = selectedLantern();
-  if (selected) {
-    const ring = document.createElement("div");
-    ring.className = "selection-ring";
-    const fallbackIndex = Math.max(0, lanterns().findIndex((lantern) => lantern.mac === selected.mac));
-    const fallbackX = 0.18 + (fallbackIndex % 7) * 0.11;
-    const fallbackY = 0.28 + Math.floor(fallbackIndex / 7) * 0.18;
-    ring.style.left = `${mapCoord(selected.x ?? fallbackX) * 100}%`;
-    ring.style.top = `${mapCoord(selected.y ?? fallbackY) * 100}%`;
-    map.appendChild(ring);
-  }
   lanterns().forEach((lantern, index) => {
     const button = document.createElement("button");
     button.className = `node ${cssStatus(lantern)}`;
@@ -110,6 +99,7 @@ function renderMap() {
     button.addEventListener("mousedown", startLanternMove);
     map.appendChild(button);
   });
+  ensureSelectionRing();
   renderMapZoom();
 }
 
@@ -178,7 +168,7 @@ function renderEvents() {
 
 function selectLantern(mac) {
   selectedMac = mac;
-  renderMap();
+  ensureSelectionRing();
   renderRows();
   renderDetail();
 }
@@ -253,13 +243,24 @@ function setLanternPreview(mac, x, y) {
 
 function renderSelectionRing() {
   const lantern = selectedLantern();
-  const ring = $(".selection-ring");
+  const ring = ensureSelectionRing();
   if (!lantern || !ring) return;
   const fallbackIndex = Math.max(0, lanterns().findIndex((item) => item.mac === lantern.mac));
   const fallbackX = 0.18 + (fallbackIndex % 7) * 0.11;
   const fallbackY = 0.28 + Math.floor(fallbackIndex / 7) * 0.18;
   ring.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
   ring.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
+}
+
+function ensureSelectionRing() {
+  if (!selectedLantern()) return null;
+  let ring = $(".selection-ring");
+  if (!ring) {
+    ring = document.createElement("div");
+    ring.className = "selection-ring";
+    $("#map-content").prepend(ring);
+  }
+  return ring;
 }
 
 function startMoveMode() {
