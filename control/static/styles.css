@@ -87,12 +87,12 @@ body.move-mode .selection-ring {
 @keyframes selected-pulse {
   0%, 100% {
     opacity: .55;
-    transform: scale(.92);
+    transform: translate(-50%, -50%) scale(.92);
     box-shadow: 0 0 16px rgba(94, 183, 255, .5);
   }
   50% {
     opacity: 1;
-    transform: scale(1.16);
+    transform: translate(-50%, -50%) scale(1.16);
     box-shadow: 0 0 28px rgba(94, 183, 255, .85);
   }
 }
