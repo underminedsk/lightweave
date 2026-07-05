@@ -219,7 +219,11 @@ async function runAction(action) {
   if (!lantern && ["identify", "move", "replace", "forget"].includes(action)) return;
   try {
     if (action === "details") {
-      $("#detail-sheet").classList.toggle("show-details");
+      const sheet = $("#detail-sheet");
+      sheet.classList.toggle("show-details");
+      if (sheet.classList.contains("show-details")) {
+        sheet.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
       return;
     }
     if (action === "identify") {
