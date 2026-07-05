@@ -25,7 +25,8 @@
 // v3: RegisterMsg reports a build id + dirty flag for OTA version consistency.
 // v4: RegisterMsg also reports the human firmware version string.
 // v5: BeaconMsg carries runtime power policy (sleep intervals + LED schedule).
-static constexpr uint8_t PROTO_VERSION = 5;
+// v6: PowerPolicy carries UTC epoch seconds for aligned sleep/update rendezvous.
+static constexpr uint8_t PROTO_VERSION = 6;
 
 // BeaconMsg.flags bits.
 // FIELD_AWAKE: conductor-commanded override — "the field should be awake now,

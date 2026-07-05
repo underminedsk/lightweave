@@ -468,6 +468,7 @@ function powerPolicyFromForm() {
     schedule_enabled: $("#schedule-enabled").checked,
     force_awake: false,
     current_min: currentMinuteInTimezone(),
+    current_epoch_s: Math.floor(Date.now() / 1000),
   };
 }
 

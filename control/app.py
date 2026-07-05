@@ -45,6 +45,7 @@ class PowerPolicyUpdate(BaseModel):
     schedule_enabled: bool
     force_awake: bool
     current_min: int = Field(ge=0, le=1439)
+    current_epoch_s: int = Field(ge=0, le=4_294_967_295)
 
 
 def create_default_conductor() -> ConductorAdapter:

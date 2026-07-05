@@ -13,14 +13,14 @@ def test_snapshot_counts_healthy_placed_over_placed_total() -> None:
     assert snapshot["summary"]["firmware"]["consistent"] is True
     assert snapshot["summary"]["firmware"]["matching"] == 8
     assert snapshot["summary"]["firmware"]["expected"] == 9
-    assert snapshot["summary"]["firmware"]["version"] == "0.2.0"
+    assert snapshot["summary"]["firmware"]["version"] == "0.3.0"
 
 
 def test_firmware_mismatch_is_attention() -> None:
     conductor = MockConductor()
     conductor._lanterns[0].firmware = {
         "version": "0.2.0",
-        "proto": 5,
+        "proto": 6,
         "build_id": 0xDEADBEEF,
         "build_label": "deadbeef",
         "dirty": False,
@@ -46,6 +46,7 @@ def test_power_policy_force_awake_overrides_off_window() -> None:
         "schedule_enabled": True,
         "force_awake": False,
         "current_min": 12 * 60,
+        "current_epoch_s": 1_720_123_400,
     })
     assert conductor.snapshot()["power"]["leds_on"] is False
 
@@ -57,6 +58,7 @@ def test_power_policy_force_awake_overrides_off_window() -> None:
         "schedule_enabled": True,
         "force_awake": True,
         "current_min": 12 * 60,
+        "current_epoch_s": 1_720_123_400,
     })
     snapshot = conductor.snapshot()
     assert snapshot["power"]["force_awake"] is True

@@ -99,8 +99,9 @@ RTC_DATA_ATTR static bool g_rtc_was_day = false;
 // Runtime field power policy. The conductor persists these knobs and includes
 // them in every beacon; performers apply the latest received policy directly, so
 // changing schedule/intervals is a control-plane action, not a reflash.
-static PowerPolicy g_power_policy = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0};
+static PowerPolicy g_power_policy = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0};
 static uint16_t    g_policy_base_min = 12 * 60;
+static uint32_t    g_policy_base_epoch_s = 0;
 static int64_t     g_policy_clock_set_us = 0;
 
 // INA228 power telemetry (powermon.h logic, host-tested; ARCHITECTURE §4.2).
@@ -150,10 +151,12 @@ static void configLoad() {
   g_power_policy.deep_sleep_check_min = g_prefs.getUShort("p_dchk", g_power_policy.deep_sleep_check_min);
   g_power_policy.led_on_start_min = g_prefs.getUShort("p_on", g_power_policy.led_on_start_min);
   g_power_policy.led_on_end_min = g_prefs.getUShort("p_off", g_power_policy.led_on_end_min);
+  g_power_policy.current_epoch_s = g_prefs.getUInt("p_epoch", g_power_policy.current_epoch_s);
   if (g_prefs.getBool("p_sched", false)) g_power_policy.flags |= POWER_FLAG_SCHEDULE_ENABLED;
   if (g_wake_flag) g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
   powerPolicySanitize(g_power_policy);
   g_policy_base_min = g_power_policy.current_min;
+  g_policy_base_epoch_s = g_power_policy.current_epoch_s;
   g_prefs.end();
 }
 
@@ -181,6 +184,7 @@ static void powerPolicySave() {
   g_prefs.putUShort("p_dchk", g_power_policy.deep_sleep_check_min);
   g_prefs.putUShort("p_on", g_power_policy.led_on_start_min);
   g_prefs.putUShort("p_off", g_power_policy.led_on_end_min);
+  g_prefs.putUInt("p_epoch", g_power_policy.current_epoch_s);
   g_prefs.putBool("p_sched", powerPolicyScheduleEnabled(g_power_policy));
   g_prefs.putBool("wake", g_wake_flag);
   g_prefs.end();
@@ -223,7 +227,7 @@ static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0},
-                             {4, 15, 20 * 60, 6 * 60, 12 * 60, 0}, 0};
+                             {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0}, 0};
 static uint32_t g_tx_seq = 0;
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -310,9 +314,18 @@ static uint16_t powerPolicyCurrentMinute(int64_t t) {
   return (uint16_t)((g_policy_base_min + elapsed_min) % POWER_DAY_MINUTES);
 }
 
+static uint32_t powerPolicyCurrentEpoch(int64_t t) {
+  int64_t elapsed_s = 0;
+  if (g_policy_clock_set_us > 0 && t >= g_policy_clock_set_us) {
+    elapsed_s = (t - g_policy_clock_set_us) / 1000000LL;
+  }
+  return g_policy_base_epoch_s + (uint32_t)elapsed_s;
+}
+
 static PowerPolicy powerPolicySnapshot(int64_t t) {
   PowerPolicy p = g_power_policy;
   p.current_min = powerPolicyCurrentMinute(t);
+  p.current_epoch_s = powerPolicyCurrentEpoch(t);
   if (g_wake_flag) p.flags |= POWER_FLAG_FORCE_AWAKE;
   else p.flags &= ~POWER_FLAG_FORCE_AWAKE;
   powerPolicySanitize(p);
@@ -328,7 +341,16 @@ static DutyConfig currentDutyConfig(const PowerPolicy& p) {
 static uint64_t powerPolicyDeepSleepUs(const PowerPolicy& p) {
   PowerPolicy clean = p;
   powerPolicySanitize(clean);
-  return (uint64_t)clean.deep_sleep_check_min * 60000000ULL;
+  return (uint64_t)powerPolicyAlignedSleepSeconds(clean) * 1000000ULL;
+}
+
+static void powerPolicyAdvanceToSyncedNow(PowerPolicy& p, const BeaconMsg& b,
+                                          const SyncState& s, int64_t local_now_us) {
+  if (p.current_epoch_s == 0 || !s.locked) return;
+  int64_t synced_now = syncedTime(s, local_now_us);
+  if (synced_now <= b.epoch_us) return;
+  uint32_t elapsed_s = (uint32_t)((synced_now - b.epoch_us) / 1000000LL);
+  p.current_epoch_s += elapsed_s;
 }
 
 static void powerPolicyApplyCommand(const SerialJsonCommand& cmd) {
@@ -351,9 +373,14 @@ static void powerPolicyApplyCommand(const SerialJsonCommand& cmd) {
   }
   if (cmd.has_current_min) {
     g_policy_base_min = cmd.current_min % POWER_DAY_MINUTES;
-    g_policy_clock_set_us = now_us();
     g_power_policy.current_min = g_policy_base_min;
   }
+  if (cmd.has_current_epoch_s) {
+    g_policy_base_epoch_s = cmd.current_epoch_s;
+    g_power_policy.current_epoch_s = g_policy_base_epoch_s;
+  }
+  if (cmd.has_current_min || cmd.has_current_epoch_s)
+    g_policy_clock_set_us = now_us();
   powerPolicySanitize(g_power_policy);
   powerPolicySave();
 }
@@ -782,12 +809,13 @@ static void printInfo() {
                 isConductor() ? " (conductor: never dusk-sleeps)" : "");
   PowerPolicy p = isConductor() ? powerPolicySnapshot(now_us()) : b.power;
   Serial.printf("  power policy: light-check=%us  deep-check=%umin  schedule=%s "
-                "on=%02u:%02u off=%02u:%02u  now=%02u:%02u  leds=%s\n",
+                "on=%02u:%02u off=%02u:%02u  now=%02u:%02u  epoch=%lu  leds=%s\n",
                 p.light_sleep_check_s, p.deep_sleep_check_min,
                 powerPolicyScheduleEnabled(p) ? "on" : "off",
                 p.led_on_start_min / 60, p.led_on_start_min % 60,
                 p.led_on_end_min / 60, p.led_on_end_min % 60,
                 p.current_min / 60, p.current_min % 60,
+                (unsigned long)p.current_epoch_s,
                 powerPolicyLedsOn(p) ? "on" : "off");
   if (isConductor())
     Serial.printf("  wake-override=%s (FIELD_AWAKE flag in beacons)\n",
@@ -886,11 +914,12 @@ static void printPowerPolicyJson(const PowerPolicy& p) {
   Serial.printf("\"power\":{\"light_sleep_check_s\":%u,"
                 "\"deep_sleep_check_min\":%u,"
                 "\"led_on_start_min\":%u,\"led_on_end_min\":%u,"
-                "\"current_min\":%u,"
+                "\"current_min\":%u,\"current_epoch_s\":%lu,"
                 "\"schedule_enabled\":%s,\"force_awake\":%s,"
                 "\"leds_on\":%s}",
                 p.light_sleep_check_s, p.deep_sleep_check_min,
                 p.led_on_start_min, p.led_on_end_min, p.current_min,
+                (unsigned long)p.current_epoch_s,
                 powerPolicyScheduleEnabled(p) ? "true" : "false",
                 powerPolicyForceAwake(p) ? "true" : "false",
                 powerPolicyLedsOn(p) ? "true" : "false");
@@ -1318,6 +1347,7 @@ void setup() {
   Serial.printf("\nDo Baskets Dream — channel %u\n", WIFI_CHANNEL);
 
   configLoad();
+  g_policy_clock_set_us = now_us();
   patternConfigLoad();
   esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
   rosterInit(g_roster);
@@ -1452,6 +1482,7 @@ void loop() {
     // time from the synced clock. dutyStep returns a transition to apply, if any.
     PowerPolicy policy = b.power;
     powerPolicySanitize(policy);
+    powerPolicyAdvanceToSyncedNow(policy, b, s, t);
     if (g_powersave) {
       DutyAction act = dutyStep(g_duty, currentDutyConfig(policy), t);
       if (act == DUTY_WAKE) radioWake();

@@ -10,6 +10,7 @@ static constexpr uint16_t POWER_LIGHT_CHECK_MAX_S = 300;
 static constexpr uint16_t POWER_DEEP_CHECK_MIN_MIN = 1;
 static constexpr uint16_t POWER_DEEP_CHECK_MAX_MIN = 1440;
 static constexpr uint16_t POWER_DAY_MINUTES = 1440;
+static constexpr uint32_t POWER_SECONDS_PER_MINUTE = 60;
 
 typedef struct __attribute__((packed)) {
   uint16_t light_sleep_check_s;  // radio/light-sleep update check interval
@@ -17,6 +18,7 @@ typedef struct __attribute__((packed)) {
   uint16_t led_on_start_min;     // minutes after local midnight, inclusive
   uint16_t led_on_end_min;       // minutes after local midnight, exclusive
   uint16_t current_min;          // conductor's current local minute of day
+  uint32_t current_epoch_s;      // conductor's current UTC epoch seconds
   uint8_t  flags;                // POWER_FLAG_* bits
 } PowerPolicy;
 
@@ -40,7 +42,7 @@ inline void powerPolicySanitize(PowerPolicy& p) {
 }
 
 inline PowerPolicy powerPolicyDefault() {
-  PowerPolicy p = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0};
+  PowerPolicy p = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0};
   return p;
 }
 
@@ -67,4 +69,13 @@ inline bool powerPolicyLedsOn(const PowerPolicy& p) {
   if (!powerPolicyScheduleEnabled(p)) return true;
   return powerPolicyInLedWindow(p.current_min, p.led_on_start_min,
                                 p.led_on_end_min);
+}
+
+inline uint32_t powerPolicyAlignedSleepSeconds(const PowerPolicy& p) {
+  uint32_t interval_s = (uint32_t)p.deep_sleep_check_min * POWER_SECONDS_PER_MINUTE;
+  if (interval_s == 0) interval_s = POWER_SECONDS_PER_MINUTE;
+  if (p.current_epoch_s == 0) return interval_s;
+  uint32_t rem = p.current_epoch_s % interval_s;
+  if (rem == 0) return interval_s;
+  return interval_s - rem;
 }

@@ -25,8 +25,8 @@ def test_state_endpoint_returns_mock_state() -> None:
     assert body["summary"]["alive"] == 8
     assert body["summary"]["total"] == 9
     assert body["conductor"]["sync"] == "locked"
-    assert body["conductor"]["firmware"]["version"] == "0.2.0"
-    assert body["conductor"]["firmware"]["proto"] == 5
+    assert body["conductor"]["firmware"]["version"] == "0.3.0"
+    assert body["conductor"]["firmware"]["proto"] == 6
     assert body["summary"]["firmware"]["consistent"] is True
     assert body["power"]["light_sleep_check_s"] == 4
 
@@ -98,6 +98,7 @@ def test_power_policy_update_round_trips_to_state() -> None:
             "schedule_enabled": True,
             "force_awake": False,
             "current_min": 12 * 60,
+            "current_epoch_s": 1_720_123_456,
         },
     )
     state = client.get("/api/state").json()
@@ -107,6 +108,7 @@ def test_power_policy_update_round_trips_to_state() -> None:
     assert state["power"]["deep_sleep_check_min"] == 60
     assert state["power"]["schedule_enabled"] is True
     assert state["power"]["force_awake"] is False
+    assert state["power"]["current_epoch_s"] == 1_720_123_456
     assert state["power"]["leds_on"] is False
 
 

@@ -65,8 +65,8 @@ Snapshot shape:
     "wake": true,
     "sync": "locked",
     "firmware": {
-      "version": "0.2.0",
-      "proto": 5,
+      "version": "0.3.0",
+      "proto": 6,
       "build_id": 3225866068,
       "build_label": "c046bf54",
       "dirty": false
@@ -82,7 +82,7 @@ Snapshot shape:
       "matching": 8,
       "seen": 8,
       "expected": 9,
-      "version": "0.2.0",
+      "version": "0.3.0",
       "build_label": "c046bf54",
       "dirty": false
     }
@@ -98,6 +98,7 @@ Snapshot shape:
     "led_on_start_min": 1200,
     "led_on_end_min": 360,
     "current_min": 720,
+    "current_epoch_s": 0,
     "schedule_enabled": false,
     "force_awake": true,
     "leds_on": true
@@ -113,7 +114,7 @@ Snapshot shape:
       "y": 0.47,
       "position": "Set",
       "attention": "None",
-      "firmware": {"version": "0.2.0", "proto": 5, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
+      "firmware": {"version": "0.3.0", "proto": 6, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
       "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
       "updated_at": 1720123456.0
     }

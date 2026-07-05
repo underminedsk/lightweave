@@ -11,8 +11,8 @@ def _now() -> float:
 
 
 FIELD_FIRMWARE = {
-    "version": "0.2.0",
-    "proto": 5,
+    "version": "0.3.0",
+    "proto": 6,
     "build_id": 0x44D028FD,
     "build_label": "44d028fd",
     "dirty": False,
@@ -24,6 +24,7 @@ DEFAULT_POWER_POLICY = {
     "led_on_start_min": 20 * 60,
     "led_on_end_min": 6 * 60,
     "current_min": 12 * 60,
+    "current_epoch_s": 0,
     "schedule_enabled": False,
     "force_awake": True,
     "leds_on": True,

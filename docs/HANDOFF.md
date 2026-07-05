@@ -13,8 +13,8 @@ build clean. Latest on `main` (2026-07-05): **runtime power schedule is
 code-complete** — Operations can set light-sleep/radio check interval,
 deep-sleep check interval, LED-on window, and force-awake override. The conductor
 persists that `PowerPolicy` and broadcasts it in every beacon; performers apply
-it without further firmware changes. This bumps `VERSION` to `0.2.0` and
-`PROTO_VERSION` to 5, so all boards must be reflashed together before the live
+it without further firmware changes. UTC epoch anchoring for sleep checks bumps
+`VERSION` to `0.3.0` and `PROTO_VERSION` to 6, so all boards must be reflashed together before the live
 bench can use it. Photodiodes are now optional/fallback, not the main sleep
 strategy. Previous latest: **release version display for OTA
 safety is code-complete** — firmware reports `VERSION` in addition to protocol,
@@ -54,7 +54,7 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 ## ▶ Next session: pick up here (updated 2026-07-05)
 
 Priority order:
-1. **Hardware-verify runtime power schedule:** after committing/flashing v5 to
+1. **Hardware-verify runtime power schedule:** after committing/flashing v6 to
    all boards, use Operations to set a short LED-off window + short deep-check
    interval, confirm performers clear LEDs/deep-sleep/rejoin, then use
    "Turn boards on" to force the field awake. Keep recent-serial grace in mind:
@@ -64,7 +64,7 @@ Priority order:
    window, readiness/status reporting, timeout, and UI copy. Do not implement
    autonomous/opportunistic updates.
 3. **Optional negative OTA-safety check:** if useful, intentionally flash one
-   performer with a same-v5 but different build and confirm it appears as
+   performer with a same-v6 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
    or older boards simply vanish from the roster due to the version gate.
 4. **Monday (parts in hand):** phototransistors are no longer required for the
@@ -140,8 +140,8 @@ power measurement):
   serial input** — hit Enter in a monitor to revive a quiet node (see
   FLASHING.md). Exception: the conductor's `[power]` telemetry log is
   deliberately ungated (it's the overnight audit trail).
-- **Wire protocol is v5** (`PROTO_VERSION 5`; BEACON now includes runtime
-  `PowerPolicy`, and REGISTER includes release version, protocol, build id, and
+- **Wire protocol is v6** (`PROTO_VERSION 6`; BEACON now includes runtime
+  `PowerPolicy` with UTC epoch seconds, and REGISTER includes release version, protocol, build id, and
   dirty flag for OTA version consistency).
   Protocol-mismatched nodes silently reject each other — **flash every board
   together**. A same-protocol stale version/build is reported as
@@ -498,7 +498,7 @@ latency, not sync.
 ### Lever 2 (then): schedule-driven deep-sleep — calendar life
 
 **Primary path as of 2026-07-05:** the conductor broadcasts runtime
-`PowerPolicy` in every v5 beacon. Operations sets the radio/light-sleep check
+`PowerPolicy` in every v6 beacon. Operations sets the radio/light-sleep check
 interval, deep-sleep check interval, LED-on window, and force-awake override.
 Performers clear LEDs and deep-sleep outside the window, then wake on the
 configured check cadence to hear whether the schedule/override changed. This
@@ -522,7 +522,7 @@ field. Four independent layers guarantee daytime testability:
    and listens for a beacon before it may re-sleep — a flagged beacon pins it
    awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
    ≤ one resample interval. Historical note: this originally grew the wire format
-   to `PROTO_VERSION 2`; the current protocol is **v5**, and every protocol bump
+   to `PROTO_VERSION 2`; the current protocol is **v6**, and every protocol bump
    still means reflashing every board together.
 2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
    for 10 min, 60 s light debounce on top). Per-lantern physical override via the
@@ -611,7 +611,7 @@ missing the field-* envs, and the field envs copy-pasting instead of
   `TableMsg.chunk/chunks` written but never read. Removing the wire fields would
   change layout → PROTO_VERSION bump → reflash every board together; fold it
   into the next deliberate protocol rev instead of doing it standalone. Roster
-  firmware reporting is no longer dead: v5 REGISTER includes `fw` + release
+  firmware reporting is no longer dead: current REGISTER includes `fw` + release
   version + build id + dirty flag for OTA consistency checks, and BEACON includes
   runtime `PowerPolicy`.
 

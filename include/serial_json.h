@@ -47,6 +47,7 @@ struct SerialJsonCommand {
   bool has_schedule_enabled = false;
   bool has_force_awake = false;
   bool has_current_min = false;
+  bool has_current_epoch_s = false;
   uint16_t light_sleep_check_s = 4;
   uint16_t deep_sleep_check_min = 15;
   uint16_t led_on_start_min = 20 * 60;
@@ -54,6 +55,7 @@ struct SerialJsonCommand {
   bool schedule_enabled = false;
   bool force_awake = false;
   uint16_t current_min = 12 * 60;
+  uint32_t current_epoch_s = 0;
 };
 
 inline bool serialJsonLooksLike(const char* line) {
@@ -278,6 +280,10 @@ inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
     if (sjUint(json, "current_min", v)) {
       cmd.has_current_min = true;
       cmd.current_min = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "current_epoch_s", v)) {
+      cmd.has_current_epoch_s = true;
+      cmd.current_epoch_s = v;
     }
     if (sjBool(json, "schedule_enabled", b)) {
       cmd.has_schedule_enabled = true;

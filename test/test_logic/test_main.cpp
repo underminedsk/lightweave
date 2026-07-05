@@ -373,7 +373,7 @@ void test_power_policy_force_awake_overrides_schedule() {
 }
 
 void test_power_policy_sanitize_clamps_runtime_intervals() {
-  PowerPolicy p = {0, 2000, 2000, 1440, 1441, 0xff};
+  PowerPolicy p = {0, 2000, 2000, 1440, 1441, 123456, 0xff};
 
   powerPolicySanitize(p);
 
@@ -382,7 +382,26 @@ void test_power_policy_sanitize_clamps_runtime_intervals() {
   TEST_ASSERT_EQUAL_UINT16(560, p.led_on_start_min);
   TEST_ASSERT_EQUAL_UINT16(0, p.led_on_end_min);
   TEST_ASSERT_EQUAL_UINT16(1, p.current_min);
+  TEST_ASSERT_EQUAL_UINT32(123456, p.current_epoch_s);
   TEST_ASSERT_EQUAL_UINT8(POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE, p.flags);
+}
+
+void test_power_policy_sleep_check_aligns_to_utc_interval() {
+  PowerPolicy p = powerPolicyDefault();
+  p.deep_sleep_check_min = 1;
+
+  p.current_epoch_s = 100;
+  TEST_ASSERT_EQUAL_UINT32(20, powerPolicyAlignedSleepSeconds(p));
+
+  p.current_epoch_s = 120;
+  TEST_ASSERT_EQUAL_UINT32(60, powerPolicyAlignedSleepSeconds(p));
+
+  p.deep_sleep_check_min = 15;
+  p.current_epoch_s = 3600 + 42;
+  TEST_ASSERT_EQUAL_UINT32(858, powerPolicyAlignedSleepSeconds(p));
+
+  p.current_epoch_s = 0;
+  TEST_ASSERT_EQUAL_UINT32(900, powerPolicyAlignedSleepSeconds(p));
 }
 
 // ---- Layout table: authoritative MAC -> (x,y) -------------------------------
@@ -1061,7 +1080,8 @@ void test_serial_json_power_policy_parses_runtime_sleep_controls() {
       "{\"id\":11,\"cmd\":\"power_policy\",\"light_sleep_check_s\":30,"
       "\"deep_sleep_check_min\":60,\"led_on_start_min\":1140,"
       "\"led_on_end_min\":300,\"schedule_enabled\":true,"
-      "\"force_awake\":false,\"current_min\":720}",
+      "\"force_awake\":false,\"current_min\":720,"
+      "\"current_epoch_s\":1720123456}",
       cmd, error));
 
   TEST_ASSERT_NULL(error);
@@ -1080,6 +1100,8 @@ void test_serial_json_power_policy_parses_runtime_sleep_controls() {
   TEST_ASSERT_FALSE(cmd.force_awake);
   TEST_ASSERT_TRUE(cmd.has_current_min);
   TEST_ASSERT_EQUAL_UINT16(720, cmd.current_min);
+  TEST_ASSERT_TRUE(cmd.has_current_epoch_s);
+  TEST_ASSERT_EQUAL_UINT32(1720123456, cmd.current_epoch_s);
 }
 
 void test_serial_json_rejects_bad_command() {
@@ -1339,6 +1361,7 @@ int main(int, char**) {
   RUN_TEST(test_power_policy_window_handles_daytime_and_overnight_ranges);
   RUN_TEST(test_power_policy_force_awake_overrides_schedule);
   RUN_TEST(test_power_policy_sanitize_clamps_runtime_intervals);
+  RUN_TEST(test_power_policy_sleep_check_aligns_to_utc_interval);
   RUN_TEST(test_table_set_and_lookup);
   RUN_TEST(test_table_set_updates_in_place);
   RUN_TEST(test_table_remove);
