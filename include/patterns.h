@@ -12,10 +12,23 @@
 
 namespace patterns {
 
-// Uniform breathing pulse in the white channel — every node in unison.
-inline RgbwColor pulse(int64_t synced_us, uint8_t brightness) {
+inline RgbwColor hsvColor(uint8_t brightness, float intensity,
+                          const uint16_t params[4]) {
+  float h = (params[0] % 360) / 360.0f;
+  uint16_t sp = params[1] ? (params[1] > 100 ? 100 : params[1]) : 100;
+  float r, g, b;
+  pmath::hsvToRgb(h, sp / 100.0f, intensity, r, g, b);
+  return RgbwColor((uint8_t)lroundf(r * brightness), (uint8_t)lroundf(g * brightness),
+                   (uint8_t)lroundf(b * brightness), 0);
+}
+
+// Uniform breathing pulse in the selected hue — every node in unison.
+//   params[0] = hue in degrees, 0-359  (e.g. 30 = orange, 40 = amber)
+//   params[1] = saturation in percent, 1-100; 0 falls back to 100 (full)
+inline RgbwColor pulse(int64_t synced_us, uint8_t brightness,
+                       const uint16_t params[4]) {
   float s = pmath::pulseIntensity(synced_us, /*period_s*/ 4.0f, /*spatial*/ 0.0f);
-  return RgbwColor(0, 0, 0, (uint8_t)lroundf(s * brightness));
+  return hsvColor(brightness, s, params);
 }
 
 // Position-aware sweep: a wave of brightness travels across the field, so the
@@ -64,12 +77,7 @@ inline RgbwColor solid(uint8_t brightness) {
 //   params[0] = hue in degrees, 0-359  (e.g. 30 = orange, 50 = amber/yellow)
 //   params[1] = saturation in percent, 1-100; 0 falls back to 100 (full)
 inline RgbwColor glow(uint8_t brightness, const uint16_t params[4]) {
-  float h = (params[0] % 360) / 360.0f;
-  uint16_t sp = params[1] ? (params[1] > 100 ? 100 : params[1]) : 100;
-  float r, g, b;
-  pmath::hsvToRgb(h, sp / 100.0f, 1.0f, r, g, b);
-  return RgbwColor((uint8_t)lroundf(r * brightness), (uint8_t)lroundf(g * brightness),
-                   (uint8_t)lroundf(b * brightness), 0);
+  return hsvColor(brightness, /*intensity*/ 1.0f, params);
 }
 
 // Render one pattern into a NeoPixelBus strip (all pixels share one color for
@@ -93,7 +101,7 @@ inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x
       break;
     case PULSE:
     default:
-      c = pulse(synced_us, b.brightness);
+      c = pulse(synced_us, b.brightness, b.params);
       break;
   }
   for (uint16_t i = 0; i < strip.PixelCount(); i++) strip.SetPixelColor(i, c);

@@ -10,6 +10,11 @@ class DownConductor(MockConductor):
         raise SerialProtocolError("timeout waiting for state ack")
 
 
+class RejectingPatternConductor(MockConductor):
+    def update_pattern(self, pattern: str, brightness: int, params: dict) -> dict:
+        return {"ok": False, "error": "bad pattern"}
+
+
 def test_state_endpoint_returns_mock_state() -> None:
     client = TestClient(create_app(MockConductor()))
 
@@ -17,7 +22,8 @@ def test_state_endpoint_returns_mock_state() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["summary"]["alive"] == 9
+    assert body["summary"]["alive"] == 8
+    assert body["summary"]["total"] == 9
     assert body["conductor"]["sync"] == "locked"
 
 
@@ -61,6 +67,18 @@ def test_pattern_update_round_trips_to_state() -> None:
     assert state["pattern"]["pattern"] == "Sweep"
     assert state["pattern"]["brightness"] == 64
     assert state["pattern"]["params"] == {"period": 8000}
+
+
+def test_pattern_update_rejected_by_conductor_is_400() -> None:
+    client = TestClient(create_app(RejectingPatternConductor()))
+
+    response = client.post(
+        "/api/show/pattern",
+        json={"pattern": "Bad", "brightness": 64, "params": {}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "bad pattern"
 
 
 def test_assign_endpoint_updates_lantern_position() -> None:

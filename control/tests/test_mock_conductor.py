@@ -1,13 +1,13 @@
 from control.mock_conductor import MockConductor
 
 
-def test_snapshot_counts_attention_and_alive_nodes() -> None:
+def test_snapshot_counts_healthy_placed_over_placed_total() -> None:
     conductor = MockConductor()
 
     snapshot = conductor.snapshot()
 
-    assert snapshot["summary"]["alive"] == 9
-    assert snapshot["summary"]["total"] == 60
+    assert snapshot["summary"]["alive"] == 8
+    assert snapshot["summary"]["total"] == 9
     assert snapshot["summary"]["attention"] == 2
     assert snapshot["pattern"]["pattern"] == "Glow"
 

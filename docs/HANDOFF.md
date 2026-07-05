@@ -8,8 +8,16 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**83 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-04): **review-debt paydown** — the
+(**87 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
+build clean. Latest on `main` (2026-07-05): **real control plane on the bench** —
+the FastAPI UI/API can now talk to the conductor over USB serial using
+newline-delimited JSON while preserving the human CLI. Hardware-verified with
+one conductor + two performers: `/api/state` sees both performers, map placement
+works, and Pattern tab changes ack through the real conductor. The Pattern tab
+now has per-pattern controls: Pulse/Glow use hue, Sweep uses period+wavelength,
+and Palette Drift uses period+spatial spread. Same-session review fixes moved
+blocking serial calls off the FastAPI event loop and cleaned WebSocket disconnect
+handling. Previous latest: **review-debt paydown** — the
 host-unreachable logic extracted out of `main.cpp` into pure tested headers
 (`macaddr.h`, `table_wire.h`, `bootplan.h`, `patternBootSafe`), `field-*` build
 envs (`-D HEARTBEAT_LED=0`), and the table rebroadcast stretched 5 s → 60 s
@@ -26,11 +34,21 @@ full-repo adversarial self-review with all 5 correctness findings fixed, the
 production BOM, and the **pilot-batch order placed 2026-07-03** (most parts
 arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
-## ▶ Next session: pick up here (updated 2026-07-04)
+## ▶ Next session: pick up here (updated 2026-07-05)
 
-Priority order (the INA228 firmware and the review-debt paydown, previously
-items here, both landed 2026-07-04):
-1. **Monday (parts in hand):** wire a phototransistor → calibrate
+Priority order:
+1. **Land or checkpoint the control-plane batch.** Current working tree is a
+   broad but reviewed local diff: serial adapter, FastAPI API, static UI,
+   firmware JSON command support, pattern-control polish, and docs. Before
+   shipping, run the normal final checks:
+   `PYTHONPATH=. pytest control/tests`, `pio test -e native`, and at least
+   `pio run -e devkitc` (already green after review fixes).
+2. **Optional focused QA before ship:** use the live server at
+   `http://127.0.0.1:8001` with `CONTROL_CONDUCTOR=serial` and
+   `CONTROL_SERIAL_PORT=/dev/cu.usbserial-7`; verify map placement, pattern
+   dirty-state behavior, and one real pattern change. Restore the field to the
+   desired show scene afterward.
+3. **Monday (parts in hand):** wire a phototransistor → calibrate
    `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
    verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
    wire INA228 on one reference node (SDA→21, SCL→22, chip in series between
@@ -41,7 +59,7 @@ items here, both landed 2026-07-04):
    re-adopts its position within ~10 s of registering (the new single-row
    `[table]` reply; code-reviewed + host-tested but the radio path itself
    isn't hardware-verified yet).
-2. **User task, anytime (needs hands + DMM):** re-measure the 12 V
+4. **User task, anytime (needs hands + DMM):** re-measure the 12 V
    battery-side draw with naps running, **USB disconnected** (USB backfeeds the
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
    51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
@@ -74,6 +92,15 @@ power measurement):
 - **NVS identity:** `id` + `(x,y)` persist across reboot; set over serial.
 - **Pattern config persists** too: `pattern_id`/`brightness`/`params` survive a
   power-cycle (keys `pat`/`bri`/`p0`..`p3` in the `"node"` namespace).
+- **Control plane serial bridge + UI** (hardware-verified 2026-07-05): FastAPI
+  serves the static operator UI and HTTP/WS API; `JsonLineSerialConductor`
+  talks to the conductor over pyserial with request ids and ok/error acks.
+  Mutations currently implemented: identify ack, assign/place, forget,
+  replace, pattern changes, and blackout. Serial calls are serialized and run
+  off the FastAPI event loop, so one serial timeout does not block unrelated
+  async work. The UI has Map, Node List, Patterns, and Operations views; map
+  zoom/pan, drag-to-move/place, unpositioned tray, single bottom-sheet actions,
+  and per-pattern controls are all wired.
 - **Protocol foundation Half 1** (hardware-verified): typed message header
   `{magic, version, type}` with type dispatch; **MAC identity** read at boot and
   shown in `info`; **bidirectional ESP-NOW** — performers unicast `REGISTER`
@@ -98,7 +125,7 @@ power measurement):
 - **Wire protocol is v2** (`PROTO_VERSION 2`, beacon grew a `flags` byte for
   FIELD_AWAKE). v1 and v2 nodes silently reject each other — **flash every
   board together** (all 3 bench boards are on v2 as of 2026-07-03).
-- **Host unit tests** (`test/test_logic/`, 83): sync core, pattern math, roster,
+- **Host unit tests** (`test/test_logic/`, 87): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
@@ -225,24 +252,28 @@ tested), `bootplan.h` (Lever-2 boot classification, pure, tested), `identity.h`
 is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 `pat`/`bri`/`p0`..`p3` for the pattern, `table` blob on the conductor).
 
-**Not built yet:** structured machine Pi↔conductor serial (lands with the Pi UI),
-auto-calibration, show program / scheduling, the Pi web UI, OTA. (INA228
-telemetry firmware IS built now — see the section above; it awaits the physical
+**Not built yet:** Pi packaging (AP hotspot, mDNS, systemd, serial device naming),
+auto-calibration, show program / scheduling, real identify blink over ESP-NOW,
+OTA. (Structured machine serial and the dev laptop UI/API are built now; INA228
+telemetry firmware IS built too — see the section above; it awaits the physical
 chip.)
 
 ## Hardware state
 
 - 3× DOIT ESP32 DevKit V1, all on the unified image. Rings on 2 of them; LED data
   on **GPIO13 (`D13`)**, USB 5V (no 12 V / buck yet).
-- **As of 2026-07-03 (all reflashed to protocol v2 together):**
-  - `8C:94:DF:57:7F:14` — **CONDUCTOR**, id 0, GLOW pattern (pat 4, bri 48,
-    params [40 100]). Needed a fresh `erase_flash` (clock-scramble gotcha) —
-    **its NVS layout table was lost; re-`assign` positions when they matter.**
-  - `30:76:F5:93:67:3C` — performer, id 2.
-  - `8C:94:DF:8F:71:50` — performer, id 0 (fully erased today —
-    **unprovisioned**; set `id`, and position comes from the conductor table).
-- Provisioned roles/ids/positions may have drifted across sessions — **re-check
-  each board with `info`** rather than trusting labels.
+- **As of 2026-07-05 (live API checked on `http://127.0.0.1:8001`):**
+  - `/dev/cu.usbserial-7`, `8C:94:DF:57:7F:14` — **CONDUCTOR**, serial-backed
+    API server currently attached here.
+  - `8C:94:DF:8F:71:50` — performer, label `#1`, positioned at approximately
+    `(0.2249, 0.7570)`.
+  - `30:76:F5:93:67:3C` — performer, label `#2`, positioned at approximately
+    `(0.8076, 0.4122)`.
+  - Current live state when this doc was updated: `summary.alive=2`,
+    `summary.total=2`, `attention=0`, pattern `Glow`, brightness `27`,
+    params `[50,100,0,0]` (`hue=50`, `saturation=100`).
+- Port names still shuffle because all boards report the same USB serial —
+  re-check each board with `info` rather than trusting labels.
 - **Gotcha:** factory boards ship with ESP-AT firmware and need a one-time
   `esptool.py --port <P> erase_flash` before our image runs right. Boards report
   the same USB serial, so port names shuffle on replug — flash by current port.

@@ -52,7 +52,7 @@ def test_assign_maps_to_json_command() -> None:
 
 
 def test_pattern_command_includes_brightness_and_params() -> None:
-    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "broadcast Sweep"})])
+    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "pattern changed to Sweep"})])
     conductor = JsonLineSerialConductor(transport)
 
     conductor.update_pattern("Sweep", 64, {"period": 8000})

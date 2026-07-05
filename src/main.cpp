@@ -37,6 +37,7 @@
 #include "powermon.h"
 #include "powersave.h"
 #include "roster.h"
+#include "serial_json.h"
 #include "sync.h"
 #include "table.h"
 #include "table_wire.h"
@@ -195,6 +196,7 @@ static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0}, 0};
+static uint32_t g_tx_seq = 0;
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Performer -> conductor registration state. The conductor's MAC is learned from
@@ -423,7 +425,6 @@ static void radioWake() {
   g_radio_on = true;
 }
 
-static uint32_t g_tx_seq = 0;
 static void broadcastBeacon() {
   BeaconMsg b = g_beacon;
   b.hdr.magic = BEACON_MAGIC;
@@ -734,7 +735,207 @@ static void printTable() {
   }
 }
 
+static const char* patternName(uint16_t id) {
+  switch (id) {
+    case patterns::PULSE: return "Pulse";
+    case patterns::PALETTE_DRIFT: return "Palette Drift";
+    case patterns::SWEEP: return "Sweep";
+    case patterns::SOLID: return "Solid";
+    case patterns::GLOW: return "Glow";
+    default: return "Unknown";
+  }
+}
+
+static void jsonOk(uint32_t id, const char* message) {
+  Serial.printf("{\"id\":%lu,\"ok\":true,\"message\":\"%s\"}\n",
+                (unsigned long)id, message);
+}
+
+static void jsonError(uint32_t id, const char* error) {
+  Serial.printf("{\"id\":%lu,\"ok\":false,\"error\":\"%s\"}\n",
+                (unsigned long)id, error);
+}
+
+static void saveBeaconSnapshot() {
+  BeaconMsg snap;
+  portENTER_CRITICAL(&g_sync_mux);
+  snap = g_beacon;
+  portEXIT_CRITICAL(&g_sync_mux);
+  patternConfigSave(snap);
+}
+
+static void printPatternJson(const BeaconMsg& b) {
+  Serial.printf("\"pattern\":{\"pattern\":\"%s\",\"brightness\":%u,"
+                "\"params\":{\"p0\":%u,\"p1\":%u,\"p2\":%u,\"p3\":%u",
+                patternName(b.pattern_id), b.brightness, b.params[0], b.params[1],
+                b.params[2], b.params[3]);
+  if (b.pattern_id == patterns::GLOW || b.pattern_id == patterns::PULSE) {
+    Serial.printf(",\"hue\":%u,\"saturation\":%u", b.params[0],
+                  b.params[1] ? b.params[1] : 100);
+  } else {
+    Serial.printf(",\"period\":%u", b.params[0]);
+  }
+  Serial.print("}}");
+}
+
+static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
+                             const char* status, int64_t last_seen_s, float x,
+                             float y, bool has_position, const char* attention) {
+  char mac[18];
+  Serial.printf("{\"mac\":\"%s\",\"label\":\"%s\",\"status\":\"%s\",",
+                macStr(mac_bytes, mac), label, status);
+  if (last_seen_s >= 0) {
+    Serial.printf("\"last_seen_s\":%lld,\"last_seen_label\":\"%llds ago\",",
+                  (long long)last_seen_s, (long long)last_seen_s);
+  } else {
+    Serial.print("\"last_seen_s\":999999,\"last_seen_label\":\"not seen\",");
+  }
+  if (has_position) {
+    Serial.printf("\"x\":%.4f,\"y\":%.4f,\"position\":\"Set\",", x, y);
+  } else {
+    Serial.print("\"x\":null,\"y\":null,\"position\":\"Missing\",");
+  }
+  Serial.printf("\"attention\":\"%s\",\"power\":{\"wh\":null,\"avg_w\":null,"
+                "\"last_report_label\":null}}",
+                attention);
+}
+
+static void printMachineState(uint32_t id) {
+  Roster roster;
+  BeaconMsg b;
+  bool locked = false;
+  portENTER_CRITICAL(&g_roster_mux);
+  roster = g_roster;
+  portEXIT_CRITICAL(&g_roster_mux);
+  portENTER_CRITICAL(&g_sync_mux);
+  b = g_beacon;
+  locked = g_sync.locked;
+  portEXIT_CRITICAL(&g_sync_mux);
+
+  int64_t t = now_us();
+  uint8_t attention = 0;
+  uint8_t placed_alive = 0;
+  for (uint8_t i = 0; i < g_table.count; i++) {
+    if (rosterFind(roster, g_table.entries[i].mac) < 0) attention++;
+    else placed_alive++;
+  }
+  for (uint8_t i = 0; i < roster.count; i++) {
+    if (tableFind(g_table, roster.entries[i].mac) < 0) attention++;
+  }
+
+  Serial.printf("{\"id\":%lu,\"ok\":true,\"state\":{", (unsigned long)id);
+  Serial.printf("\"conductor\":{\"connected\":true,\"uptime_s\":%.1f,"
+                "\"seq\":%lu,\"wake\":%s,\"sync\":\"%s\"},",
+                millis() / 1000.0f, (unsigned long)g_tx_seq,
+                g_wake_flag ? "true" : "false",
+                isConductor() ? "locked" : (locked ? "locked" : "free-run"));
+  Serial.printf("\"summary\":{\"alive\":%u,\"total\":%u,\"attention\":%u,"
+                "\"table_rows\":%u},",
+                placed_alive, g_table.count, attention, g_table.count);
+  printPatternJson(b);
+  Serial.print(",\"lanterns\":[");
+  bool first = true;
+  for (uint8_t i = 0; i < g_table.count; i++) {
+    const TableEntry& row = g_table.entries[i];
+    int r = rosterFind(roster, row.mac);
+    char label[16];
+    if (r >= 0 && roster.entries[r].id) snprintf(label, sizeof(label), "#%u", roster.entries[r].id);
+    else snprintf(label, sizeof(label), "#?");
+    if (!first) Serial.print(",");
+    first = false;
+    int64_t age_s = r >= 0 ? (t - roster.entries[r].last_us) / 1000000 : -1;
+    printLanternJson(row.mac, label, r >= 0 ? "alive" : "missing", age_s, row.x,
+                     row.y, true, r >= 0 ? "None" : "Not seen");
+  }
+  for (uint8_t i = 0; i < roster.count; i++) {
+    const RosterEntry& row = roster.entries[i];
+    if (tableFind(g_table, row.mac) >= 0) continue;
+    char label[16];
+    if (row.id) snprintf(label, sizeof(label), "#%u", row.id);
+    else snprintf(label, sizeof(label), "Unknown");
+    if (!first) Serial.print(",");
+    first = false;
+    int64_t age_s = (t - row.last_us) / 1000000;
+    printLanternJson(row.mac, label, "alive", age_s, 0.0f, 0.0f, false,
+                     "Needs position");
+  }
+  Serial.print("],\"events\":[]}}\n");
+}
+
+static void handleMachineCommand(const SerialJsonCommand& cmd) {
+  if (cmd.kind == SJ_STATE) {
+    printMachineState(cmd.id);
+  } else if (cmd.kind == SJ_IDENTIFY) {
+    jsonOk(cmd.id, "identify acknowledged");
+  } else if (cmd.kind == SJ_ASSIGN) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "assign is conductor-only");
+    } else if (tableSet(g_table, cmd.mac, cmd.x, cmd.y)) {
+      tableSave();
+      broadcastTable();
+      jsonOk(cmd.id, "assigned");
+    } else {
+      jsonError(cmd.id, "table full");
+    }
+  } else if (cmd.kind == SJ_FORGET) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "forget is conductor-only");
+    } else if (tableRemove(g_table, cmd.mac)) {
+      tableSave();
+      jsonOk(cmd.id, "forgot");
+    } else {
+      jsonError(cmd.id, "unknown lantern");
+    }
+  } else if (cmd.kind == SJ_REPLACE) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "replace is conductor-only");
+      return;
+    }
+    float x = 0.0f, y = 0.0f;
+    if (!tableLookup(g_table, cmd.old_mac, x, y)) {
+      jsonError(cmd.id, "old lantern has no position");
+    } else if (tableFind(g_table, cmd.new_mac) >= 0) {
+      jsonError(cmd.id, "replacement lantern already has a position");
+    } else if (!tableSet(g_table, cmd.new_mac, x, y)) {
+      jsonError(cmd.id, "table full");
+    } else {
+      tableRemove(g_table, cmd.old_mac);
+      tableSave();
+      broadcastTable();
+      jsonOk(cmd.id, "replaced");
+    }
+  } else if (cmd.kind == SJ_PATTERN) {
+    portENTER_CRITICAL(&g_sync_mux);
+    g_beacon.pattern_id = cmd.pattern_id;
+    if (cmd.has_brightness) {
+      g_beacon.brightness =
+          cmd.brightness > MAX_BRIGHTNESS ? MAX_BRIGHTNESS : cmd.brightness;
+    }
+    for (uint8_t i = 0; i < 4; i++)
+      if (cmd.has_params[i]) g_beacon.params[i] = cmd.params[i];
+    portEXIT_CRITICAL(&g_sync_mux);
+    saveBeaconSnapshot();
+    jsonOk(cmd.id, "pattern changed");
+  } else if (cmd.kind == SJ_BLACKOUT) {
+    portENTER_CRITICAL(&g_sync_mux);
+    g_beacon.brightness = 0;
+    portEXIT_CRITICAL(&g_sync_mux);
+    saveBeaconSnapshot();
+    jsonOk(cmd.id, "blackout broadcast");
+  } else {
+    jsonError(cmd.id, "unknown cmd");
+  }
+}
+
 static void handleCommand(char* line) {
+  if (serialJsonLooksLike(line)) {
+    SerialJsonCommand cmd;
+    const char* error = nullptr;
+    if (serialJsonParse(line, cmd, error)) handleMachineCommand(cmd);
+    else jsonError(cmd.id, error ? error : "bad json");
+    return;
+  }
+
   char* cmd = strtok(line, " \t");
   if (!cmd) return;
 
@@ -915,8 +1116,8 @@ static void handleCommand(char* line) {
 
 // Accumulate a newline-terminated command from serial without blocking.
 static void pollSerialCommands() {
-  static char buf[64];
-  static uint8_t len = 0;
+  static char buf[512];
+  static uint16_t len = 0;
   if (Serial.available()) g_last_serial_us = now_us();  // hold Stage-B naps off
   while (Serial.available()) {
     char c = (char)Serial.read();

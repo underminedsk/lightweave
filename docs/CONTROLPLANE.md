@@ -1,10 +1,10 @@
 # Control plane — features & phasing
 
-Status: **prototype in progress (2026-07-04).** Companion to
+Status: **prototype in progress (2026-07-05).** Companion to
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §5.2 (control plane) and §7 (wire
 protocol). This doc enumerates *what* the control plane does, what the
-current HTTP/API contract is, and how the serial adapter will replace the
-mock conductor without changing the UI/API surface.
+current HTTP/API contract is, and how the serial adapter talks to the
+conductor without changing the UI/API surface.
 
 ## Deployment shape
 
@@ -66,8 +66,8 @@ Snapshot shape:
     "sync": "locked"
   },
   "summary": {
-    "alive": 9,
-    "total": 60,
+    "alive": 8,
+    "total": 9,
     "attention": 2,
     "table_rows": 9
   },
@@ -102,9 +102,11 @@ Lantern status values currently used by the prototype:
 - `retired` — old MAC after a replacement; keep for audit, never offer as
   a replacement spare.
 
-Unpositioned lanterns have `x: null`, `y: null`, and `position: "Missing"`.
-The map renders only positioned lanterns; unpositioned lanterns appear in the
-tray and in Node List.
+`summary.alive / summary.total` means healthy placed lanterns over placed
+lanterns in the field table. Unpositioned live lanterns are available substrate
+or spares: they have `x: null`, `y: null`, and `position: "Missing"`, appear in
+the tray and Node List, and do not count in the field denominator until placed.
+The map renders only positioned lanterns.
 
 ### Mutations
 
@@ -113,7 +115,7 @@ tray and in Node List.
 - `POST /api/lanterns/{mac}/forget`
 - `POST /api/lanterns/replace` with `{"old_mac":"...","new_mac":"..."}`
 - `POST /api/show/pattern` with
-  `{"pattern":"Sweep","brightness":64,"params":{"period":8000}}`
+  `{"pattern":"Sweep","brightness":64,"params":{"period":8000,"spatial":300}}`
 - `POST /api/show/blackout`
 
 Every mutation returns an ack:
@@ -124,12 +126,15 @@ Every mutation returns an ack:
 
 Adapter errors such as serial timeout surface as HTTP `503`. Command-level
 errors such as unknown MAC or invalid replacement return `404` with the
-adapter's `error` text.
+adapter's `error` text. Rejected pattern changes return `400`; the UI should
+only treat a pattern change as saved after a successful ack.
 
 ## Adapter contract
 
 FastAPI depends on `control.adapters.ConductorAdapter`, not on the mock
-implementation directly. The required methods are:
+implementation directly. The app defaults to `MockConductor`; set
+`CONTROL_CONDUCTOR=serial` and `CONTROL_SERIAL_PORT=/dev/cu.usbserial-XXXX`
+to use the pyserial-backed conductor. The required methods are:
 
 ```python
 snapshot() -> dict
@@ -143,18 +148,25 @@ update_pattern(pattern, brightness, params) -> ack
 blackout() -> ack
 ```
 
-`MockConductor` implements this contract today. `JsonLineSerialConductor`
-implements the same contract over newline-delimited JSON and is tested with
-a fake transport before any firmware changes.
+`MockConductor` implements this contract for UI development.
+`JsonLineSerialConductor` implements the same contract over newline-delimited
+JSON and is tested with a fake transport. The serial transport deasserts
+DTR/RTS by default after opening so a running conductor is not intentionally
+reset just because the web server connected. FastAPI serial calls run through
+a serialized `asyncio.to_thread` helper so a blocking serial read does not pin
+the event loop.
 
-### Machine serial draft
+### Machine serial protocol
 
 Requests are one compact JSON object per line:
 
 ```json
 {"id":1,"cmd":"state"}
 {"id":2,"cmd":"assign","mac":"8C:94:DF:57:7F:14","x":0.25,"y":0.75}
-{"id":3,"cmd":"pattern","pattern":"Sweep","brightness":64,"params":{"period":8000}}
+{"id":3,"cmd":"forget","mac":"8C:94:DF:57:7F:14"}
+{"id":4,"cmd":"replace","old_mac":"A0:B7:65:11:44:91","new_mac":"8C:94:DF:57:7F:14"}
+{"id":5,"cmd":"pattern","pattern":"Sweep","brightness":64,"params":{"period":8000,"spatial":300}}
+{"id":6,"cmd":"blackout"}
 ```
 
 Responses echo the request id:
@@ -169,6 +181,13 @@ The adapter ignores human CLI/diagnostic lines and malformed JSON until it
 sees a valid JSON response with the matching `id`. If no matching response
 arrives before the timeout, the adapter raises `SerialProtocolError`, which
 the API exposes as HTTP `503`.
+
+Firmware support lives beside the human CLI: lines beginning with `{` enter
+the machine parser in `include/serial_json.h`, while `info`, `table`, `assign`,
+and the other text commands keep working. The firmware `state` response derives
+lanterns from the conductor's persistent layout table plus the live roster:
+positioned table rows show on the map, roster-only MACs show as "Needs
+position", and table rows not currently registered show as "Not seen".
 
 ## Features
 
@@ -199,8 +218,10 @@ the API exposes as HTTP `503`.
 
 - Pattern picker (PULSE / PALETTE_DRIFT / SWEEP / GLOW; SOLID behind a
   bench-only flag).
-- Brightness slider + per-pattern param controls with human labels
-  ("sweep period: 8 s", "hue: amber" — not `params[1] = 340`).
+- Brightness slider + per-pattern param controls with human labels:
+  Pulse/Glow expose hue, Sweep exposes period + wavelength, and Palette Drift
+  exposes period + spatial spread. The Change Pattern button is disabled until
+  the visible draft differs from the live conductor state.
 - Pattern preview: the browser renders `f(x,y,t)` live on the map *before*
   broadcasting (JS port of the pure `pattern_math.h`). Cheap because the
   math is pure and host-tested; turns knob-tuning into instant feedback.

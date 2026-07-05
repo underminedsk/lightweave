@@ -11,10 +11,17 @@ let movingLanternMac = null;
 let movingDrag = null;
 let replaceMode = false;
 let replacementMac = null;
+let patternDraft = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 3;
+const PATTERN_DEFAULTS = {
+  Pulse: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
+  Glow: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
+  Sweep: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
+  "Palette Drift": { hue: 40, period: 8000, wavelength: 300, spatial: 0 },
+};
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -65,15 +72,16 @@ function cssStatus(lantern) {
 function render() {
   if (!state) return;
   if (!selectedMac && lanterns().length) selectedMac = lanterns()[0].mac;
+  if (!patternDraft || !isPatternDirty()) patternDraft = patternDraftFromState();
 
-  $("#connection-status").textContent = state.conductor.connected ? "mock connected" : "disconnected";
+  $("#connection-status").textContent = state.conductor.connected ? "connected" : "disconnected";
   $("#field-count").textContent = `${state.summary.alive} / ${state.summary.total}`;
   $("#show-name").textContent = state.pattern.pattern;
   $("#attention-count").textContent = `${state.summary.attention} lights`;
   $("#sync-status").textContent = `sync ${state.conductor.sync}`;
   $("#table-sync-status").textContent = `sync ${state.conductor.sync}`;
-  $("#brightness").value = state.pattern.brightness;
-  $("#brightness-value").textContent = state.pattern.brightness;
+  $("#brightness").value = patternDraft.brightness;
+  $("#brightness-value").textContent = patternDraft.brightness;
 
   renderPatternControls();
   renderMap();
@@ -84,14 +92,123 @@ function render() {
   renderDetailVisibility();
 }
 
+function patternHueFromState() {
+  const params = state.pattern.params || {};
+  if (params.hue !== undefined) return Number(params.hue);
+  if ((state.pattern.pattern === "Glow" || state.pattern.pattern === "Pulse") && params.p0 !== undefined) {
+    return Number(params.p0);
+  }
+  return 40;
+}
+
+function patternPeriodFromState() {
+  const params = state.pattern.params || {};
+  if (params.period !== undefined) return Number(params.period);
+  if ((state.pattern.pattern === "Sweep" || state.pattern.pattern === "Palette Drift") && params.p0 !== undefined) {
+    return Number(params.p0);
+  }
+  return PATTERN_DEFAULTS[state.pattern.pattern]?.period || 4000;
+}
+
+function patternWavelengthFromState() {
+  const params = state.pattern.params || {};
+  if (params.wavelength !== undefined) return Number(params.wavelength);
+  if (state.pattern.pattern === "Sweep" && params.p1 !== undefined) return Number(params.p1);
+  return PATTERN_DEFAULTS.Sweep.wavelength;
+}
+
+function patternSpatialFromState() {
+  const params = state.pattern.params || {};
+  if (params.spatial !== undefined) return Number(params.spatial);
+  if (state.pattern.pattern === "Palette Drift" && params.p1 !== undefined) return Number(params.p1);
+  return PATTERN_DEFAULTS["Palette Drift"].spatial;
+}
+
+function patternDraftFromState() {
+  const defaults = PATTERN_DEFAULTS[state.pattern.pattern] || PATTERN_DEFAULTS.Pulse;
+  return {
+    pattern: state.pattern.pattern,
+    brightness: Number(state.pattern.brightness),
+    hue: patternHueFromState(),
+    period: patternPeriodFromState() || defaults.period,
+    wavelength: patternWavelengthFromState() || defaults.wavelength,
+    spatial: patternSpatialFromState(),
+  };
+}
+
+function patternDraftForSelection(pattern) {
+  const defaults = PATTERN_DEFAULTS[pattern] || PATTERN_DEFAULTS.Pulse;
+  return {
+    pattern,
+    brightness: Number(patternDraft?.brightness ?? state?.pattern?.brightness ?? 48),
+    hue: Number(defaults.hue),
+    period: Number(defaults.period),
+    wavelength: Number(defaults.wavelength),
+    spatial: Number(defaults.spatial),
+  };
+}
+
+function patternParams(draft) {
+  if (draft.pattern === "Pulse" || draft.pattern === "Glow") {
+    return { hue: Number(draft.hue), saturation: 100 };
+  }
+  if (draft.pattern === "Sweep") {
+    return { period: Number(draft.period), spatial: Number(draft.wavelength) };
+  }
+  if (draft.pattern === "Palette Drift") {
+    return { period: Number(draft.period), spatial: Number(draft.spatial) };
+  }
+  return {};
+}
+
+function patternStateParams(draft) {
+  const params = patternParams(draft);
+  return {
+    p0: Number(params.hue ?? params.period ?? 0),
+    p1: Number(params.saturation ?? params.spatial ?? 0),
+    p2: 0,
+    p3: 0,
+    ...params,
+  };
+}
+
+function relevantPatternFields(pattern) {
+  if (pattern === "Pulse" || pattern === "Glow") return ["pattern", "brightness", "hue"];
+  if (pattern === "Sweep") return ["pattern", "brightness", "period", "wavelength"];
+  if (pattern === "Palette Drift") return ["pattern", "brightness", "period", "spatial"];
+  return ["pattern", "brightness"];
+}
+
+function isPatternDirty() {
+  if (!state || !patternDraft) return false;
+  const live = patternDraftFromState();
+  return relevantPatternFields(patternDraft.pattern).some((field) => {
+    if (field === "pattern") return patternDraft.pattern !== live.pattern;
+    return Number(patternDraft[field]) !== Number(live[field]);
+  });
+}
+
 function renderPatternControls() {
   $$("#pattern-picker button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.pattern === state.pattern.pattern);
+    button.classList.toggle("active", button.dataset.pattern === patternDraft.pattern);
   });
-  const hue = String(state.pattern.params?.hue ?? "40");
+  $("#pattern-period").value = patternDraft.period;
+  $("#period-value").textContent = (Number(patternDraft.period) / 1000).toFixed(1);
+  $("#pattern-wavelength").value = patternDraft.wavelength;
+  $("#wavelength-value").textContent = (Number(patternDraft.wavelength) / 100).toFixed(1);
+  $("#pattern-spatial").value = patternDraft.spatial;
+  $("#spatial-value").textContent = (Number(patternDraft.spatial) / 100).toFixed(2);
+  const hue = String(patternDraft.hue);
   $$("#hue-picker button").forEach((button) => {
     button.classList.toggle("active", button.dataset.hue === hue);
   });
+  $("#hue-picker").hidden = !(patternDraft.pattern === "Pulse" || patternDraft.pattern === "Glow");
+  $('[data-param-group="period"]').hidden = !(patternDraft.pattern === "Sweep" || patternDraft.pattern === "Palette Drift");
+  $('[data-param-group="wavelength"]').hidden = patternDraft.pattern !== "Sweep";
+  $('[data-param-group="spatial"]').hidden = patternDraft.pattern !== "Palette Drift";
+  const changeButton = $('[data-action="broadcast"]');
+  changeButton.disabled = !isPatternDirty();
+  changeButton.ariaDisabled = String(changeButton.disabled);
 }
 
 function renderMap() {
@@ -167,7 +284,8 @@ function renderDetail() {
   const lantern = selectedLantern();
   if (!lantern) return;
   const isOk = lantern.status === "alive" && lantern.position !== "Missing";
-  $("#detail-title").textContent = `${lantern.label} is ${statusText(lantern)}`;
+  const moveLabel = isPositioned(lantern) ? "Move" : "Place";
+  $("#detail-title").textContent = `${lantern.label} is ${isOk ? "healthy" : statusText(lantern)}`;
   $("#detail-title").className = isOk ? "" : "warn";
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
@@ -175,9 +293,13 @@ function renderDetail() {
     `pattern=${escapeHtml(state.pattern.pattern)} bri=${state.pattern.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
+  $$('[data-action="move"]').forEach((button) => {
+    button.textContent = moveLabel;
+  });
   document.body.classList.toggle("move-mode", movingLanternMac !== null);
   renderReplacePanel();
   renderSelectionRing();
+  renderPlacementMarker();
 }
 
 function renderDetailVisibility() {
@@ -206,6 +328,13 @@ function renderEvents() {
 }
 
 function selectLantern(mac) {
+  if (mac !== selectedMac) {
+    movingLanternMac = null;
+    movingDrag = null;
+    document.body.classList.remove("move-mode");
+    document.body.classList.remove("place-mode");
+    renderPlacementMarker();
+  }
   selectedMac = mac;
   closeReplacePanel();
   ensureSelectionRing();
@@ -280,6 +409,28 @@ function setLanternPreview(mac, x, y) {
       ring.style.top = node.style.top;
     }
   }
+}
+
+function isPlacingUnpositioned() {
+  return movingLanternMac && !movingDrag && selectedLantern()?.mac === movingLanternMac && !isPositioned(selectedLantern());
+}
+
+function renderPlacementMarker(position = null) {
+  let marker = $(".placement-marker");
+  if (!isPlacingUnpositioned()) {
+    marker?.remove();
+    return;
+  }
+  if (!marker) {
+    marker = document.createElement("div");
+    marker.className = "placement-marker";
+    $("#map-content").appendChild(marker);
+  }
+  if (!position) {
+    position = { x: 0.5, y: 0.5 };
+  }
+  marker.style.left = `${mapCoord(position.x) * 100}%`;
+  marker.style.top = `${mapCoord(position.y) * 100}%`;
 }
 
 function renderSelectionRing() {
@@ -370,7 +521,13 @@ function startMoveMode() {
   movingLanternMac = lantern.mac;
   updateMoveTargetClass();
   document.body.classList.add("move-mode");
-  toast(`Drag ${lantern.label} to its new position`);
+  document.body.classList.toggle("place-mode", !isPositioned(lantern));
+  if (isPositioned(lantern)) {
+    toast(`Drag ${lantern.label} to its new position`);
+  } else {
+    renderPlacementMarker();
+    toast(`Click the map to place ${lantern.label}`);
+  }
 }
 
 function updateMoveTargetClass() {
@@ -394,8 +551,31 @@ async function finishLanternMove(clientX, clientY) {
   movingLanternMac = null;
   movingDrag = null;
   document.body.classList.remove("move-mode");
+  document.body.classList.remove("place-mode");
   updateMoveTargetClass();
+  renderPlacementMarker();
   setLanternPreview(mac, position.x, position.y);
+  try {
+    const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/assign`, {
+      method: "POST",
+      body: JSON.stringify(position),
+    });
+    toast(ack.message);
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+    await refresh();
+  }
+}
+
+async function placeSelectedLantern(clientX, clientY) {
+  if (!isPlacingUnpositioned()) return;
+  const mac = movingLanternMac;
+  const position = pointToField(clientX, clientY);
+  movingLanternMac = null;
+  document.body.classList.remove("move-mode");
+  document.body.classList.remove("place-mode");
+  renderPlacementMarker();
   try {
     const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/assign`, {
       method: "POST",
@@ -447,13 +627,24 @@ async function runAction(action) {
       return;
     }
     if (action === "broadcast") {
-      const pattern = $("#pattern-picker button.active")?.dataset.pattern || state.pattern.pattern;
-      const hue = Number($("#hue-picker button.active")?.dataset.hue || state.pattern.params?.hue || 40);
-      const brightness = Number($("#brightness").value);
+      if (!state || !patternDraft) return;
+      if (!isPatternDirty()) return;
+      const pattern = patternDraft.pattern;
+      const brightness = Number(patternDraft.brightness);
+      const params = patternParams(patternDraft);
       const ack = await api("/api/show/pattern", {
         method: "POST",
-        body: JSON.stringify({ pattern, brightness, params: { hue, saturation: 100 } }),
+        body: JSON.stringify({ pattern, brightness, params }),
       });
+      state = {
+        ...state,
+        pattern: {
+          pattern,
+          brightness,
+          params: patternStateParams(patternDraft),
+        },
+      };
+      render();
       toast(ack.message);
       await refresh();
       return;
@@ -473,7 +664,7 @@ function connectWebSocket() {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${window.location.host}/ws`);
   ws.addEventListener("open", () => {
-    $("#connection-status").textContent = "mock connected";
+    $("#connection-status").textContent = "connected";
   });
   ws.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
@@ -557,20 +748,53 @@ $("#replace-confirm").addEventListener("click", () => {
 });
 
 $("#brightness").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) patternDraft.brightness = Number(event.target.value);
   $("#brightness-value").textContent = event.target.value;
+  renderPatternControls();
 });
 
 $("#pattern-picker").addEventListener("click", (event) => {
   if (event.target.dataset.pattern) {
-    $$("#pattern-picker button").forEach((item) => item.classList.remove("active"));
-    event.target.classList.add("active");
+    if (!patternDraft && state) patternDraft = patternDraftFromState();
+    if (patternDraft) {
+      patternDraft = patternDraftForSelection(event.target.dataset.pattern);
+      renderPatternControls();
+    }
   }
 });
 
 $("#hue-picker").addEventListener("click", (event) => {
   if (event.target.dataset.hue) {
-    $$("#hue-picker button").forEach((item) => item.classList.remove("active"));
-    event.target.classList.add("active");
+    if (!patternDraft && state) patternDraft = patternDraftFromState();
+    if (patternDraft) {
+      patternDraft.hue = Number(event.target.dataset.hue);
+      renderPatternControls();
+    }
+  }
+});
+
+$("#pattern-period").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) {
+    patternDraft.period = Number(event.target.value);
+    renderPatternControls();
+  }
+});
+
+$("#pattern-wavelength").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) {
+    patternDraft.wavelength = Number(event.target.value);
+    renderPatternControls();
+  }
+});
+
+$("#pattern-spatial").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) {
+    patternDraft.spatial = Number(event.target.value);
+    renderPatternControls();
   }
 });
 
@@ -594,6 +818,12 @@ $("#map").addEventListener("touchstart", (event) => {
     event.preventDefault();
     return;
   }
+  if (event.touches.length === 1 && isPlacingUnpositioned() && !event.target.closest("button")) {
+    const touch = event.touches[0];
+    renderPlacementMarker(pointToField(touch.clientX, touch.clientY));
+    event.preventDefault();
+    return;
+  }
   if (event.touches.length === 1 && !event.target.classList.contains("node") && !event.target.closest("button")) {
     const touch = event.touches[0];
     dragStart = { x: touch.clientX, y: touch.clientY, panX: mapPanX, panY: mapPanY };
@@ -606,6 +836,12 @@ $("#map").addEventListener("touchmove", (event) => {
     const touch = event.touches[0];
     const position = pointToField(touch.clientX, touch.clientY);
     setLanternPreview(movingLanternMac, position.x, position.y);
+    return;
+  }
+  if (event.touches.length === 1 && isPlacingUnpositioned()) {
+    event.preventDefault();
+    const touch = event.touches[0];
+    renderPlacementMarker(pointToField(touch.clientX, touch.clientY));
     return;
   }
   if (event.touches.length === 2 && pinchStartDistance) {
@@ -626,22 +862,41 @@ $("#map").addEventListener("touchend", (event) => {
     finishLanternMove(touch.clientX, touch.clientY);
     return;
   }
+  if (isPlacingUnpositioned() && event.changedTouches.length) {
+    const touch = event.changedTouches[0];
+    placeSelectedLantern(touch.clientX, touch.clientY);
+    return;
+  }
   if (event.touches.length < 2) pinchStartDistance = null;
   if (event.touches.length === 0) dragStart = null;
 }, { passive: true });
 
 $("#map").addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node") || event.target.closest("button") || movingLanternMac) return;
+  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node") || event.target.closest("button")) return;
+  if (isPlacingUnpositioned()) {
+    event.preventDefault();
+    renderPlacementMarker(pointToField(event.clientX, event.clientY));
+    return;
+  }
+  if (movingLanternMac) return;
   dragStart = { x: event.clientX, y: event.clientY, panX: mapPanX, panY: mapPanY };
   $("#map").setPointerCapture(event.pointerId);
 });
 
 $("#map").addEventListener("pointermove", (event) => {
+  if (isPlacingUnpositioned() && event.pointerType !== "touch") {
+    renderPlacementMarker(pointToField(event.clientX, event.clientY));
+    return;
+  }
   if (!dragStart || event.pointerType === "touch") return;
   setMapPan(dragStart.panX + event.clientX - dragStart.x, dragStart.panY + event.clientY - dragStart.y);
 });
 
 $("#map").addEventListener("pointerup", (event) => {
+  if (isPlacingUnpositioned() && event.pointerType !== "touch") {
+    placeSelectedLantern(event.clientX, event.clientY);
+    return;
+  }
   if (event.pointerType !== "touch") dragStart = null;
 });
 
@@ -662,6 +917,7 @@ window.addEventListener("pointerup", (event) => {
 
 window.addEventListener("pointercancel", () => {
   movingDrag = null;
+  if (isPlacingUnpositioned()) renderPlacementMarker();
 });
 
 window.addEventListener("mousemove", (event) => {

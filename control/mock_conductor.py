@@ -93,7 +93,8 @@ class MockConductor:
     def snapshot(self) -> dict[str, Any]:
         now = _now()
         lanterns = self.lanterns()
-        alive = sum(1 for item in lanterns if item["status"] == "alive")
+        table_rows = sum(1 for item in lanterns if item["position"] == "Set")
+        alive = sum(1 for item in lanterns if item["status"] == "alive" and item["position"] == "Set")
         attention = sum(1 for item in lanterns if item["attention"] != "None")
         return {
             "conductor": {
@@ -105,9 +106,9 @@ class MockConductor:
             },
             "summary": {
                 "alive": alive,
-                "total": 60,
+                "total": table_rows,
                 "attention": attention,
-                "table_rows": sum(1 for item in lanterns if item["position"] == "Set"),
+                "table_rows": table_rows,
             },
             "pattern": deepcopy(self.pattern),
             "lanterns": lanterns,
@@ -179,7 +180,7 @@ class MockConductor:
     def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]:
         self.pattern = {"pattern": pattern, "brightness": brightness, "params": dict(params)}
         self._event(f"pattern={pattern} bri={brightness}")
-        return {"ok": True, "message": f"broadcast {pattern}", "pattern": deepcopy(self.pattern)}
+        return {"ok": True, "message": f"pattern changed to {pattern}", "pattern": deepcopy(self.pattern)}
 
     def blackout(self) -> dict[str, Any]:
         self.pattern = {"pattern": self.pattern["pattern"], "brightness": 0, "params": deepcopy(self.pattern["params"])}

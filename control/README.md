@@ -1,7 +1,8 @@
 # Control Plane
 
-Local web control plane for Do Baskets Dream. This first slice runs against a
-mock conductor so the UI/API can be developed without hardware attached.
+Local web control plane for Do Baskets Dream. It defaults to a mock conductor
+for UI/API work and can talk to a real conductor over newline-delimited JSON on
+USB serial.
 
 ## Run
 
@@ -13,6 +14,19 @@ dependency stack today.
 .venv/bin/python -m pip install -r control/requirements.txt
 .venv/bin/python -m uvicorn control.app:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Real conductor:
+
+```bash
+CONTROL_CONDUCTOR=serial \
+CONTROL_SERIAL_PORT=/dev/cu.usbserial-XXXX \
+.venv/bin/python -m uvicorn control.app:app --host 127.0.0.1 --port 8000
+```
+
+By default the serial transport deasserts DTR/RTS after opening so peeking at a
+running conductor does not intentionally reset it. Set
+`CONTROL_SERIAL_RESET_ON_OPEN=1` only when you want normal serial-open reset
+behavior.
 
 Open:
 
@@ -29,10 +43,7 @@ pio test -e native
 ## Current Scope
 
 - FastAPI app with HTTP + WebSocket state updates
-- Mock conductor adapter
+- Mock conductor adapter and pyserial-backed JSON-line conductor adapter
 - API-backed Map/Node List/Patterns/Operations UI shell
 - Shared lantern detail sheet
-- Mock actions for identify, assign, forget, pattern broadcast, and blackout
-
-Next step: add the real serial adapter and firmware-side structured JSON command
-protocol while preserving the existing human CLI.
+- Actions for identify, assign, forget, replace, pattern changes, and blackout

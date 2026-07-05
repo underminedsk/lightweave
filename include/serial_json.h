@@ -1,0 +1,230 @@
+// Machine serial protocol parser for the control plane.
+//
+// The human CLI in main.cpp remains line-oriented text. Lines that begin with
+// JSON are parsed here into a tiny command struct so the Python control plane can
+// drive the same firmware over USB serial. This is not a general JSON parser; it
+// accepts the compact request shape emitted by control.adapters.JsonLineSerialConductor.
+#pragma once
+
+#include <ctype.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "macaddr.h"
+#include "pattern_ids.h"
+
+enum SerialJsonKind {
+  SJ_NONE = 0,
+  SJ_STATE,
+  SJ_IDENTIFY,
+  SJ_ASSIGN,
+  SJ_FORGET,
+  SJ_REPLACE,
+  SJ_PATTERN,
+  SJ_BLACKOUT,
+};
+
+struct SerialJsonCommand {
+  uint32_t id = 0;
+  SerialJsonKind kind = SJ_NONE;
+  uint8_t mac[6] = {0};
+  uint8_t old_mac[6] = {0};
+  uint8_t new_mac[6] = {0};
+  float x = 0.0f;
+  float y = 0.0f;
+  uint16_t pattern_id = patterns::GLOW;
+  uint8_t brightness = 48;
+  bool has_brightness = false;
+  bool has_params[4] = {false, false, false, false};
+  uint16_t params[4] = {0, 0, 0, 0};
+};
+
+inline bool serialJsonLooksLike(const char* line) {
+  while (*line && isspace((unsigned char)*line)) line++;
+  return *line == '{';
+}
+
+inline const char* sjKey(const char* json, const char* key) {
+  char needle[32];
+  snprintf(needle, sizeof(needle), "\"%s\"", key);
+  const char* p = json;
+  while ((p = strstr(p, needle)) != nullptr) {
+    p += strlen(needle);
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p == ':') {
+      p++;
+      while (*p && isspace((unsigned char)*p)) p++;
+      return p;
+    }
+  }
+  return nullptr;
+}
+
+inline bool sjString(const char* json, const char* key, char* out, size_t out_len) {
+  if (!out_len) return false;
+  const char* p = sjKey(json, key);
+  if (!p || *p != '"') return false;
+  p++;
+  size_t n = 0;
+  while (*p && *p != '"') {
+    if (n + 1 >= out_len) return false;
+    out[n++] = *p++;
+  }
+  if (*p != '"') return false;
+  out[n] = '\0';
+  return true;
+}
+
+inline bool sjFloat(const char* json, const char* key, float& out) {
+  const char* p = sjKey(json, key);
+  if (!p) return false;
+  char* end = nullptr;
+  out = strtof(p, &end);
+  return end && end != p;
+}
+
+inline bool sjUint(const char* json, const char* key, uint32_t& out) {
+  const char* p = sjKey(json, key);
+  if (!p) return false;
+  char* end = nullptr;
+  unsigned long v = strtoul(p, &end, 10);
+  if (!end || end == p) return false;
+  out = (uint32_t)v;
+  return true;
+}
+
+inline void sjLowerCompact(const char* in, char* out, size_t out_len) {
+  size_t n = 0;
+  for (; *in && n + 1 < out_len; in++) {
+    unsigned char c = (unsigned char)*in;
+    if (c == ' ' || c == '_' || c == '-') continue;
+    out[n++] = (char)tolower(c);
+  }
+  out[n] = '\0';
+}
+
+inline bool serialJsonPatternId(const char* value, uint16_t& out) {
+  char norm[32];
+  sjLowerCompact(value, norm, sizeof(norm));
+  if (!strcmp(norm, "pulse")) out = patterns::PULSE;
+  else if (!strcmp(norm, "palettedrift")) out = patterns::PALETTE_DRIFT;
+  else if (!strcmp(norm, "sweep")) out = patterns::SWEEP;
+  else if (!strcmp(norm, "solid")) out = patterns::SOLID;
+  else if (!strcmp(norm, "glow")) out = patterns::GLOW;
+  else {
+    char* end = nullptr;
+    unsigned long v = strtoul(value, &end, 10);
+    if (!end || end == value || *end != '\0' || v > 65535) return false;
+    out = (uint16_t)v;
+  }
+  return true;
+}
+
+inline bool sjMac(const char* json, const char* key, uint8_t out[6]) {
+  char text[18];
+  return sjString(json, key, text, sizeof(text)) && parseMac(text, out);
+}
+
+inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
+                            const char*& error) {
+  cmd = SerialJsonCommand{};
+  uint32_t id = 0;
+  if (!sjUint(json, "id", id)) {
+    error = "missing id";
+    return false;
+  }
+  cmd.id = id;
+
+  char verb[20];
+  if (!sjString(json, "cmd", verb, sizeof(verb))) {
+    error = "missing cmd";
+    return false;
+  }
+  char norm[24];
+  sjLowerCompact(verb, norm, sizeof(norm));
+
+  if (!strcmp(norm, "state")) {
+    cmd.kind = SJ_STATE;
+  } else if (!strcmp(norm, "identify")) {
+    cmd.kind = SJ_IDENTIFY;
+    if (!sjMac(json, "mac", cmd.mac)) {
+      error = "bad mac";
+      return false;
+    }
+  } else if (!strcmp(norm, "assign")) {
+    cmd.kind = SJ_ASSIGN;
+    if (!sjMac(json, "mac", cmd.mac) || !sjFloat(json, "x", cmd.x) ||
+        !sjFloat(json, "y", cmd.y)) {
+      error = "bad assign";
+      return false;
+    }
+  } else if (!strcmp(norm, "forget")) {
+    cmd.kind = SJ_FORGET;
+    if (!sjMac(json, "mac", cmd.mac)) {
+      error = "bad mac";
+      return false;
+    }
+  } else if (!strcmp(norm, "replace")) {
+    cmd.kind = SJ_REPLACE;
+    if (!sjMac(json, "old_mac", cmd.old_mac) ||
+        !sjMac(json, "new_mac", cmd.new_mac)) {
+      error = "bad replace";
+      return false;
+    }
+  } else if (!strcmp(norm, "pattern")) {
+    cmd.kind = SJ_PATTERN;
+    char pattern[32];
+    if (!sjString(json, "pattern", pattern, sizeof(pattern)) ||
+        !serialJsonPatternId(pattern, cmd.pattern_id)) {
+      error = "bad pattern";
+      return false;
+    }
+    uint32_t brightness = 0;
+    if (sjUint(json, "brightness", brightness)) {
+      cmd.has_brightness = true;
+      cmd.brightness = (uint8_t)(brightness > 255 ? 255 : brightness);
+    }
+    uint32_t v = 0;
+    if (sjUint(json, "period", v)) {
+      cmd.has_params[0] = true;
+      cmd.params[0] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "hue", v)) {
+      cmd.has_params[0] = true;
+      cmd.params[0] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "saturation", v)) {
+      cmd.has_params[1] = true;
+      cmd.params[1] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "spatial", v)) {
+      cmd.has_params[1] = true;
+      cmd.params[1] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "p0", v)) {
+      cmd.has_params[0] = true;
+      cmd.params[0] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "p1", v)) {
+      cmd.has_params[1] = true;
+      cmd.params[1] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "p2", v)) {
+      cmd.has_params[2] = true;
+      cmd.params[2] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "p3", v)) {
+      cmd.has_params[3] = true;
+      cmd.params[3] = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+  } else if (!strcmp(norm, "blackout")) {
+    cmd.kind = SJ_BLACKOUT;
+  } else {
+    error = "unknown cmd";
+    return false;
+  }
+  error = nullptr;
+  return true;
+}

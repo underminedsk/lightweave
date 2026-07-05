@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -28,6 +30,7 @@ class JsonLineSerialConductor:
     timeout_s: float = 1.0
     _next_id: int = field(default=1, init=False)
     _last_state: dict[str, Any] | None = field(default=None, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def snapshot(self) -> dict[str, Any]:
         response = self._request("state")
@@ -66,27 +69,32 @@ class JsonLineSerialConductor:
         return self._request("blackout")
 
     def _request(self, command: str, **payload: Any) -> dict[str, Any]:
-        request_id = self._next_id
-        self._next_id += 1
-        request = {"id": request_id, "cmd": command, **payload}
-        self.transport.write_line(json.dumps(request, separators=(",", ":")))
+        with self._lock:
+            request_id = self._next_id
+            self._next_id += 1
+            request = {"id": request_id, "cmd": command, **payload}
+            self.transport.write_line(json.dumps(request, separators=(",", ":")))
 
-        while True:
-            line = self.transport.read_line(self.timeout_s)
-            if line is None:
-                raise SerialProtocolError(f"timeout waiting for {command} ack")
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if response.get("id") != request_id:
-                continue
-            if response.get("ok") is not True:
-                return {"ok": False, "error": str(response.get("error") or "serial command failed")}
-            return {"ok": True, **{key: value for key, value in response.items() if key not in {"id", "ok"}}}
+            deadline = time.monotonic() + self.timeout_s
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SerialProtocolError(f"timeout waiting for {command} ack")
+                line = self.transport.read_line(remaining)
+                if line is None:
+                    raise SerialProtocolError(f"timeout waiting for {command} ack")
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    response = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if response.get("id") != request_id:
+                    continue
+                if response.get("ok") is not True:
+                    return {"ok": False, "error": str(response.get("error") or "serial command failed")}
+                return {"ok": True, **{key: value for key, value in response.items() if key not in {"id", "ok"}}}
 
 
 class SerialProtocolError(RuntimeError):

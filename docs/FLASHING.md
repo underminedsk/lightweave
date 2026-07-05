@@ -116,6 +116,29 @@ s.close()
 EOF
 ```
 
+### If a typed command seems to get ignored right after opening serial
+
+Opening the CP2102 port can still race the ESP32 boot/reset path: the first
+command you write may land while the bootloader/app is still coming up, so it
+gets lost even though later output looks normal. This showed up while setting a
+performer's friendly ID after flashing: `id 1` appeared to do nothing until we
+waited for boot to settle, sent a blank newline to wake the CLI, then sent the
+command and verified with `info`.
+
+Reliable scripted shape:
+
+```python
+s = serial.Serial('/dev/cu.usbserial-XXXX', 115200, timeout=0.25)
+s.setDTR(False); s.setRTS(False)
+time.sleep(1.0)
+s.reset_input_buffer()
+s.write(b'\n'); s.flush()       # wake/clear the line-oriented CLI
+time.sleep(0.2)
+s.write(b'id 1\n'); s.flush()
+time.sleep(0.5)
+s.write(b'info\n'); s.flush()   # verify the command actually persisted
+```
+
 ## Reading the diagnostics
 
 > **Quiet node?** Diag lines only print within **5 minutes of serial input**

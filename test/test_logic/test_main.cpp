@@ -18,6 +18,7 @@
 #include "powermon.h"
 #include "powersave.h"
 #include "roster.h"
+#include "serial_json.h"
 #include "table.h"
 #include "table_wire.h"
 
@@ -939,6 +940,67 @@ void test_pattern_boot_safe() {
   TEST_ASSERT_EQUAL_UINT16(999, patterns::patternBootSafe(999));
 }
 
+// ---- Machine serial JSON protocol -------------------------------------------
+
+void test_serial_json_assign_parses_mac_and_position() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":7,\"cmd\":\"assign\",\"mac\":\"8C:94:DF:57:7F:14\",\"x\":0.25,\"y\":0.75}",
+      cmd, error));
+
+  TEST_ASSERT_NULL(error);
+  TEST_ASSERT_EQUAL_UINT32(7, cmd.id);
+  TEST_ASSERT_EQUAL_INT(SJ_ASSIGN, cmd.kind);
+  TEST_ASSERT_EQUAL_HEX8(0x8C, cmd.mac[0]);
+  TEST_ASSERT_EQUAL_FLOAT(0.25f, cmd.x);
+  TEST_ASSERT_EQUAL_FLOAT(0.75f, cmd.y);
+}
+
+void test_serial_json_pattern_maps_name_brightness_and_params() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":9,\"cmd\":\"pattern\",\"pattern\":\"Palette Drift\",\"brightness\":64,"
+      "\"params\":{\"period\":8000,\"spatial\":125}}",
+      cmd, error));
+
+  TEST_ASSERT_EQUAL_INT(SJ_PATTERN, cmd.kind);
+  TEST_ASSERT_EQUAL_UINT16(patterns::PALETTE_DRIFT, cmd.pattern_id);
+  TEST_ASSERT_TRUE(cmd.has_brightness);
+  TEST_ASSERT_EQUAL_UINT8(64, cmd.brightness);
+  TEST_ASSERT_TRUE(cmd.has_params[0]);
+  TEST_ASSERT_TRUE(cmd.has_params[1]);
+  TEST_ASSERT_EQUAL_UINT16(8000, cmd.params[0]);
+  TEST_ASSERT_EQUAL_UINT16(125, cmd.params[1]);
+}
+
+void test_serial_json_glow_maps_hue_and_saturation_params() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":10,\"cmd\":\"pattern\",\"pattern\":\"Glow\",\"brightness\":48,"
+      "\"params\":{\"hue\":40,\"saturation\":90}}",
+      cmd, error));
+
+  TEST_ASSERT_EQUAL_UINT16(patterns::GLOW, cmd.pattern_id);
+  TEST_ASSERT_EQUAL_UINT16(40, cmd.params[0]);
+  TEST_ASSERT_EQUAL_UINT16(90, cmd.params[1]);
+}
+
+void test_serial_json_rejects_bad_command() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_FALSE(serialJsonParse("{\"id\":1,\"cmd\":\"assign\",\"mac\":\"bad\"}",
+                                    cmd, error));
+
+  TEST_ASSERT_NOT_NULL(error);
+}
+
 // ---- Table wire: chunking + validation (table_wire.h) --------------------------
 // The chunk math splits a 60-node table across ESP-NOW's 250-byte payloads; the
 // receive-side validation is what stands between a malformed packet and a
@@ -1226,6 +1288,10 @@ int main(int, char**) {
   RUN_TEST(test_mac_parse_rejects_out_of_range_group);
   RUN_TEST(test_mac_format_roundtrip);
   RUN_TEST(test_pattern_boot_safe);
+  RUN_TEST(test_serial_json_assign_parses_mac_and_position);
+  RUN_TEST(test_serial_json_pattern_maps_name_brightness_and_params);
+  RUN_TEST(test_serial_json_glow_maps_hue_and_saturation_params);
+  RUN_TEST(test_serial_json_rejects_bad_command);
   RUN_TEST(test_table_wire_len_fits_espnow);
   RUN_TEST(test_table_chunk_count);
   RUN_TEST(test_table_chunk_build_single_chunk);
