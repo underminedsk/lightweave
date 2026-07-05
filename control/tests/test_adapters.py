@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from control.adapters import JsonLineSerialConductor, SerialProtocolError
+
+
+class FakeTransport:
+    def __init__(self, replies: list[str | None] | None = None) -> None:
+        self.replies = list(replies or [])
+        self.writes: list[str] = []
+
+    def write_line(self, line: str) -> None:
+        self.writes.append(line)
+
+    def read_line(self, timeout_s: float) -> str | None:
+        if not self.replies:
+            return None
+        return self.replies.pop(0)
+
+
+def test_snapshot_sends_state_command_and_skips_human_noise() -> None:
+    state = {"conductor": {"connected": True}, "lanterns": [], "pattern": {"pattern": "Glow"}}
+    transport = FakeTransport([
+        "boot diag line",
+        "{not json",
+        json.dumps({"id": 99, "ok": True, "state": {"ignored": True}}),
+        json.dumps({"id": 1, "ok": True, "state": state}),
+    ])
+    conductor = JsonLineSerialConductor(transport)
+
+    assert conductor.snapshot() == state
+    assert json.loads(transport.writes[0]) == {"id": 1, "cmd": "state"}
+
+
+def test_assign_maps_to_json_command() -> None:
+    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "assigned"})])
+    conductor = JsonLineSerialConductor(transport)
+
+    ack = conductor.assign("AA:BB:CC:DD:EE:FF", 0.25, 0.75)
+
+    assert ack == {"ok": True, "message": "assigned"}
+    assert json.loads(transport.writes[0]) == {
+        "id": 1,
+        "cmd": "assign",
+        "mac": "AA:BB:CC:DD:EE:FF",
+        "x": 0.25,
+        "y": 0.75,
+    }
+
+
+def test_pattern_command_includes_brightness_and_params() -> None:
+    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "broadcast Sweep"})])
+    conductor = JsonLineSerialConductor(transport)
+
+    conductor.update_pattern("Sweep", 64, {"period": 8000})
+
+    assert json.loads(transport.writes[0]) == {
+        "id": 1,
+        "cmd": "pattern",
+        "pattern": "Sweep",
+        "brightness": 64,
+        "params": {"period": 8000},
+    }
+
+
+def test_error_ack_returns_adapter_error() -> None:
+    transport = FakeTransport([json.dumps({"id": 1, "ok": False, "error": "unknown lantern"})])
+    conductor = JsonLineSerialConductor(transport)
+
+    assert conductor.identify("00:00:00:00:00:00") == {"ok": False, "error": "unknown lantern"}
+
+
+def test_timeout_raises_protocol_error() -> None:
+    conductor = JsonLineSerialConductor(FakeTransport([]), timeout_s=0.01)
+
+    with pytest.raises(SerialProtocolError, match="timeout waiting for state ack"):
+        conductor.snapshot()
+
+
+def test_missing_state_object_raises_protocol_error() -> None:
+    conductor = JsonLineSerialConductor(FakeTransport([json.dumps({"id": 1, "ok": True})]))
+
+    with pytest.raises(SerialProtocolError, match="missing state object"):
+        conductor.snapshot()

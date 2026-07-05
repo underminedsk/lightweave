@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .adapters import ConductorAdapter, SerialProtocolError
 from .mock_conductor import MockConductor
 
 
@@ -34,14 +35,17 @@ class ReplaceRequest(BaseModel):
     new_mac: str
 
 
-def create_app(conductor: MockConductor | None = None) -> FastAPI:
+def create_app(conductor: ConductorAdapter | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async def ticker() -> None:
             while True:
                 await asyncio.sleep(5)
-                app.state.conductor.tick()
-                await publish({"type": "state", "action": "tick", "state": app.state.conductor.snapshot()})
+                try:
+                    app.state.conductor.tick()
+                    await publish({"type": "state", "action": "tick", "state": app.state.conductor.snapshot()})
+                except SerialProtocolError:
+                    await publish({"type": "error", "action": "tick", "message": "conductor serial timeout"})
 
         task = asyncio.create_task(ticker())
         app.state.ticker_task = task
@@ -69,21 +73,38 @@ def create_app(conductor: MockConductor | None = None) -> FastAPI:
         for ws in dead:
             app.state.ws_clients.discard(ws)
 
+    async def publish_state(action: str) -> None:
+        try:
+            state = app.state.conductor.snapshot()
+        except SerialProtocolError as error:
+            await publish({"type": "error", "action": action, "message": str(error)})
+            return
+        await publish({"type": "state", "action": action, "state": state})
+
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
-        return app.state.conductor.snapshot()
+        try:
+            return app.state.conductor.snapshot()
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/api/lanterns")
     async def get_lanterns() -> list[dict[str, Any]]:
-        return app.state.conductor.lanterns()
+        try:
+            return app.state.conductor.lanterns()
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post("/api/lanterns/{mac}/identify")
     async def identify(mac: str) -> dict[str, Any]:
-        ack = app.state.conductor.identify(mac)
+        try:
+            ack = app.state.conductor.identify(mac)
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         if not ack["ok"]:
             raise HTTPException(status_code=404, detail=ack["error"])
         await publish({"type": "ack", "action": "identify", "mac": mac, "ack": ack})
@@ -91,45 +112,65 @@ def create_app(conductor: MockConductor | None = None) -> FastAPI:
 
     @app.post("/api/lanterns/{mac}/assign")
     async def assign(mac: str, request: AssignRequest) -> dict[str, Any]:
-        ack = app.state.conductor.assign(mac, request.x, request.y)
+        try:
+            ack = app.state.conductor.assign(mac, request.x, request.y)
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         if not ack["ok"]:
             raise HTTPException(status_code=404, detail=ack["error"])
-        await publish({"type": "state", "action": "assign", "state": app.state.conductor.snapshot()})
+        await publish_state("assign")
         return ack
 
     @app.post("/api/lanterns/{mac}/forget")
     async def forget(mac: str) -> dict[str, Any]:
-        ack = app.state.conductor.forget(mac)
+        try:
+            ack = app.state.conductor.forget(mac)
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         if not ack["ok"]:
             raise HTTPException(status_code=404, detail=ack["error"])
-        await publish({"type": "state", "action": "forget", "state": app.state.conductor.snapshot()})
+        await publish_state("forget")
         return ack
 
     @app.post("/api/lanterns/replace")
     async def replace(request: ReplaceRequest) -> dict[str, Any]:
-        ack = app.state.conductor.replace(request.old_mac, request.new_mac)
+        try:
+            ack = app.state.conductor.replace(request.old_mac, request.new_mac)
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         if not ack["ok"]:
             raise HTTPException(status_code=404, detail=ack["error"])
-        await publish({"type": "state", "action": "replace", "state": app.state.conductor.snapshot()})
+        await publish_state("replace")
         return ack
 
     @app.post("/api/show/pattern")
     async def update_pattern(request: PatternUpdate) -> dict[str, Any]:
-        ack = app.state.conductor.update_pattern(request.pattern, request.brightness, request.params)
-        await publish({"type": "state", "action": "pattern", "state": app.state.conductor.snapshot()})
+        try:
+            ack = app.state.conductor.update_pattern(request.pattern, request.brightness, request.params)
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        await publish_state("pattern")
         return ack
 
     @app.post("/api/show/blackout")
     async def blackout() -> dict[str, Any]:
-        ack = app.state.conductor.blackout()
-        await publish({"type": "state", "action": "blackout", "state": app.state.conductor.snapshot()})
+        try:
+            ack = app.state.conductor.blackout()
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        await publish_state("blackout")
         return ack
 
     @app.websocket("/ws")
     async def websocket(ws: WebSocket) -> None:
         await ws.accept()
         app.state.ws_clients.add(ws)
-        await ws.send_json({"type": "state", "state": app.state.conductor.snapshot(), "ts": time.time()})
+        try:
+            state = app.state.conductor.snapshot()
+        except SerialProtocolError as error:
+            await ws.send_json({"type": "error", "message": str(error), "ts": time.time()})
+        else:
+            await ws.send_json({"type": "state", "state": state, "ts": time.time()})
         try:
             while True:
                 await ws.receive_text()

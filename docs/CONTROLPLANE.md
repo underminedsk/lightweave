@@ -1,10 +1,10 @@
 # Control plane — features & phasing
 
-Status: **design draft (2026-07-04), pre-implementation.** Companion to
+Status: **prototype in progress (2026-07-04).** Companion to
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §5.2 (control plane) and §7 (wire
-protocol). This doc enumerates *what* the control plane does and in what
-order it gets built; the serial protocol schema and visual design will be
-designed against this list.
+protocol). This doc enumerates *what* the control plane does, what the
+current HTTP/API contract is, and how the serial adapter will replace the
+mock conductor without changing the UI/API surface.
 
 ## Deployment shape
 
@@ -41,6 +41,134 @@ naming.
    pretends.
 5. **Fully offline.** All assets local; nothing assumes internet. The real
    client is a phone on the Pi's AP on the playa.
+
+## Current HTTP API contract
+
+The implemented prototype is FastAPI + a pure static client. The UI uses only
+these endpoints, so agents can drive the same workflows without a browser.
+
+### State
+
+- `GET /api/state` → full control-plane snapshot.
+- `GET /api/lanterns` → `state.lanterns` only.
+- `WS /ws` → pushes `{"type":"state","state":...}` snapshots and `error`
+  events.
+
+Snapshot shape:
+
+```json
+{
+  "conductor": {
+    "connected": true,
+    "uptime_s": 12.3,
+    "seq": 184221,
+    "wake": true,
+    "sync": "locked"
+  },
+  "summary": {
+    "alive": 9,
+    "total": 60,
+    "attention": 2,
+    "table_rows": 9
+  },
+  "pattern": {
+    "pattern": "Glow",
+    "brightness": 48,
+    "params": {"hue": 40, "saturation": 100}
+  },
+  "lanterns": [
+    {
+      "mac": "8C:94:DF:8F:71:50",
+      "label": "#0",
+      "status": "alive",
+      "last_seen_s": 4,
+      "last_seen_label": "4s ago",
+      "x": 0.54,
+      "y": 0.47,
+      "position": "Set",
+      "attention": "None",
+      "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
+      "updated_at": 1720123456.0
+    }
+  ],
+  "events": [{"ts": 1720123456.0, "message": "mock conductor started"}]
+}
+```
+
+Lantern status values currently used by the prototype:
+
+- `alive` — awake and usable.
+- `missing` — expected/positioned but stale or not seen.
+- `retired` — old MAC after a replacement; keep for audit, never offer as
+  a replacement spare.
+
+Unpositioned lanterns have `x: null`, `y: null`, and `position: "Missing"`.
+The map renders only positioned lanterns; unpositioned lanterns appear in the
+tray and in Node List.
+
+### Mutations
+
+- `POST /api/lanterns/{mac}/identify`
+- `POST /api/lanterns/{mac}/assign` with `{"x":0.25,"y":0.75}`
+- `POST /api/lanterns/{mac}/forget`
+- `POST /api/lanterns/replace` with `{"old_mac":"...","new_mac":"..."}`
+- `POST /api/show/pattern` with
+  `{"pattern":"Sweep","brightness":64,"params":{"period":8000}}`
+- `POST /api/show/blackout`
+
+Every mutation returns an ack:
+
+```json
+{"ok": true, "message": "assigned #2"}
+```
+
+Adapter errors such as serial timeout surface as HTTP `503`. Command-level
+errors such as unknown MAC or invalid replacement return `404` with the
+adapter's `error` text.
+
+## Adapter contract
+
+FastAPI depends on `control.adapters.ConductorAdapter`, not on the mock
+implementation directly. The required methods are:
+
+```python
+snapshot() -> dict
+lanterns() -> list[dict]
+tick() -> None
+identify(mac) -> ack
+assign(mac, x, y) -> ack
+forget(mac) -> ack
+replace(old_mac, new_mac) -> ack
+update_pattern(pattern, brightness, params) -> ack
+blackout() -> ack
+```
+
+`MockConductor` implements this contract today. `JsonLineSerialConductor`
+implements the same contract over newline-delimited JSON and is tested with
+a fake transport before any firmware changes.
+
+### Machine serial draft
+
+Requests are one compact JSON object per line:
+
+```json
+{"id":1,"cmd":"state"}
+{"id":2,"cmd":"assign","mac":"8C:94:DF:57:7F:14","x":0.25,"y":0.75}
+{"id":3,"cmd":"pattern","pattern":"Sweep","brightness":64,"params":{"period":8000}}
+```
+
+Responses echo the request id:
+
+```json
+{"id":1,"ok":true,"state":{...}}
+{"id":2,"ok":true,"message":"assigned #2"}
+{"id":3,"ok":false,"error":"unknown lantern"}
+```
+
+The adapter ignores human CLI/diagnostic lines and malformed JSON until it
+sees a valid JSON response with the matching `id`. If no matching response
+arrives before the timeout, the adapter raises `SerialProtocolError`, which
+the API exposes as HTTP `503`.
 
 ## Features
 

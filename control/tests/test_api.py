@@ -1,7 +1,13 @@
 from fastapi.testclient import TestClient
 
+from control.adapters import SerialProtocolError
 from control.app import create_app
 from control.mock_conductor import MockConductor
+
+
+class DownConductor(MockConductor):
+    def snapshot(self) -> dict:
+        raise SerialProtocolError("timeout waiting for state ack")
 
 
 def test_state_endpoint_returns_mock_state() -> None:
@@ -21,6 +27,25 @@ def test_identify_unknown_lantern_is_404() -> None:
     response = client.post("/api/lanterns/00:00:00:00:00:00/identify")
 
     assert response.status_code == 404
+
+
+def test_state_endpoint_reports_serial_timeout_as_503() -> None:
+    client = TestClient(create_app(DownConductor()))
+
+    response = client.get("/api/state")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "timeout waiting for state ack"
+
+
+def test_websocket_reports_serial_timeout_as_error_event() -> None:
+    client = TestClient(create_app(DownConductor()))
+
+    with client.websocket_connect("/ws") as ws:
+        event = ws.receive_json()
+
+    assert event["type"] == "error"
+    assert event["message"] == "timeout waiting for state ack"
 
 
 def test_pattern_update_round_trips_to_state() -> None:
