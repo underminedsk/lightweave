@@ -1,6 +1,13 @@
 let state = null;
 let selectedMac = null;
 let filter = "all";
+let mapZoom = 1;
+let pinchStartDistance = null;
+let pinchStartZoom = 1;
+
+const MAP_PADDING = 0.08;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 3;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -68,7 +75,7 @@ function renderPatternControls() {
 }
 
 function renderMap() {
-  const map = $("#map");
+  const map = $("#map-content");
   $$(".node").forEach((node) => node.remove());
   lanterns().forEach((lantern, index) => {
     const button = document.createElement("button");
@@ -79,11 +86,12 @@ function renderMap() {
     button.ariaLabel = lantern.label;
     const fallbackX = 0.18 + (index % 7) * 0.11;
     const fallbackY = 0.28 + Math.floor(index / 7) * 0.18;
-    button.style.left = `${(lantern.x ?? fallbackX) * 100}%`;
-    button.style.top = `${(lantern.y ?? fallbackY) * 100}%`;
+    button.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
+    button.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
     button.addEventListener("click", () => selectLantern(lantern.mac));
     map.appendChild(button);
   });
+  renderMapZoom();
 }
 
 function renderRows() {
@@ -156,6 +164,29 @@ function toast(message, danger = false) {
   node.style.color = danger ? "var(--alert)" : "var(--live)";
   node.classList.add("show");
   window.setTimeout(() => node.classList.remove("show"), 1800);
+}
+
+function mapCoord(value) {
+  return MAP_PADDING + value * (1 - MAP_PADDING * 2);
+}
+
+function setMapZoom(nextZoom) {
+  mapZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+  renderMapZoom();
+}
+
+function renderMapZoom() {
+  const content = $("#map-content");
+  if (!content) return;
+  content.style.transform = `scale(${mapZoom})`;
+  const reset = $('[data-zoom="reset"]');
+  if (reset) reset.textContent = `${mapZoom.toFixed(mapZoom === 1 ? 0 : 1)}x`;
+}
+
+function touchDistance(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
 }
 
 async function refresh() {
@@ -290,6 +321,10 @@ $$(".filters .chip").forEach((chip) => {
 document.addEventListener("click", (event) => {
   const action = event.target.dataset.action;
   if (action) runAction(action);
+  const zoom = event.target.dataset.zoom;
+  if (zoom === "in") setMapZoom(mapZoom + 0.25);
+  if (zoom === "out") setMapZoom(mapZoom - 0.25);
+  if (zoom === "reset") setMapZoom(1);
 });
 
 $("#brightness").addEventListener("input", (event) => {
@@ -309,5 +344,27 @@ $("#hue-picker").addEventListener("click", (event) => {
     event.target.classList.add("active");
   }
 });
+
+$("#map").addEventListener("wheel", (event) => {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  setMapZoom(mapZoom + (event.deltaY < 0 ? 0.12 : -0.12));
+}, { passive: false });
+
+$("#map").addEventListener("touchstart", (event) => {
+  if (event.touches.length !== 2) return;
+  pinchStartDistance = touchDistance(event.touches);
+  pinchStartZoom = mapZoom;
+}, { passive: true });
+
+$("#map").addEventListener("touchmove", (event) => {
+  if (event.touches.length !== 2 || !pinchStartDistance) return;
+  event.preventDefault();
+  setMapZoom(pinchStartZoom * (touchDistance(event.touches) / pinchStartDistance));
+}, { passive: false });
+
+$("#map").addEventListener("touchend", (event) => {
+  if (event.touches.length < 2) pinchStartDistance = null;
+}, { passive: true });
 
 refresh().then(connectWebSocket).catch((error) => toast(error.message, true));

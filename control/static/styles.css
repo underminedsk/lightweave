@@ -48,6 +48,7 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
   height: 100%;
   min-height: 520px;
   overflow: hidden;
+  touch-action: none;
   background:
     linear-gradient(rgba(38, 48, 42, .65) 1px, transparent 1px),
     linear-gradient(90deg, rgba(38, 48, 42, .65) 1px, transparent 1px),
@@ -55,12 +56,33 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
   background-size: 42px 42px, 42px 42px, auto;
 }
 .map-status { position: absolute; left: 14px; top: 14px; right: 14px; display: flex; justify-content: space-between; gap: 10px; z-index: 2; }
+.map-content {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  transition: transform .12s ease;
+}
 .chip { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 20, 17, .92); padding: 7px 10px; color: var(--muted); font-size: 13px; white-space: nowrap; backdrop-filter: blur(8px); }
 .chip.active { color: var(--amber); border-color: rgba(240, 179, 90, .45); }
 .node { position: absolute; width: 20px; height: 20px; border: 0; border-radius: 50%; padding: 0; min-height: 20px; background: var(--live); box-shadow: 0 0 20px rgba(84, 214, 122, .75); transform: translate(-50%, -50%); cursor: pointer; }
 .node.selected { width: 30px; height: 30px; background: var(--amber); box-shadow: 0 0 0 7px rgba(240, 179, 90, .18), 0 0 28px rgba(240, 179, 90, .8); }
 .node.missing { background: var(--alert); box-shadow: 0 0 18px rgba(255, 93, 82, .75); }
 .node.unpositioned { background: var(--dim); box-shadow: none; }
+.zoom-controls {
+  position: absolute;
+  right: 16px;
+  top: 62px;
+  display: grid;
+  gap: 6px;
+  z-index: 3;
+}
+.zoom-controls button {
+  width: 42px;
+  min-height: 38px;
+  padding: 0;
+  background: rgba(16, 20, 17, .92);
+  backdrop-filter: blur(8px);
+}
 .floating-actions { position: absolute; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 3; }
 
 .toolbar { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }

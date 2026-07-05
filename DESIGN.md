@@ -160,11 +160,15 @@ Use compact badges with semantic color and timestamps.
 The map should look like a working field plot:
 
 - dark grid, low contrast
+- visible edge buffer around the field extents; normalized `(0,0)` and `(1,1)`
+  should not sit directly on the screen edge
 - node dots with liveness color
 - selected node ring
 - unpositioned nodes in a side/bottom queue
 - stale nodes dimmed or red-rimmed
 - current recipe preview rendered directly on nodes when possible
+- zoom controls with pinch-to-zoom on touch devices and wheel/trackpad zoom on
+  desktop; map controls remain fixed while the field content scales
 
 Node labels should appear on selection, hover, or zoom. Do not clutter the default
 view with 60 always-visible MAC labels.
