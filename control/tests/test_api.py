@@ -25,9 +25,10 @@ def test_state_endpoint_returns_mock_state() -> None:
     assert body["summary"]["alive"] == 8
     assert body["summary"]["total"] == 9
     assert body["conductor"]["sync"] == "locked"
-    assert body["conductor"]["firmware"]["version"] == "0.1.0"
-    assert body["conductor"]["firmware"]["proto"] == 4
+    assert body["conductor"]["firmware"]["version"] == "0.2.0"
+    assert body["conductor"]["firmware"]["proto"] == 5
     assert body["summary"]["firmware"]["consistent"] is True
+    assert body["power"]["light_sleep_check_s"] == 4
 
 
 def test_identify_unknown_lantern_is_404() -> None:
@@ -82,6 +83,31 @@ def test_pattern_update_rejected_by_conductor_is_400() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "bad pattern"
+
+
+def test_power_policy_update_round_trips_to_state() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post(
+        "/api/operations/power-policy",
+        json={
+            "light_sleep_check_s": 30,
+            "deep_sleep_check_min": 60,
+            "led_on_start_min": 19 * 60,
+            "led_on_end_min": 5 * 60,
+            "schedule_enabled": True,
+            "force_awake": False,
+            "current_min": 12 * 60,
+        },
+    )
+    state = client.get("/api/state").json()
+
+    assert response.status_code == 200
+    assert state["power"]["light_sleep_check_s"] == 30
+    assert state["power"]["deep_sleep_check_min"] == 60
+    assert state["power"]["schedule_enabled"] is True
+    assert state["power"]["force_awake"] is False
+    assert state["power"]["leds_on"] is False
 
 
 def test_assign_endpoint_updates_lantern_position() -> None:

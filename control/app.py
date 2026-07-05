@@ -37,6 +37,16 @@ class ReplaceRequest(BaseModel):
     new_mac: str
 
 
+class PowerPolicyUpdate(BaseModel):
+    light_sleep_check_s: int = Field(ge=1, le=300)
+    deep_sleep_check_min: int = Field(ge=1, le=1440)
+    led_on_start_min: int = Field(ge=0, le=1439)
+    led_on_end_min: int = Field(ge=0, le=1439)
+    schedule_enabled: bool
+    force_awake: bool
+    current_min: int = Field(ge=0, le=1439)
+
+
 def create_default_conductor() -> ConductorAdapter:
     mode = os.getenv("CONTROL_CONDUCTOR", "mock").strip().lower()
     if mode in {"mock", ""}:
@@ -187,6 +197,17 @@ def create_app(conductor: ConductorAdapter | None = None) -> FastAPI:
         except SerialProtocolError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         await publish_state("blackout")
+        return ack
+
+    @app.post("/api/operations/power-policy")
+    async def update_power_policy(request: PowerPolicyUpdate) -> dict[str, Any]:
+        try:
+            ack = await conductor_call("update_power_policy", request.model_dump())
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not ack["ok"]:
+            raise HTTPException(status_code=400, detail=ack["error"])
+        await publish_state("power-policy")
         return ack
 
     @app.websocket("/ws")

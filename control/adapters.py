@@ -17,6 +17,7 @@ class ConductorAdapter(Protocol):
     def replace(self, old_mac: str, new_mac: str) -> dict[str, Any]: ...
     def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]: ...
     def blackout(self) -> dict[str, Any]: ...
+    def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class JsonLineTransport(Protocol):
@@ -67,6 +68,9 @@ class JsonLineSerialConductor:
 
     def blackout(self) -> dict[str, Any]:
         return self._request("blackout")
+
+    def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
+        return self._request("power_policy", **policy)
 
     def _request(self, command: str, **payload: Any) -> dict[str, Any]:
         with self._lock:

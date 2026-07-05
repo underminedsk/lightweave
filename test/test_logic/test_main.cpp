@@ -16,6 +16,7 @@
 #include "pattern_ids.h"
 #include "pattern_math.h"
 #include "powermon.h"
+#include "power_policy.h"
 #include "powersave.h"
 #include "roster.h"
 #include "serial_json.h"
@@ -348,6 +349,40 @@ void test_firmware_fleet_consistency_requires_every_seen_node_to_match() {
 
   TEST_ASSERT_TRUE(firmwareFleetConsistent(expected, matching, 2));
   TEST_ASSERT_FALSE(firmwareFleetConsistent(expected, mixed, 2));
+}
+
+void test_power_policy_window_handles_daytime_and_overnight_ranges() {
+  TEST_ASSERT_TRUE(powerPolicyInLedWindow(19 * 60, 18 * 60, 23 * 60));
+  TEST_ASSERT_FALSE(powerPolicyInLedWindow(2 * 60, 18 * 60, 23 * 60));
+  TEST_ASSERT_TRUE(powerPolicyInLedWindow(23 * 60, 18 * 60, 6 * 60));
+  TEST_ASSERT_TRUE(powerPolicyInLedWindow(2 * 60, 18 * 60, 6 * 60));
+  TEST_ASSERT_FALSE(powerPolicyInLedWindow(12 * 60, 18 * 60, 6 * 60));
+  TEST_ASSERT_TRUE(powerPolicyInLedWindow(12 * 60, 8 * 60, 8 * 60));
+}
+
+void test_power_policy_force_awake_overrides_schedule() {
+  PowerPolicy p = powerPolicyDefault();
+  p.flags = POWER_FLAG_SCHEDULE_ENABLED;
+  p.current_min = 12 * 60;
+  p.led_on_start_min = 18 * 60;
+  p.led_on_end_min = 6 * 60;
+
+  TEST_ASSERT_FALSE(powerPolicyLedsOn(p));
+  p.flags |= POWER_FLAG_FORCE_AWAKE;
+  TEST_ASSERT_TRUE(powerPolicyLedsOn(p));
+}
+
+void test_power_policy_sanitize_clamps_runtime_intervals() {
+  PowerPolicy p = {0, 2000, 2000, 1440, 1441, 0xff};
+
+  powerPolicySanitize(p);
+
+  TEST_ASSERT_EQUAL_UINT16(POWER_LIGHT_CHECK_MIN_S, p.light_sleep_check_s);
+  TEST_ASSERT_EQUAL_UINT16(POWER_DEEP_CHECK_MAX_MIN, p.deep_sleep_check_min);
+  TEST_ASSERT_EQUAL_UINT16(560, p.led_on_start_min);
+  TEST_ASSERT_EQUAL_UINT16(0, p.led_on_end_min);
+  TEST_ASSERT_EQUAL_UINT16(1, p.current_min);
+  TEST_ASSERT_EQUAL_UINT8(POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE, p.flags);
 }
 
 // ---- Layout table: authoritative MAC -> (x,y) -------------------------------
@@ -1018,6 +1053,35 @@ void test_serial_json_glow_maps_hue_and_saturation_params() {
   TEST_ASSERT_EQUAL_UINT16(90, cmd.params[1]);
 }
 
+void test_serial_json_power_policy_parses_runtime_sleep_controls() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":11,\"cmd\":\"power_policy\",\"light_sleep_check_s\":30,"
+      "\"deep_sleep_check_min\":60,\"led_on_start_min\":1140,"
+      "\"led_on_end_min\":300,\"schedule_enabled\":true,"
+      "\"force_awake\":false,\"current_min\":720}",
+      cmd, error));
+
+  TEST_ASSERT_NULL(error);
+  TEST_ASSERT_EQUAL_INT(SJ_POWER_POLICY, cmd.kind);
+  TEST_ASSERT_TRUE(cmd.has_light_sleep_check_s);
+  TEST_ASSERT_EQUAL_UINT16(30, cmd.light_sleep_check_s);
+  TEST_ASSERT_TRUE(cmd.has_deep_sleep_check_min);
+  TEST_ASSERT_EQUAL_UINT16(60, cmd.deep_sleep_check_min);
+  TEST_ASSERT_TRUE(cmd.has_led_on_start_min);
+  TEST_ASSERT_EQUAL_UINT16(1140, cmd.led_on_start_min);
+  TEST_ASSERT_TRUE(cmd.has_led_on_end_min);
+  TEST_ASSERT_EQUAL_UINT16(300, cmd.led_on_end_min);
+  TEST_ASSERT_TRUE(cmd.has_schedule_enabled);
+  TEST_ASSERT_TRUE(cmd.schedule_enabled);
+  TEST_ASSERT_TRUE(cmd.has_force_awake);
+  TEST_ASSERT_FALSE(cmd.force_awake);
+  TEST_ASSERT_TRUE(cmd.has_current_min);
+  TEST_ASSERT_EQUAL_UINT16(720, cmd.current_min);
+}
+
 void test_serial_json_rejects_bad_command() {
   SerialJsonCommand cmd;
   const char* error = nullptr;
@@ -1272,6 +1336,9 @@ int main(int, char**) {
   RUN_TEST(test_roster_overflow_drops_new_keeps_existing);
   RUN_TEST(test_firmware_version_matches_proto_build_and_dirty);
   RUN_TEST(test_firmware_fleet_consistency_requires_every_seen_node_to_match);
+  RUN_TEST(test_power_policy_window_handles_daytime_and_overnight_ranges);
+  RUN_TEST(test_power_policy_force_awake_overrides_schedule);
+  RUN_TEST(test_power_policy_sanitize_clamps_runtime_intervals);
   RUN_TEST(test_table_set_and_lookup);
   RUN_TEST(test_table_set_updates_in_place);
   RUN_TEST(test_table_remove);
@@ -1320,6 +1387,7 @@ int main(int, char**) {
   RUN_TEST(test_serial_json_assign_parses_mac_and_position);
   RUN_TEST(test_serial_json_pattern_maps_name_brightness_and_params);
   RUN_TEST(test_serial_json_glow_maps_hue_and_saturation_params);
+  RUN_TEST(test_serial_json_power_policy_parses_runtime_sleep_controls);
   RUN_TEST(test_serial_json_rejects_bad_command);
   RUN_TEST(test_table_wire_len_fits_espnow);
   RUN_TEST(test_table_chunk_count);

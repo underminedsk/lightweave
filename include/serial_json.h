@@ -24,6 +24,7 @@ enum SerialJsonKind {
   SJ_REPLACE,
   SJ_PATTERN,
   SJ_BLACKOUT,
+  SJ_POWER_POLICY,
 };
 
 struct SerialJsonCommand {
@@ -39,6 +40,20 @@ struct SerialJsonCommand {
   bool has_brightness = false;
   bool has_params[4] = {false, false, false, false};
   uint16_t params[4] = {0, 0, 0, 0};
+  bool has_light_sleep_check_s = false;
+  bool has_deep_sleep_check_min = false;
+  bool has_led_on_start_min = false;
+  bool has_led_on_end_min = false;
+  bool has_schedule_enabled = false;
+  bool has_force_awake = false;
+  bool has_current_min = false;
+  uint16_t light_sleep_check_s = 4;
+  uint16_t deep_sleep_check_min = 15;
+  uint16_t led_on_start_min = 18 * 60;
+  uint16_t led_on_end_min = 6 * 60;
+  bool schedule_enabled = false;
+  bool force_awake = false;
+  uint16_t current_min = 12 * 60;
 };
 
 inline bool serialJsonLooksLike(const char* line) {
@@ -93,6 +108,25 @@ inline bool sjUint(const char* json, const char* key, uint32_t& out) {
   if (!end || end == p) return false;
   out = (uint32_t)v;
   return true;
+}
+
+inline bool sjBool(const char* json, const char* key, bool& out) {
+  const char* p = sjKey(json, key);
+  if (!p) return false;
+  if (!strncmp(p, "true", 4)) {
+    out = true;
+    return true;
+  }
+  if (!strncmp(p, "false", 5)) {
+    out = false;
+    return true;
+  }
+  uint32_t v = 0;
+  if (sjUint(json, key, v)) {
+    out = v != 0;
+    return true;
+  }
+  return false;
 }
 
 inline void sjLowerCompact(const char* in, char* out, size_t out_len) {
@@ -221,6 +255,38 @@ inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
     }
   } else if (!strcmp(norm, "blackout")) {
     cmd.kind = SJ_BLACKOUT;
+  } else if (!strcmp(norm, "powerpolicy")) {
+    cmd.kind = SJ_POWER_POLICY;
+    uint32_t v = 0;
+    bool b = false;
+    if (sjUint(json, "light_sleep_check_s", v)) {
+      cmd.has_light_sleep_check_s = true;
+      cmd.light_sleep_check_s = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "deep_sleep_check_min", v)) {
+      cmd.has_deep_sleep_check_min = true;
+      cmd.deep_sleep_check_min = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "led_on_start_min", v)) {
+      cmd.has_led_on_start_min = true;
+      cmd.led_on_start_min = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "led_on_end_min", v)) {
+      cmd.has_led_on_end_min = true;
+      cmd.led_on_end_min = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "current_min", v)) {
+      cmd.has_current_min = true;
+      cmd.current_min = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjBool(json, "schedule_enabled", b)) {
+      cmd.has_schedule_enabled = true;
+      cmd.schedule_enabled = b;
+    }
+    if (sjBool(json, "force_awake", b)) {
+      cmd.has_force_awake = true;
+      cmd.force_awake = b;
+    }
   } else {
     error = "unknown cmd";
     return false;

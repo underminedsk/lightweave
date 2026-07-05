@@ -65,8 +65,8 @@ Snapshot shape:
     "wake": true,
     "sync": "locked",
     "firmware": {
-      "version": "0.1.0",
-      "proto": 4,
+      "version": "0.2.0",
+      "proto": 5,
       "build_id": 3225866068,
       "build_label": "c046bf54",
       "dirty": false
@@ -82,7 +82,7 @@ Snapshot shape:
       "matching": 8,
       "seen": 8,
       "expected": 9,
-      "version": "0.1.0",
+      "version": "0.2.0",
       "build_label": "c046bf54",
       "dirty": false
     }
@@ -91,6 +91,16 @@ Snapshot shape:
     "pattern": "Glow",
     "brightness": 48,
     "params": {"hue": 40, "saturation": 100}
+  },
+  "power": {
+    "light_sleep_check_s": 4,
+    "deep_sleep_check_min": 15,
+    "led_on_start_min": 1080,
+    "led_on_end_min": 360,
+    "current_min": 720,
+    "schedule_enabled": false,
+    "force_awake": true,
+    "leds_on": true
   },
   "lanterns": [
     {
@@ -103,7 +113,7 @@ Snapshot shape:
       "y": 0.47,
       "position": "Set",
       "attention": "None",
-      "firmware": {"version": "0.1.0", "proto": 4, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
+      "firmware": {"version": "0.2.0", "proto": 5, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
       "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
       "updated_at": 1720123456.0
     }
@@ -252,12 +262,16 @@ position", and table rows not currently registered show as "Not seen".
   Also the backbone of the agent-assisted pattern-authoring workflow (see
   the "Pattern authoring" section), including its headless
   `GET /preview` render endpoint.
-- Blackout button (bri 0) and wake summon toggle (`wake on|off`).
+- Blackout button (bri 0).
 
 ### 4. Power & energy
 
 - Live power panel: the conductor's `[power]` lines parsed into structured
   V / I / avg-W / Wh-tonight per instrumented node.
+- Operations power schedule: set radio/light-sleep check interval, deep-sleep
+  check interval, LED-on window, and field-wide force-awake override. These are
+  runtime-broadcast in beacons, so changing them does not require another
+  firmware update.
 - Nightly history persisted server-side (sqlite or CSV) — trend across the
   event, not just tonight.
 - `power reset` button for the dusk ritual.
@@ -283,6 +297,9 @@ position", and table rows not currently registered show as "Not seen".
 - Field firmware panel: conductor release version, GitHub-linked commit hash,
   dirty flag, and consistency count (`N / total on this build`). Mixed firmware
   is red and also appears in the Node List as `Firmware mismatch`.
+- Power schedule panel: authoritative place for LED on/off hours and
+  force-awake debugging. Schedule-driven sleep is the primary field behavior;
+  photodiode dusk sensing is optional/fallback, not required for the main path.
 - Raw serial console passthrough to the conductor CLI (the playa will
   produce a situation the UI didn't anticipate).
 - Event log: registrations, table edits, errors — timestamped, server-side.

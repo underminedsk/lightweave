@@ -339,8 +339,26 @@ until the first beacon is caught, so a battery swap still re-locks fast (the
 (it must beacon at 4 Hz and is wall-powered) — gated on `role == performer`. A
 runtime/NVS toggle (`powersave on|off`) exists so the night draw can be A/B'd on
 the meter. Trade-off: a pattern/position change lands up to one OFF interval (~4 s)
-late — acceptable for a slow art piece. Stage B (CPU light-sleep between frames)
-and Lever 2 (dusk deep-sleep for calendar life) are still planned.
+late — acceptable for a slow art piece. The off interval is now also a runtime
+power-policy field broadcast by the conductor, so the UI can tune it without a
+firmware rebuild.
+
+### 8.2 Schedule-driven deep sleep **[done in firmware/UI; hardware verification owed]**
+
+The primary calendar-life policy is now conductor-authoritative schedule, not
+photodiode sensing. The conductor persists a `PowerPolicy` and includes it in
+every beacon: light-sleep/radio check interval, deep-sleep check interval,
+LED-on start/end minutes, current minute-of-day, schedule-enabled, and
+force-awake. Performers apply that policy directly. Outside the LED window they
+clear LEDs and deep-sleep for the configured check interval; inside the window
+they render normally. The Operations UI sends the current local minute whenever
+the policy is saved, so the conductor can keep evaluating the wall-clock schedule
+without NTP.
+
+The `wake on|off` concept is now the same force-awake bit as the UI override.
+It keeps boards on for debugging/field testing and wins over the schedule. The
+old photodiode/dusk path remains off by default as a fallback/experiment; it is
+not required for the main installation behavior.
 
 ## 9. Milestone mapping
 
@@ -353,7 +371,7 @@ and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
 | Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | ✅ done for dev laptop UI/API; Pi packaging still planned |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
-| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) ✅ hardware-verified on bench 2026-07-03 (power re-measure owed); Lever 2 (daytime deep-sleep, `dusk.h`, fail-awake design, `wake on|off` field-summon flag, default off) 🛠 code-complete + host-tested, awaiting the pilot phototransistors; INA228 instrumentation (§4.2) ✅ firmware done + host-tested (`powermon.h`, `MSG_POWER`), awaiting the chip |
+| 3 — power management (radio duty-cycle, schedule deep-sleep, optional LDR fallback, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) ✅ hardware-verified on bench 2026-07-03 (power re-measure owed); schedule-driven deep sleep ✅ code-complete + host-tested + UI/API built, hardware verification owed; photodiode dusk sensing is now optional/fallback; INA228 instrumentation (§4.2) ✅ firmware done + host-tested (`powermon.h`, `MSG_POWER`), awaiting the chip |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 🛠 OTA safety foundation done (build/version reporting + mixed detection); transfer/enclosure planned |
 

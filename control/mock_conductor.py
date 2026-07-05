@@ -11,11 +11,22 @@ def _now() -> float:
 
 
 FIELD_FIRMWARE = {
-    "version": "0.1.0",
-    "proto": 4,
-    "build_id": 0xC046BF54,
-    "build_label": "c046bf54",
+    "version": "0.2.0",
+    "proto": 5,
+    "build_id": 0x44D028FD,
+    "build_label": "44d028fd",
     "dirty": False,
+}
+
+DEFAULT_POWER_POLICY = {
+    "light_sleep_check_s": 4,
+    "deep_sleep_check_min": 15,
+    "led_on_start_min": 18 * 60,
+    "led_on_end_min": 6 * 60,
+    "current_min": 12 * 60,
+    "schedule_enabled": False,
+    "force_awake": True,
+    "leds_on": True,
 }
 
 
@@ -86,6 +97,7 @@ class MockConductor:
     seq: int = 184221
     wake: bool = True
     connected: bool = True
+    power: dict[str, Any] = field(default_factory=lambda: deepcopy(DEFAULT_POWER_POLICY))
     pattern: dict[str, Any] = field(
         default_factory=lambda: {
             "pattern": "Glow",
@@ -137,6 +149,7 @@ class MockConductor:
                 "firmware": self._firmware_summary(lanterns, table_rows),
             },
             "pattern": deepcopy(self.pattern),
+            "power": deepcopy(self.power),
             "lanterns": lanterns,
             "events": list(reversed(self.events[-20:])),
         }
@@ -213,12 +226,36 @@ class MockConductor:
         self._event("blackout bri=0")
         return {"ok": True, "message": "blackout broadcast", "pattern": deepcopy(self.pattern)}
 
+    def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
+        updated = deepcopy(self.power)
+        updated.update(policy)
+        updated["leds_on"] = bool(updated["force_awake"]) or not bool(updated["schedule_enabled"]) or self._minute_in_window(
+            int(updated["current_min"]), int(updated["led_on_start_min"]), int(updated["led_on_end_min"])
+        )
+        self.power = updated
+        self.wake = bool(updated["force_awake"])
+        self._event(
+            f"power policy light={updated['light_sleep_check_s']}s deep={updated['deep_sleep_check_min']}m"
+        )
+        return {"ok": True, "message": "power policy changed", "power": deepcopy(self.power)}
+
     def _find(self, mac: str) -> Lantern | None:
         normalized = mac.upper()
         return next((lantern for lantern in self._lanterns if lantern.mac.upper() == normalized), None)
 
     def _event(self, message: str) -> None:
         self.events.append({"ts": _now(), "message": message})
+
+    @staticmethod
+    def _minute_in_window(minute: int, start: int, end: int) -> bool:
+        minute %= 1440
+        start %= 1440
+        end %= 1440
+        if start == end:
+            return True
+        if start < end:
+            return start <= minute < end
+        return minute >= start or minute < end
 
     def _firmware_summary(self, lanterns: list[dict[str, Any]], table_rows: int) -> dict[str, Any]:
         positioned = [item for item in lanterns if item["position"] == "Set" and item["status"] == "alive"]

@@ -60,7 +60,6 @@ static uint8_t      g_mac[6] = {0};  // this node's WiFi STA MAC — stable iden
 static bool         g_powersave = (POWERSAVE_DEFAULT != 0);
 static bool         g_radio_on  = true;  // radio is powered after radioBegin()
 static DutyCycle    g_duty;
-static const DutyConfig DUTY_CFG = {DUTY_OFF_US, DUTY_LISTEN_US};
 
 // Stage B: CPU light-sleep between work while the radio is off (napsched.h
 // logic, host-tested). g_last_serial_us holds naps off around serial traffic so
@@ -96,6 +95,13 @@ static int64_t  g_last_wake_flag_us = INT64_MIN / 2;  // "never" (avoids overflo
 static bool     g_wake_flag = false;       // conductor: field-awake override
 static uint16_t g_light_mv = 0;            // last light sample, for diag/info
 RTC_DATA_ATTR static bool g_rtc_was_day = false;
+
+// Runtime field power policy. The conductor persists these knobs and includes
+// them in every beacon; performers apply the latest received policy directly, so
+// changing schedule/intervals is a control-plane action, not a reflash.
+static PowerPolicy g_power_policy = {4, 15, 18 * 60, 6 * 60, 12 * 60, 0};
+static uint16_t    g_policy_base_min = 12 * 60;
+static int64_t     g_policy_clock_set_us = 0;
 
 // INA228 power telemetry (powermon.h logic, host-tested; ARCHITECTURE §4.2).
 // Probed over I2C at boot: 1–2 reference nodes carry the breakout in series
@@ -139,6 +145,15 @@ static void configLoad() {
   g_powersave = g_prefs.getBool("ps", POWERSAVE_DEFAULT != 0);
   g_dusk_on = g_prefs.getBool("dusk", DUSK_DEFAULT != 0);
   g_wake_flag = g_prefs.getBool("wake", false);
+  g_power_policy = powerPolicyDefault();
+  g_power_policy.light_sleep_check_s = g_prefs.getUShort("p_lchk", g_power_policy.light_sleep_check_s);
+  g_power_policy.deep_sleep_check_min = g_prefs.getUShort("p_dchk", g_power_policy.deep_sleep_check_min);
+  g_power_policy.led_on_start_min = g_prefs.getUShort("p_on", g_power_policy.led_on_start_min);
+  g_power_policy.led_on_end_min = g_prefs.getUShort("p_off", g_power_policy.led_on_end_min);
+  if (g_prefs.getBool("p_sched", false)) g_power_policy.flags |= POWER_FLAG_SCHEDULE_ENABLED;
+  if (g_wake_flag) g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
+  powerPolicySanitize(g_power_policy);
+  g_policy_base_min = g_power_policy.current_min;
   g_prefs.end();
 }
 
@@ -156,6 +171,17 @@ static void duskSave() {
 
 static void wakeFlagSave() {
   g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBool("wake", g_wake_flag);
+  g_prefs.end();
+}
+
+static void powerPolicySave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putUShort("p_lchk", g_power_policy.light_sleep_check_s);
+  g_prefs.putUShort("p_dchk", g_power_policy.deep_sleep_check_min);
+  g_prefs.putUShort("p_on", g_power_policy.led_on_start_min);
+  g_prefs.putUShort("p_off", g_power_policy.led_on_end_min);
+  g_prefs.putBool("p_sched", powerPolicyScheduleEnabled(g_power_policy));
   g_prefs.putBool("wake", g_wake_flag);
   g_prefs.end();
 }
@@ -196,7 +222,8 @@ static void tableSave() {
 static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
-                             /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0}, 0};
+                             /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0},
+                             {4, 15, 18 * 60, 6 * 60, 12 * 60, 0}, 0};
 static uint32_t g_tx_seq = 0;
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -256,6 +283,7 @@ static void patternConfigLoad() {
   g_beacon.params[1] = g_prefs.getUShort("p1", 0);
   g_beacon.params[2] = g_prefs.getUShort("p2", 0);
   g_beacon.params[3] = g_prefs.getUShort("p3", 0);
+  g_beacon.power = g_power_policy;
   g_prefs.end();
 }
 
@@ -272,6 +300,62 @@ static void patternConfigSave(const BeaconMsg& b) {
   g_prefs.putUShort("p2", b.params[2]);
   g_prefs.putUShort("p3", b.params[3]);
   g_prefs.end();
+}
+
+static uint16_t powerPolicyCurrentMinute(int64_t t) {
+  int64_t elapsed_min = 0;
+  if (g_policy_clock_set_us > 0 && t >= g_policy_clock_set_us) {
+    elapsed_min = (t - g_policy_clock_set_us) / 60000000LL;
+  }
+  return (uint16_t)((g_policy_base_min + elapsed_min) % POWER_DAY_MINUTES);
+}
+
+static PowerPolicy powerPolicySnapshot(int64_t t) {
+  PowerPolicy p = g_power_policy;
+  p.current_min = powerPolicyCurrentMinute(t);
+  if (g_wake_flag) p.flags |= POWER_FLAG_FORCE_AWAKE;
+  else p.flags &= ~POWER_FLAG_FORCE_AWAKE;
+  powerPolicySanitize(p);
+  return p;
+}
+
+static DutyConfig currentDutyConfig(const PowerPolicy& p) {
+  PowerPolicy clean = p;
+  powerPolicySanitize(clean);
+  return {(int64_t)clean.light_sleep_check_s * 1000000LL, DUTY_LISTEN_US};
+}
+
+static uint64_t powerPolicyDeepSleepUs(const PowerPolicy& p) {
+  PowerPolicy clean = p;
+  powerPolicySanitize(clean);
+  return (uint64_t)clean.deep_sleep_check_min * 60000000ULL;
+}
+
+static void powerPolicyApplyCommand(const SerialJsonCommand& cmd) {
+  if (cmd.has_light_sleep_check_s)
+    g_power_policy.light_sleep_check_s = cmd.light_sleep_check_s;
+  if (cmd.has_deep_sleep_check_min)
+    g_power_policy.deep_sleep_check_min = cmd.deep_sleep_check_min;
+  if (cmd.has_led_on_start_min)
+    g_power_policy.led_on_start_min = cmd.led_on_start_min;
+  if (cmd.has_led_on_end_min)
+    g_power_policy.led_on_end_min = cmd.led_on_end_min;
+  if (cmd.has_schedule_enabled) {
+    if (cmd.schedule_enabled) g_power_policy.flags |= POWER_FLAG_SCHEDULE_ENABLED;
+    else g_power_policy.flags &= ~POWER_FLAG_SCHEDULE_ENABLED;
+  }
+  if (cmd.has_force_awake) {
+    g_wake_flag = cmd.force_awake;
+    if (g_wake_flag) g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
+    else g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+  }
+  if (cmd.has_current_min) {
+    g_policy_base_min = cmd.current_min % POWER_DAY_MINUTES;
+    g_policy_clock_set_us = now_us();
+    g_power_policy.current_min = g_policy_base_min;
+  }
+  powerPolicySanitize(g_power_policy);
+  powerPolicySave();
 }
 
 // ---- ESP-NOW receive ---------------------------------------------------------
@@ -434,7 +518,8 @@ static void broadcastBeacon() {
   b.hdr.type = MSG_BEACON;
   b.epoch_us = now_us();
   b.seq = g_tx_seq++;
-  b.flags = g_wake_flag ? BEACON_FLAG_FIELD_AWAKE : 0;
+  b.power = powerPolicySnapshot(b.epoch_us);
+  b.flags = powerPolicyForceAwake(b.power) ? BEACON_FLAG_FIELD_AWAKE : 0;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
 
@@ -588,11 +673,11 @@ static void maybeAdoptPosition() {
 // would otherwise latch the last frame all day); the RTC-memory flag makes the
 // next timer wake boot straight into "day" for a quick re-sleep if it's still
 // bright. Never returns.
-static void duskEnterDeepSleep() {
+static void duskEnterDeepSleep(uint64_t sleep_us) {
   Serial.printf(
-      "[dusk] daylight confirmed (light=%u mV) — deep sleeping %llu min; "
+      "[sleep] off-window confirmed (light=%u mV) — deep sleeping %llu min; "
       "power-cycle wakes it immediately\n",
-      g_light_mv, (unsigned long long)(DUSK_RESAMPLE_US / 60000000ULL));
+      g_light_mv, (unsigned long long)(sleep_us / 60000000ULL));
   Serial.flush();
   strip.ClearTo(RgbwColor(0, 0, 0, 0));
   strip.Show();
@@ -601,7 +686,7 @@ static void duskEnterDeepSleep() {
   digitalWrite(HEARTBEAT_LED_PIN, HEARTBEAT_ACTIVE_LOW ? HIGH : LOW);
 #endif
   g_rtc_was_day = true;
-  esp_deep_sleep(DUSK_RESAMPLE_US);
+  esp_deep_sleep(sleep_us);
 }
 
 // ---- Diagnostics -------------------------------------------------------------
@@ -695,6 +780,15 @@ static void printInfo() {
                 isConductor() ? " (conductor: radio always on)" : "",
                 g_dusk_on ? "on" : "off",
                 isConductor() ? " (conductor: never dusk-sleeps)" : "");
+  PowerPolicy p = isConductor() ? powerPolicySnapshot(now_us()) : b.power;
+  Serial.printf("  power policy: light-check=%us  deep-check=%umin  schedule=%s "
+                "on=%02u:%02u off=%02u:%02u  now=%02u:%02u  leds=%s\n",
+                p.light_sleep_check_s, p.deep_sleep_check_min,
+                powerPolicyScheduleEnabled(p) ? "on" : "off",
+                p.led_on_start_min / 60, p.led_on_start_min % 60,
+                p.led_on_end_min / 60, p.led_on_end_min % 60,
+                p.current_min / 60, p.current_min % 60,
+                powerPolicyLedsOn(p) ? "on" : "off");
   if (isConductor())
     Serial.printf("  wake-override=%s (FIELD_AWAKE flag in beacons)\n",
                   g_wake_flag ? "ON" : "off");
@@ -788,6 +882,20 @@ static void printPatternJson(const BeaconMsg& b) {
   Serial.print("}}");
 }
 
+static void printPowerPolicyJson(const PowerPolicy& p) {
+  Serial.printf("\"power\":{\"light_sleep_check_s\":%u,"
+                "\"deep_sleep_check_min\":%u,"
+                "\"led_on_start_min\":%u,\"led_on_end_min\":%u,"
+                "\"current_min\":%u,"
+                "\"schedule_enabled\":%s,\"force_awake\":%s,"
+                "\"leds_on\":%s}",
+                p.light_sleep_check_s, p.deep_sleep_check_min,
+                p.led_on_start_min, p.led_on_end_min, p.current_min,
+                powerPolicyScheduleEnabled(p) ? "true" : "false",
+                powerPolicyForceAwake(p) ? "true" : "false",
+                powerPolicyLedsOn(p) ? "true" : "false");
+}
+
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
                              const char* status, int64_t last_seen_s, float x,
                              float y, bool has_position, const char* attention,
@@ -862,6 +970,7 @@ static void printMachineState(uint32_t id) {
   }
 
   Serial.printf("{\"id\":%lu,\"ok\":true,\"state\":{", (unsigned long)id);
+  PowerPolicy policy = isConductor() ? powerPolicySnapshot(t) : b.power;
   Serial.printf("\"conductor\":{\"connected\":true,\"uptime_s\":%.1f,"
                 "\"seq\":%lu,\"wake\":%s,\"sync\":\"%s\","
                 "\"firmware\":{\"version\":\"%s\",\"proto\":%u,\"build_id\":%lu,"
@@ -883,6 +992,8 @@ static void printMachineState(uint32_t id) {
                 (unsigned long)conductor_fw.build_id,
                 conductor_fw.dirty ? "true" : "false");
   printPatternJson(b);
+  Serial.print(",");
+  printPowerPolicyJson(policy);
   Serial.print(",\"lanterns\":[");
   bool first = true;
   for (uint8_t i = 0; i < g_table.count; i++) {
@@ -983,6 +1094,13 @@ static void handleMachineCommand(const SerialJsonCommand& cmd) {
     portEXIT_CRITICAL(&g_sync_mux);
     saveBeaconSnapshot();
     jsonOk(cmd.id, "blackout broadcast");
+  } else if (cmd.kind == SJ_POWER_POLICY) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "power policy is conductor-only");
+    } else {
+      powerPolicyApplyCommand(cmd);
+      jsonOk(cmd.id, "power policy changed");
+    }
   } else {
     jsonError(cmd.id, "unknown cmd");
   }
@@ -1050,7 +1168,7 @@ static void handleCommand(char* line) {
       // resets too: a (re-)promoted conductor advertises immediately instead
       // of resuming a schedule frozen up to 60 s in the future.
       if (!g_radio_on) radioWake();
-      dutyInit(g_duty, DUTY_CFG, now_us());
+      dutyInit(g_duty, currentDutyConfig(g_power_policy), now_us());
       g_next_table_us = 0;
       printInfo();
     }
@@ -1123,13 +1241,15 @@ static void handleCommand(char* line) {
       Serial.println("? wake is conductor-only (sets FIELD_AWAKE in beacons)");
     } else if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
       g_wake_flag = true;
-      wakeFlagSave();
+      g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
+      powerPolicySave();
       Serial.println("[wake] FIELD_AWAKE on — dusk-sleeping nodes join at their "
                      "next resample (<= 15 min)");
       printInfo();
     } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
       g_wake_flag = false;
-      wakeFlagSave();
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+      powerPolicySave();
       Serial.println("[wake] FIELD_AWAKE off — dusk logic resumes field-wide");
       printInfo();
     } else {
@@ -1159,7 +1279,7 @@ static void handleCommand(char* line) {
       // otherwise strand the node in a phantom window the radio can never
       // catch a beacon in, leaving it deaf until reboot.
       if (!g_radio_on) radioWake();
-      dutyInit(g_duty, DUTY_CFG, now_us());  // restart from a fresh listen window
+      dutyInit(g_duty, currentDutyConfig(g_power_policy), now_us());  // restart from a fresh listen window
       powersaveSave();
       printInfo();
     } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
@@ -1216,7 +1336,7 @@ void setup() {
   strip.Show();  // clear
 
   radioBegin();
-  dutyInit(g_duty, DUTY_CFG, now_us());  // performer radio duty-cycle (no-op for conductor)
+  dutyInit(g_duty, currentDutyConfig(g_power_policy), now_us());  // performer radio duty-cycle (no-op for conductor)
 
   // Stage B naps: typing on serial wakes a sleeping node (threshold = a few RX
   // edges, so line noise doesn't), and the wake handler below then holds naps
@@ -1330,14 +1450,24 @@ void loop() {
   } else {
     // Duty-cycle the radio: off between brief listen windows, rendering the whole
     // time from the synced clock. dutyStep returns a transition to apply, if any.
+    PowerPolicy policy = b.power;
+    powerPolicySanitize(policy);
     if (g_powersave) {
-      DutyAction act = dutyStep(g_duty, DUTY_CFG, t);
+      DutyAction act = dutyStep(g_duty, currentDutyConfig(policy), t);
       if (act == DUTY_WAKE) radioWake();
       else if (act == DUTY_SLEEP) radioSleep();
     }
     if (g_radio_on) maybeRegister(t);  // TX only when the radio is powered
     maybePowerReport(t);   // no-op without the INA228; defers until radio-on
     maybeAdoptPosition();  // pure NVS; flush a pending table adoption regardless
+
+    // Primary field sleep policy: when the broadcast schedule says LEDs are off,
+    // clear the pixels and deep-sleep until the next check interval. A recent
+    // serial session still wins, so a board on the bench stays reachable.
+    if (powerPolicyScheduleEnabled(policy) && !powerPolicyLedsOn(policy) &&
+        t - g_last_serial_us >= DUSK_SERIAL_GRACE_US) {
+      duskEnterDeepSleep(powerPolicyDeepSleepUs(policy));
+    }
 
     // Lever 2: sample the light sensor at 1 Hz and deep-sleep through daylight.
     // Every gate here fails toward "awake" (see dusk.h): debounced day + boot
@@ -1356,7 +1486,7 @@ void loop() {
         portEXIT_CRITICAL(&g_sync_mux);
         if (duskShouldSleep(g_dusk, DUSK_CFG, t, g_dusk_earliest_us,
                             g_last_serial_us, last_flag)) {
-          duskEnterDeepSleep();  // never returns; RTC timer armed atomically
+          duskEnterDeepSleep(powerPolicyDeepSleepUs(policy));  // never returns
         }
       }
     }
@@ -1365,6 +1495,8 @@ void loop() {
   // Power safety: hard-clamp the rendered brightness to MAX_BRIGHTNESS on every
   // node, so the per-node draw is bounded no matter what a pattern asks for.
   if (b.brightness > MAX_BRIGHTNESS) b.brightness = MAX_BRIGHTNESS;
+  powerPolicySanitize(b.power);
+  if (!powerPolicyLedsOn(b.power)) b.brightness = 0;
 
   // Conductor renders against its own clock; a performer against synced time
   // (which free-runs on the last offset when no beacon arrives).

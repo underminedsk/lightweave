@@ -8,13 +8,18 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**89 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-05): **release version display for OTA
-safety is code-complete** — firmware now reports `VERSION` (`0.1.0`) in addition
-to protocol, git-derived build id, and dirty flag; the Operations/detail UI
-shows the human version and links the commit hash to GitHub. This bumps
-`PROTO_VERSION` to 4, so the three bench boards need an all-board reflash before
-the live serial UI will show the new version field. Previous latest: **OTA
+(**93 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
+build clean. Latest on `main` (2026-07-05): **runtime power schedule is
+code-complete** — Operations can set light-sleep/radio check interval,
+deep-sleep check interval, LED-on window, and force-awake override. The conductor
+persists that `PowerPolicy` and broadcasts it in every beacon; performers apply
+it without further firmware changes. This bumps `VERSION` to `0.2.0` and
+`PROTO_VERSION` to 5, so all boards must be reflashed together before the live
+bench can use it. Photodiodes are now optional/fallback, not the main sleep
+strategy. Previous latest: **release version display for OTA
+safety is code-complete** — firmware reports `VERSION` in addition to protocol,
+git-derived build id, and dirty flag; the Operations/detail UI shows the human
+version and links the commit hash to GitHub. Previous latest: **OTA
 safety foundation hardware-verified** — all three bench boards were flashed to
 `PROTO_VERSION 3` build `c046bf54` with dirty=false; `/api/state` reports
 `summary.firmware.consistent=true`, `matching=2`, `expected=2`, and the
@@ -49,18 +54,22 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 ## ▶ Next session: pick up here (updated 2026-07-05)
 
 Priority order:
-1. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
+1. **Hardware-verify runtime power schedule:** after committing/flashing v5 to
+   all boards, use Operations to set a short LED-off window + short deep-check
+   interval, confirm performers clear LEDs/deep-sleep/rejoin, then use
+   "Turn boards on" to force the field awake. Keep recent-serial grace in mind:
+   USB-connected boards intentionally stay awake for 5 min after serial input.
+2. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
    selected-node updates. Start with the non-writing control flow: enter/exit OTA
    window, readiness/status reporting, timeout, and UI copy. Do not implement
    autonomous/opportunistic updates.
-2. **Optional negative OTA-safety check:** if useful, intentionally flash one
-   performer with a same-v4 but different build and confirm it appears as
+3. **Optional negative OTA-safety check:** if useful, intentionally flash one
+   performer with a same-v5 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
    or older boards simply vanish from the roster due to the version gate.
-3. **Monday (parts in hand):** wire a phototransistor → calibrate
-   `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
-   verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
-   wire INA228 on one reference node (SDA→21, SCL→22, chip in series between
+4. **Monday (parts in hand):** phototransistors are no longer required for the
+   main sleep strategy. Treat them as optional/fallback only. Wire INA228 on one
+   reference node (SDA→21, SCL→22, chip in series between
    battery+ and buck input) → run the INA228 bench checklist below → first
    real Wh integral; first flash of the `firebeetle` env on real FireBeetle
    hardware. **Plus one new 2-minute check:** with the conductor up and a
@@ -126,23 +135,24 @@ power measurement):
   `pattern <n>`, `bri <n>`, `param <i> <v>`, `powersave on|off`,
   `dusk on|off` (performer; daytime deep-sleep, default off),
   `wake on|off` (conductor; FIELD_AWAKE beacon flag, summons dusk-sleeping
-  nodes), `power` / `power reset` (INA228 nodes; print / zero the energy
+  nodes; same force-awake bit as the Operations override), `power` / `power reset` (INA228 nodes; print / zero the energy
   accumulators). Note diag output is gated: it prints only within **5 min of
   serial input** — hit Enter in a monitor to revive a quiet node (see
   FLASHING.md). Exception: the conductor's `[power]` telemetry log is
   deliberately ungated (it's the overnight audit trail).
-- **Wire protocol is v4** (`PROTO_VERSION 4`; REGISTER now includes release
-  version, protocol, build id, and dirty flag for OTA version consistency).
+- **Wire protocol is v5** (`PROTO_VERSION 5`; BEACON now includes runtime
+  `PowerPolicy`, and REGISTER includes release version, protocol, build id, and
+  dirty flag for OTA version consistency).
   Protocol-mismatched nodes silently reject each other — **flash every board
   together**. A same-protocol stale version/build is reported as
   `Firmware mismatch`.
-- **Host unit tests** (`test/test_logic/`, 89): sync core, pattern math, roster,
+- **Host unit tests** (`test/test_logic/`, 93): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
   MAC text parsing, table wire (chunking / length validation / own-row scan /
-  row-reply decision + builder), firmware version consistency, and boot
-  classification.
+  row-reply decision + builder), firmware version consistency, power-policy
+  schedule math, and boot classification.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -485,7 +495,17 @@ update; mitigate with a longer burst + the conductor repeating it).
 minute-scale wake intervals are fine for *timekeeping*; the limiter is update
 latency, not sync.
 
-### Lever 2 (then): daytime deep-sleep — calendar life
+### Lever 2 (then): schedule-driven deep-sleep — calendar life
+
+**Primary path as of 2026-07-05:** the conductor broadcasts runtime
+`PowerPolicy` in every v5 beacon. Operations sets the radio/light-sleep check
+interval, deep-sleep check interval, LED-on window, and force-awake override.
+Performers clear LEDs and deep-sleep outside the window, then wake on the
+configured check cadence to hear whether the schedule/override changed. This
+makes the photodiodes redundant for the main installation path.
+
+The photodiode dusk detector below remains off by default as an optional
+fallback/experiment, not the plan of record.
 
 **🛠 CODE-COMPLETE (2026-07-03), host-tested (57 native tests green), both device
 envs build — NOT hardware-verified (needs the pilot phototransistors, arriving);
@@ -502,7 +522,7 @@ field. Four independent layers guarantee daytime testability:
    and listens for a beacon before it may re-sleep — a flagged beacon pins it
    awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
    ≤ one resample interval. Historical note: this originally grew the wire format
-   to `PROTO_VERSION 2`; the current protocol is **v4**, and every protocol bump
+   to `PROTO_VERSION 2`; the current protocol is **v5**, and every protocol bump
    still means reflashing every board together.
 2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
    for 10 min, 60 s light debounce on top). Per-lantern physical override via the
@@ -591,8 +611,9 @@ missing the field-* envs, and the field envs copy-pasting instead of
   `TableMsg.chunk/chunks` written but never read. Removing the wire fields would
   change layout → PROTO_VERSION bump → reflash every board together; fold it
   into the next deliberate protocol rev instead of doing it standalone. Roster
-  firmware reporting is no longer dead: v4 REGISTER includes `fw` + release
-  version + build id + dirty flag for OTA consistency checks.
+  firmware reporting is no longer dead: v5 REGISTER includes `fw` + release
+  version + build id + dirty flag for OTA consistency checks, and BEACON includes
+  runtime `PowerPolicy`.
 
 ### After Milestone 3
 Milestone 4 — battery enclosure + final go/no-go on the **FireBeetle** (lower draw

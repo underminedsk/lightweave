@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "firmware_version.h"
+#include "power_policy.h"
 #include "powermon.h"  // PowerSample — MSG_POWER's payload IS the logic struct
 
 // Bumped on any incompatible wire-layout change. Receivers reject a mismatch
@@ -23,7 +24,8 @@
 // v2: BeaconMsg grew `flags` (field-awake override for daytime deep-sleep).
 // v3: RegisterMsg reports a build id + dirty flag for OTA version consistency.
 // v4: RegisterMsg also reports the human firmware version string.
-static constexpr uint8_t PROTO_VERSION = 4;
+// v5: BeaconMsg carries runtime power policy (sleep intervals + LED schedule).
+static constexpr uint8_t PROTO_VERSION = 5;
 
 // BeaconMsg.flags bits.
 // FIELD_AWAKE: conductor-commanded override — "the field should be awake now,
@@ -60,6 +62,7 @@ typedef struct __attribute__((packed)) {
   uint8_t   palette_id;  // palette selector
   uint8_t   flags;       // BEACON_FLAG_* bits (field-awake override, …)
   uint16_t  params[4];   // pattern-specific knobs for live tweaking
+  PowerPolicy power;      // runtime sleep/schedule config, broadcast not reflashed
   uint32_t  seq;         // monotonic; for drop detection / logging
 } BeaconMsg;
 

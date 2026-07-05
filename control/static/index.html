@@ -113,6 +113,34 @@
               <div class="ops-value" id="firmware-consistency">--</div>
             </div>
           </div>
+          <div class="ops-section">
+            <div class="section-head">
+              <h3>Power schedule</h3>
+              <div class="chip" id="power-state">--</div>
+            </div>
+            <label class="check-row">
+              <input id="schedule-enabled" type="checkbox">
+              <span>Use LED schedule</span>
+            </label>
+            <div class="ops-form-grid">
+              <label class="control-label" for="light-check">Light sleep check interval
+                <input id="light-check" type="number" min="1" max="300" step="1">
+              </label>
+              <label class="control-label" for="deep-check">Deep sleep check interval
+                <input id="deep-check" type="number" min="1" max="1440" step="1">
+              </label>
+              <label class="control-label" for="led-on-start">LEDs on
+                <input id="led-on-start" type="time">
+              </label>
+              <label class="control-label" for="led-on-end">LEDs off
+                <input id="led-on-end" type="time">
+              </label>
+            </div>
+            <div class="button-row">
+              <button class="primary" data-action="save-power-policy">Save power schedule</button>
+              <button id="force-awake" data-action="toggle-force-awake">Turn boards on</button>
+            </div>
+          </div>
           <div class="log" id="event-log"></div>
         </div>
       </section>

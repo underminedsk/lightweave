@@ -115,6 +115,7 @@ function render() {
   renderRows();
   renderDetail();
   renderFirmware();
+  renderPowerPolicy();
   renderEvents();
   renderDetailVisibility();
 }
@@ -357,6 +358,53 @@ function renderFirmware() {
     ? `${matching} / ${expected} on this build`
     : `${matching} / ${seen} match`;
   $("#firmware-consistency").className = `ops-value ${consistent ? "ok" : "bad"}`;
+}
+
+function minutesToTime(minutes) {
+  const value = Number(minutes || 0) % 1440;
+  const hh = String(Math.floor(value / 60)).padStart(2, "0");
+  const mm = String(value % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function timeToMinutes(value) {
+  const [hh, mm] = String(value || "00:00").split(":").map(Number);
+  return Math.min(1439, Math.max(0, (hh || 0) * 60 + (mm || 0)));
+}
+
+function currentMinuteOfDay() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function renderPowerPolicy() {
+  const power = state.power || {};
+  $("#light-check").value = power.light_sleep_check_s ?? 4;
+  $("#deep-check").value = power.deep_sleep_check_min ?? 15;
+  $("#led-on-start").value = minutesToTime(power.led_on_start_min ?? 18 * 60);
+  $("#led-on-end").value = minutesToTime(power.led_on_end_min ?? 6 * 60);
+  $("#schedule-enabled").checked = Boolean(power.schedule_enabled);
+  const force = Boolean(power.force_awake);
+  $("#force-awake").textContent = force ? "Resume schedule" : "Turn boards on";
+  $("#force-awake").classList.toggle("primary", !force);
+  $("#force-awake").classList.toggle("danger", force);
+  $("#power-state").textContent = force
+    ? "override on"
+    : power.leds_on
+      ? "LEDs on"
+      : "deep sleep window";
+}
+
+function powerPolicyFromForm(forceAwake = state?.power?.force_awake) {
+  return {
+    light_sleep_check_s: Number($("#light-check").value || 4),
+    deep_sleep_check_min: Number($("#deep-check").value || 15),
+    led_on_start_min: timeToMinutes($("#led-on-start").value),
+    led_on_end_min: timeToMinutes($("#led-on-end").value),
+    schedule_enabled: $("#schedule-enabled").checked,
+    force_awake: Boolean(forceAwake),
+    current_min: currentMinuteOfDay(),
+  };
 }
 
 function detailSummary(lantern) {
@@ -705,6 +753,25 @@ async function runAction(action) {
       if (!confirm("Broadcast blackout brightness 0?")) return;
       const ack = await api("/api/show/blackout", { method: "POST" });
       toast(ack.message, true);
+      await refresh();
+      return;
+    }
+    if (action === "save-power-policy") {
+      const ack = await api("/api/operations/power-policy", {
+        method: "POST",
+        body: JSON.stringify(powerPolicyFromForm()),
+      });
+      toast(ack.message);
+      await refresh();
+      return;
+    }
+    if (action === "toggle-force-awake") {
+      const force = !Boolean(state?.power?.force_awake);
+      const ack = await api("/api/operations/power-policy", {
+        method: "POST",
+        body: JSON.stringify(powerPolicyFromForm(force)),
+      });
+      toast(force ? "boards forced on" : ack.message);
       await refresh();
     }
   } catch (error) {
