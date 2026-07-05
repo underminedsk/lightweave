@@ -67,9 +67,11 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
 }
 .chip { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 20, 17, .92); padding: 7px 10px; color: var(--muted); font-size: 13px; white-space: nowrap; backdrop-filter: blur(8px); }
 .chip.active { color: var(--amber); border-color: rgba(240, 179, 90, .45); }
-.node { position: absolute; z-index: 1; width: 20px; height: 20px; border: 0; border-radius: 50%; padding: 0; min-height: 20px; background: var(--live); box-shadow: 0 0 20px rgba(84, 214, 122, .75); transform: translate(-50%, -50%); cursor: pointer; pointer-events: auto; }
-.node.missing { background: var(--alert); box-shadow: 0 0 18px rgba(255, 93, 82, .75); }
-.node.unpositioned { background: var(--dim); box-shadow: none; }
+.node { position: absolute; z-index: 1; width: 32px; height: 32px; border: 0; border-radius: 50%; padding: 0; min-height: 32px; background: transparent; transform: translate(-50%, -50%); cursor: pointer; pointer-events: auto; }
+.node::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 20px; border-radius: 50%; background: var(--live); box-shadow: 0 0 20px rgba(84, 214, 122, .75); transform: translate(-50%, -50%); }
+.node.missing::after { background: var(--alert); box-shadow: 0 0 18px rgba(255, 93, 82, .75); }
+.node.unpositioned::after { background: var(--dim); box-shadow: none; }
+.node.move-target::after { background: var(--amber); animation: move-target-pulse .72s ease-in-out infinite alternate; }
 .selection-ring {
   position: absolute;
   z-index: 2;
@@ -82,7 +84,7 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
   animation: selected-pulse 1.8s ease-in-out infinite;
 }
 body.move-mode .selection-ring {
-  border-color: rgba(94, 183, 255, .95);
+  border-color: rgba(240, 179, 90, .96);
 }
 @keyframes selected-pulse {
   0%, 100% {
@@ -94,6 +96,14 @@ body.move-mode .selection-ring {
     opacity: 1;
     transform: translate(-50%, -50%) scale(1.16);
     box-shadow: 0 0 28px rgba(94, 183, 255, .85);
+  }
+}
+@keyframes move-target-pulse {
+  from {
+    box-shadow: 0 0 12px rgba(240, 179, 90, .72), 0 0 0 0 rgba(240, 179, 90, .28);
+  }
+  to {
+    box-shadow: 0 0 26px rgba(240, 179, 90, 1), 0 0 0 8px rgba(240, 179, 90, .08);
   }
 }
 body.move-mode .map { cursor: crosshair; }

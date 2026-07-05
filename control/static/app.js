@@ -87,6 +87,7 @@ function renderMap() {
   lanterns().forEach((lantern, index) => {
     const button = document.createElement("button");
     button.className = `node ${cssStatus(lantern)}`;
+    if (movingLanternMac === lantern.mac) button.classList.add("move-target");
     button.dataset.mac = lantern.mac;
     button.type = "button";
     button.ariaLabel = lantern.label;
@@ -267,8 +268,13 @@ function startMoveMode() {
   const lantern = selectedLantern();
   if (!lantern) return;
   movingLanternMac = lantern.mac;
+  updateMoveTargetClass();
   document.body.classList.add("move-mode");
   toast(`Drag ${lantern.label} to its new position`);
+}
+
+function updateMoveTargetClass() {
+  $$(".node").forEach((node) => node.classList.toggle("move-target", node.dataset.mac === movingLanternMac));
 }
 
 function startLanternMove(event) {
@@ -288,6 +294,7 @@ async function finishLanternMove(clientX, clientY) {
   movingLanternMac = null;
   movingDrag = null;
   document.body.classList.remove("move-mode");
+  updateMoveTargetClass();
   setLanternPreview(mac, position.x, position.y);
   try {
     const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/assign`, {
