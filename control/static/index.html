@@ -140,7 +140,13 @@
                 <input id="led-on-end" type="time">
               </label>
               <label class="control-label" for="schedule-timezone">Timezone
-                <input id="schedule-timezone" type="text" readonly>
+                <select id="schedule-timezone">
+                  <option value="America/Los_Angeles">Pacific time</option>
+                  <option value="America/Denver">Mountain time</option>
+                  <option value="America/Chicago">Central time</option>
+                  <option value="America/New_York">Eastern time</option>
+                  <option value="UTC">UTC</option>
+                </select>
               </label>
               <label class="control-label" for="deep-check">Sleep update check interval (secs)
                 <input id="deep-check" type="number" min="60" max="86400" step="60">

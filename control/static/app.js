@@ -17,6 +17,8 @@ let powerBaseline = null;
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 3;
+const DEFAULT_TIMEZONE = "America/Los_Angeles";
+const TIMEZONE_STORAGE_KEY = "baskets.sleepTimezone";
 const PATTERN_DEFAULTS = {
   Pulse: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
   Glow: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
@@ -373,13 +375,20 @@ function timeToMinutes(value) {
   return Math.min(1439, Math.max(0, (hh || 0) * 60 + (mm || 0)));
 }
 
-function currentMinuteOfDay() {
-  const now = new Date();
-  return now.getHours() * 60 + now.getMinutes();
+function selectedTimezone() {
+  return $("#schedule-timezone")?.value || localStorage.getItem(TIMEZONE_STORAGE_KEY) || DEFAULT_TIMEZONE;
 }
 
-function timezoneLabel() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+function currentMinuteInTimezone(timeZone = selectedTimezone()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || 0) % 24;
+  const minute = Number(parts.find((part) => part.type === "minute")?.value || 0);
+  return hour * 60 + minute;
 }
 
 function powerSnapshotFromState(power = state?.power || {}) {
@@ -389,6 +398,7 @@ function powerSnapshotFromState(power = state?.power || {}) {
     led_on_start_min: Number(power.led_on_start_min ?? 20 * 60),
     led_on_end_min: Number(power.led_on_end_min ?? 6 * 60),
     schedule_enabled: Boolean(power.schedule_enabled),
+    timezone: localStorage.getItem(TIMEZONE_STORAGE_KEY) || DEFAULT_TIMEZONE,
   };
 }
 
@@ -399,6 +409,7 @@ function powerSnapshotFromForm() {
     led_on_start_min: timeToMinutes($("#led-on-start").value),
     led_on_end_min: timeToMinutes($("#led-on-end").value),
     schedule_enabled: $("#schedule-enabled").checked,
+    timezone: selectedTimezone(),
   };
 }
 
@@ -426,8 +437,8 @@ function renderPowerPolicy() {
     $("#led-on-start").value = minutesToTime(nextBaseline.led_on_start_min);
     $("#led-on-end").value = minutesToTime(nextBaseline.led_on_end_min);
     $("#schedule-enabled").checked = nextBaseline.schedule_enabled;
+    $("#schedule-timezone").value = nextBaseline.timezone;
   }
-  $("#schedule-timezone").value = timezoneLabel();
   $("#power-state").textContent = Boolean(power.schedule_enabled)
     ? (power.leds_on ? "LEDs on" : "asleep")
     : "boards on";
@@ -435,7 +446,7 @@ function renderPowerPolicy() {
 }
 
 function powerWindowActive(power) {
-  const minute = Number(power.current_min ?? currentMinuteOfDay()) % 1440;
+  const minute = Number(power.current_min ?? currentMinuteInTimezone()) % 1440;
   const start = Number(power.led_on_start_min ?? 20 * 60) % 1440;
   const end = Number(power.led_on_end_min ?? 6 * 60) % 1440;
   if (start === end) return true;
@@ -456,7 +467,7 @@ function powerPolicyFromForm() {
     led_on_end_min: timeToMinutes($("#led-on-end").value),
     schedule_enabled: $("#schedule-enabled").checked,
     force_awake: false,
-    current_min: currentMinuteOfDay(),
+    current_min: currentMinuteInTimezone(),
   };
 }
 
@@ -819,6 +830,7 @@ async function runAction(action) {
         method: "POST",
         body: JSON.stringify(policy),
       });
+      localStorage.setItem(TIMEZONE_STORAGE_KEY, selectedTimezone());
       powerBaseline = powerSnapshotFromForm();
       updateSleepScheduleDirtyState();
       toast(ack.message);
@@ -968,7 +980,7 @@ $("#pattern-spatial").addEventListener("input", (event) => {
   }
 });
 
-["#schedule-enabled", "#led-on-start", "#led-on-end", "#light-check", "#deep-check"].forEach((selector) => {
+["#schedule-enabled", "#led-on-start", "#led-on-end", "#schedule-timezone", "#light-check", "#deep-check"].forEach((selector) => {
   const input = $(selector);
   input.addEventListener("input", updateSleepScheduleDirtyState);
   input.addEventListener("change", updateSleepScheduleDirtyState);
