@@ -9,7 +9,10 @@ next steps only.
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
 (**89 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-05): **OTA safety foundation started** —
+build clean. Latest on `main` (2026-07-05): **OTA safety foundation hardware-verified** —
+all three bench boards were flashed to `PROTO_VERSION 3` build `c046bf54` with
+dirty=false; `/api/state` reports `summary.firmware.consistent=true`,
+`matching=2`, `expected=2`, and the Operations tab shows `2 / 2 on this build`.
 REGISTER now carries protocol + git-derived build id + dirty flag, the machine
 state exposes conductor/per-node firmware versions, and the Operations UI shows
 field firmware consistency so mixed firmware is visible before OTA transfer
@@ -41,16 +44,14 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 ## ▶ Next session: pick up here (updated 2026-07-05)
 
 Priority order:
-1. **Hardware-verify firmware version reporting.** Flash all three bench boards
-   together because `PROTO_VERSION` is now **3**; confirm `/api/state` shows
-   `summary.firmware.consistent=true` and the Operations tab reports all seen
-   nodes on one build. Deliberately leaving one board unflashed should make it
-   vanish from the roster via the protocol gate, which is expected; a same-v3
-   stale build should show `Firmware mismatch`.
-2. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
+1. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
    selected-node updates. Start with the non-writing control flow: enter/exit OTA
    window, readiness/status reporting, timeout, and UI copy. Do not implement
    autonomous/opportunistic updates.
+2. **Optional negative OTA-safety check:** if useful, intentionally flash one
+   performer with a same-v3 but different build and confirm it appears as
+   `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
+   or older boards simply vanish from the roster due to the version gate.
 3. **Monday (parts in hand):** wire a phototransistor → calibrate
    `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
    verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
@@ -268,7 +269,7 @@ above; it awaits the physical chip.)
 
 - 3× DOIT ESP32 DevKit V1, all on the unified image. Rings on 2 of them; LED data
   on **GPIO13 (`D13`)**, USB 5V (no 12 V / buck yet).
-- **As of 2026-07-05 (live API checked on `http://127.0.0.1:8001`):**
+- **As of 2026-07-05 (live API checked on `http://127.0.0.1:8001` after flashing v3):**
   - `/dev/cu.usbserial-7`, `8C:94:DF:57:7F:14` — **CONDUCTOR**, serial-backed
     API server currently attached here.
   - `8C:94:DF:8F:71:50` — performer, label `#1`, positioned at approximately
@@ -277,7 +278,9 @@ above; it awaits the physical chip.)
     `(0.8076, 0.4122)`.
   - Current live state when this doc was updated: `summary.alive=2`,
     `summary.total=2`, `attention=0`, pattern `Glow`, brightness `27`,
-    params `[50,100,0,0]` (`hue=50`, `saturation=100`).
+    params `[50,100,0,0]` (`hue=50`, `saturation=100`), firmware
+    `build_label=c046bf54`, `dirty=false`, `summary.firmware.consistent=true`
+    with `2 / 2` performers matching.
 - Port names still shuffle because all boards report the same USB serial —
   re-check each board with `info` rather than trusting labels.
 - **Gotcha:** factory boards ship with ESP-AT firmware and need a one-time
