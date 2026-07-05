@@ -59,7 +59,7 @@ function statusText(lantern) {
   if (lantern.status === "retired") return "retired";
   if (lantern.status === "missing") return "missing";
   if (lantern.position === "Missing") return "needs position";
-  return "alive";
+  return "healthy";
 }
 
 function cssStatus(lantern) {
@@ -317,7 +317,7 @@ function renderDetail() {
   $("#detail-title").className = isOk ? "" : "warn";
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
-    `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(lantern.status)}`,
+    `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(statusText(lantern))}`,
     `firmware=${firmwareHtml(lantern.firmware)}`,
     `pattern=${escapeHtml(state.pattern.pattern)} bri=${state.pattern.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
@@ -367,7 +367,7 @@ function detailSummary(lantern) {
     return `Last seen ${lantern.last_seen_label}. Use Identify after it returns, or Replace if this lantern is physically gone.`;
   }
   if (lantern.position === "Missing") {
-    return `Last seen ${lantern.last_seen_label}. It is alive but has no table position yet.`;
+    return `Last seen ${lantern.last_seen_label}. It is healthy but has no table position yet.`;
   }
   return `Last seen ${lantern.last_seen_label}. Position is set. No action needed.`;
 }

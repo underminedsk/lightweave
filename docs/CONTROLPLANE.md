@@ -219,7 +219,7 @@ position", and table rows not currently registered show as "Not seen".
 
 - Roster view: MAC, friendly id, last-seen age; stale (silent > ~30 s) and
   expected-but-never-seen nodes flagged.
-- Count check at a glance: "58 of 60 alive".
+- Count check at a glance: "58 of 60 healthy".
 - Conductor status: beacon seq, current pattern, table row count, `wake`
   flag, uptime.
 - Cross-checks: in roster but not table (unpositioned); in table but not
