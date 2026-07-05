@@ -12,6 +12,7 @@ let movingDrag = null;
 let replaceMode = false;
 let replacementMac = null;
 let patternDraft = null;
+let powerBaseline = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -377,22 +378,60 @@ function currentMinuteOfDay() {
   return now.getHours() * 60 + now.getMinutes();
 }
 
+function timezoneLabel() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+}
+
+function powerSnapshotFromState(power = state?.power || {}) {
+  return {
+    light_sleep_check_s: Number(power.light_sleep_check_s ?? 4),
+    deep_sleep_check_s: Number(power.deep_sleep_check_min ?? 15) * 60,
+    led_on_start_min: Number(power.led_on_start_min ?? 18 * 60),
+    led_on_end_min: Number(power.led_on_end_min ?? 6 * 60),
+    schedule_enabled: Boolean(power.schedule_enabled),
+  };
+}
+
+function powerSnapshotFromForm() {
+  return {
+    light_sleep_check_s: Number($("#light-check").value || 4),
+    deep_sleep_check_s: Number($("#deep-check").value || 900),
+    led_on_start_min: timeToMinutes($("#led-on-start").value),
+    led_on_end_min: timeToMinutes($("#led-on-end").value),
+    schedule_enabled: $("#schedule-enabled").checked,
+  };
+}
+
+function powerSnapshotKey(snapshot) {
+  return JSON.stringify(snapshot);
+}
+
+function isPowerDirty() {
+  if (!powerBaseline) return false;
+  return powerSnapshotKey(powerSnapshotFromForm()) !== powerSnapshotKey(powerBaseline);
+}
+
+function updateSleepScheduleDirtyState() {
+  const saveButton = $('[data-action="save-power-policy"]');
+  if (saveButton) saveButton.disabled = !isPowerDirty();
+}
+
 function renderPowerPolicy() {
   const power = state.power || {};
-  $("#light-check").value = power.light_sleep_check_s ?? 4;
-  $("#deep-check").value = power.deep_sleep_check_min ?? 15;
-  $("#led-on-start").value = minutesToTime(power.led_on_start_min ?? 18 * 60);
-  $("#led-on-end").value = minutesToTime(power.led_on_end_min ?? 6 * 60);
-  $("#schedule-enabled").checked = Boolean(power.schedule_enabled);
-  const force = Boolean(power.force_awake);
-  $("#force-awake").textContent = force ? "Resume schedule" : "Turn boards on";
-  $("#force-awake").classList.toggle("primary", !force);
-  $("#force-awake").classList.toggle("danger", force);
-  $("#power-state").textContent = force
-    ? "override on"
-    : power.leds_on
-      ? "LEDs on"
-      : "deep sleep window";
+  const nextBaseline = powerSnapshotFromState(power);
+  if (!powerBaseline || !isPowerDirty()) {
+    powerBaseline = nextBaseline;
+    $("#light-check").value = nextBaseline.light_sleep_check_s;
+    $("#deep-check").value = nextBaseline.deep_sleep_check_s;
+    $("#led-on-start").value = minutesToTime(nextBaseline.led_on_start_min);
+    $("#led-on-end").value = minutesToTime(nextBaseline.led_on_end_min);
+    $("#schedule-enabled").checked = nextBaseline.schedule_enabled;
+  }
+  $("#schedule-timezone").value = timezoneLabel();
+  $("#power-state").textContent = Boolean(power.schedule_enabled)
+    ? (power.leds_on ? "LEDs on" : "asleep")
+    : "boards on";
+  updateSleepScheduleDirtyState();
 }
 
 function powerWindowActive(power) {
@@ -408,14 +447,15 @@ function powerLedsOn(power) {
   return Boolean(power.force_awake) || !Boolean(power.schedule_enabled) || powerWindowActive(power);
 }
 
-function powerPolicyFromForm(forceAwake = state?.power?.force_awake) {
+function powerPolicyFromForm() {
+  const deepSleepSeconds = Math.max(60, Number($("#deep-check").value || 900));
   return {
     light_sleep_check_s: Number($("#light-check").value || 4),
-    deep_sleep_check_min: Number($("#deep-check").value || 15),
+    deep_sleep_check_min: Math.max(1, Math.round(deepSleepSeconds / 60)),
     led_on_start_min: timeToMinutes($("#led-on-start").value),
     led_on_end_min: timeToMinutes($("#led-on-end").value),
     schedule_enabled: $("#schedule-enabled").checked,
-    force_awake: Boolean(forceAwake),
+    force_awake: false,
     current_min: currentMinuteOfDay(),
   };
 }
@@ -770,26 +810,17 @@ async function runAction(action) {
       return;
     }
     if (action === "save-power-policy") {
+      if (!isPowerDirty()) return;
+      const policy = powerPolicyFromForm();
       const ack = await api("/api/operations/power-policy", {
         method: "POST",
-        body: JSON.stringify(powerPolicyFromForm()),
+        body: JSON.stringify(policy),
       });
+      powerBaseline = powerSnapshotFromForm();
+      updateSleepScheduleDirtyState();
       toast(ack.message);
       await refresh();
       return;
-    }
-    if (action === "toggle-force-awake") {
-      const force = !Boolean(state?.power?.force_awake);
-      const optimisticPower = { ...state.power, ...powerPolicyFromForm(force), force_awake: force };
-      optimisticPower.leds_on = powerLedsOn(optimisticPower);
-      state = { ...state, power: optimisticPower, conductor: { ...state.conductor, wake: force } };
-      renderPowerPolicy();
-      const ack = await api("/api/operations/power-policy", {
-        method: "POST",
-        body: JSON.stringify(optimisticPower),
-      });
-      toast(force ? "boards forced on" : ack.message);
-      await refresh();
     }
   } catch (error) {
     toast(error.message, true);
@@ -932,6 +963,12 @@ $("#pattern-spatial").addEventListener("input", (event) => {
     patternDraft.spatial = Number(event.target.value);
     renderPatternControls();
   }
+});
+
+["#schedule-enabled", "#led-on-start", "#led-on-end", "#light-check", "#deep-check"].forEach((selector) => {
+  const input = $(selector);
+  input.addEventListener("input", updateSleepScheduleDirtyState);
+  input.addEventListener("change", updateSleepScheduleDirtyState);
 });
 
 $("#map").addEventListener("wheel", (event) => {
