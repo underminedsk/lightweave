@@ -49,12 +49,14 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
   min-height: 520px;
   overflow: hidden;
   touch-action: none;
+  cursor: grab;
   background:
     linear-gradient(rgba(38, 48, 42, .65) 1px, transparent 1px),
     linear-gradient(90deg, rgba(38, 48, 42, .65) 1px, transparent 1px),
     radial-gradient(circle at 50% 46%, rgba(240, 179, 90, .08), transparent 42%);
   background-size: 42px 42px, 42px 42px, auto;
 }
+.map:active { cursor: grabbing; }
 .map-status { position: absolute; left: 14px; top: 14px; right: 14px; display: flex; justify-content: space-between; gap: 10px; z-index: 2; }
 .map-content {
   position: absolute;

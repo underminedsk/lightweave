@@ -168,7 +168,8 @@ The map should look like a working field plot:
 - stale nodes dimmed or red-rimmed
 - current recipe preview rendered directly on nodes when possible
 - zoom controls with pinch-to-zoom on touch devices and wheel/trackpad zoom on
-  desktop; map controls remain fixed while the field content scales
+  desktop; click-drag / one-finger drag pans the zoomed map; map controls remain
+  fixed while the field content scales
 
 Node labels should appear on selection, hover, or zoom. Do not clutter the default
 view with 60 always-visible MAC labels.

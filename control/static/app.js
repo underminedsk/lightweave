@@ -2,8 +2,11 @@ let state = null;
 let selectedMac = null;
 let filter = "all";
 let mapZoom = 1;
+let mapPanX = 0;
+let mapPanY = 0;
 let pinchStartDistance = null;
 let pinchStartZoom = 1;
+let dragStart = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -172,15 +175,33 @@ function mapCoord(value) {
 
 function setMapZoom(nextZoom) {
   mapZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+  if (mapZoom === 1) {
+    mapPanX = 0;
+    mapPanY = 0;
+  }
   renderMapZoom();
 }
 
 function renderMapZoom() {
   const content = $("#map-content");
   if (!content) return;
-  content.style.transform = `scale(${mapZoom})`;
+  content.style.transform = `translate(${mapPanX}px, ${mapPanY}px) scale(${mapZoom})`;
   const reset = $('[data-zoom="reset"]');
   if (reset) reset.textContent = `${mapZoom.toFixed(mapZoom === 1 ? 0 : 1)}x`;
+}
+
+function setMapPan(x, y) {
+  if (mapZoom === 1) {
+    mapPanX = 0;
+    mapPanY = 0;
+  } else {
+    const map = $("#map");
+    const maxX = map.clientWidth * (mapZoom - 1) * 0.5;
+    const maxY = map.clientHeight * (mapZoom - 1) * 0.5;
+    mapPanX = Math.min(maxX, Math.max(-maxX, x));
+    mapPanY = Math.min(maxY, Math.max(-maxY, y));
+  }
+  renderMapZoom();
 }
 
 function touchDistance(touches) {
@@ -324,7 +345,11 @@ document.addEventListener("click", (event) => {
   const zoom = event.target.dataset.zoom;
   if (zoom === "in") setMapZoom(mapZoom + 0.25);
   if (zoom === "out") setMapZoom(mapZoom - 0.25);
-  if (zoom === "reset") setMapZoom(1);
+  if (zoom === "reset") {
+    mapPanX = 0;
+    mapPanY = 0;
+    setMapZoom(1);
+  }
 });
 
 $("#brightness").addEventListener("input", (event) => {
@@ -352,19 +377,53 @@ $("#map").addEventListener("wheel", (event) => {
 }, { passive: false });
 
 $("#map").addEventListener("touchstart", (event) => {
-  if (event.touches.length !== 2) return;
-  pinchStartDistance = touchDistance(event.touches);
-  pinchStartZoom = mapZoom;
+  if (event.touches.length === 2) {
+    dragStart = null;
+    pinchStartDistance = touchDistance(event.touches);
+    pinchStartZoom = mapZoom;
+    return;
+  }
+  if (event.touches.length === 1 && mapZoom > 1 && !event.target.classList.contains("node")) {
+    const touch = event.touches[0];
+    dragStart = { x: touch.clientX, y: touch.clientY, panX: mapPanX, panY: mapPanY };
+  }
 }, { passive: true });
 
 $("#map").addEventListener("touchmove", (event) => {
-  if (event.touches.length !== 2 || !pinchStartDistance) return;
-  event.preventDefault();
-  setMapZoom(pinchStartZoom * (touchDistance(event.touches) / pinchStartDistance));
+  if (event.touches.length === 2 && pinchStartDistance) {
+    event.preventDefault();
+    setMapZoom(pinchStartZoom * (touchDistance(event.touches) / pinchStartDistance));
+    return;
+  }
+  if (event.touches.length === 1 && dragStart) {
+    event.preventDefault();
+    const touch = event.touches[0];
+    setMapPan(dragStart.panX + touch.clientX - dragStart.x, dragStart.panY + touch.clientY - dragStart.y);
+  }
 }, { passive: false });
 
 $("#map").addEventListener("touchend", (event) => {
   if (event.touches.length < 2) pinchStartDistance = null;
+  if (event.touches.length === 0) dragStart = null;
 }, { passive: true });
+
+$("#map").addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "touch" || event.button !== 0 || mapZoom === 1 || event.target.classList.contains("node")) return;
+  dragStart = { x: event.clientX, y: event.clientY, panX: mapPanX, panY: mapPanY };
+  $("#map").setPointerCapture(event.pointerId);
+});
+
+$("#map").addEventListener("pointermove", (event) => {
+  if (!dragStart || event.pointerType === "touch") return;
+  setMapPan(dragStart.panX + event.clientX - dragStart.x, dragStart.panY + event.clientY - dragStart.y);
+});
+
+$("#map").addEventListener("pointerup", (event) => {
+  if (event.pointerType !== "touch") dragStart = null;
+});
+
+$("#map").addEventListener("pointercancel", () => {
+  dragStart = null;
+});
 
 refresh().then(connectWebSocket).catch((error) => toast(error.message, true));
