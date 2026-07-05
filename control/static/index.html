@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Do Baskets Dream Control Plane</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="topline">
+        <h1>Do Baskets Dream</h1>
+        <div class="mode" id="connection-status">connecting</div>
+      </div>
+      <section class="summary">
+        <div class="tile"><div class="label">Field</div><div class="value ok" id="field-count">-- / --</div></div>
+        <div class="tile"><div class="label">Show</div><div class="value" id="show-name">--</div></div>
+        <div class="tile"><div class="label">Attention</div><div class="value warn" id="attention-count">--</div></div>
+      </section>
+    </header>
+
+    <nav class="tabs" aria-label="Primary">
+      <button class="active" data-view="map">Map</button>
+      <button data-view="table">Table</button>
+      <button data-view="show">Show</button>
+      <button data-view="ops">Ops</button>
+    </nav>
+
+    <main>
+      <section class="view active" id="view-map">
+        <div class="map" id="map">
+          <div class="map-status">
+            <div class="chip sync" id="sync-status">sync --</div>
+            <div class="chip">tap a lantern for details</div>
+          </div>
+          <div class="floating-actions">
+            <button class="primary" data-action="identify">Identify</button>
+            <button data-action="move">Move</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-table">
+        <div class="toolbar">
+          <div class="filters">
+            <button class="chip active" data-filter="all">All</button>
+            <button class="chip" data-filter="attention">Needs attention</button>
+            <button class="chip" data-filter="missing">Missing</button>
+            <button class="chip" data-filter="unpositioned">Unpositioned</button>
+          </div>
+          <div class="chip sync" id="table-sync-status">sync --</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Lantern</th><th>Status</th><th>Last seen</th><th>Position</th><th>Attention</th></tr></thead>
+            <tbody id="lantern-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="view" id="view-show">
+        <div class="panel">
+          <h2>Show</h2>
+          <p>Global controls affect the whole field after the conductor acknowledges the write.</p>
+          <div class="segmented" id="pattern-picker">
+            <button data-pattern="Pulse">Pulse</button>
+            <button data-pattern="Palette Drift">Drift</button>
+            <button data-pattern="Sweep">Sweep</button>
+            <button data-pattern="Glow">Glow</button>
+          </div>
+          <label class="control-label" for="brightness">Brightness <span id="brightness-value">48</span> / 192</label>
+          <input id="brightness" type="range" min="0" max="192" value="48">
+          <div class="segmented" id="hue-picker">
+            <button data-hue="30">Orange</button>
+            <button data-hue="40">Amber</button>
+            <button data-hue="50">Yellow</button>
+            <button data-hue="180">Cyan</button>
+          </div>
+          <div class="button-row">
+            <button class="primary" data-action="broadcast">Broadcast recipe</button>
+            <button class="danger" data-action="blackout">Blackout</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-ops">
+        <div class="panel">
+          <h2>Ops</h2>
+          <p>Technical escape hatch. This stays out of the default operator path.</p>
+          <div class="log" id="event-log"></div>
+        </div>
+      </section>
+    </main>
+
+    <section class="sheet" id="detail-sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 id="detail-title">No lantern selected</h2>
+          <p id="detail-summary">Select a lantern from the map or table.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" data-action="identify">Identify</button>
+        <button data-action="move">Move</button>
+        <button data-action="replace">Replace</button>
+        <button data-action="details">Details</button>
+        <button class="danger" data-action="forget">Forget</button>
+      </div>
+      <div class="details" id="detail-tech"></div>
+    </section>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
