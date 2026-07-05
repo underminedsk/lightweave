@@ -67,13 +67,23 @@ main { min-height: 0; overflow: hidden; background: #090c0a; }
 .chip { border: 1px solid var(--line); border-radius: 999px; background: rgba(16, 20, 17, .92); padding: 7px 10px; color: var(--muted); font-size: 13px; white-space: nowrap; backdrop-filter: blur(8px); }
 .chip.active { color: var(--amber); border-color: rgba(240, 179, 90, .45); }
 .node { position: absolute; width: 20px; height: 20px; border: 0; border-radius: 50%; padding: 0; min-height: 20px; background: var(--live); box-shadow: 0 0 20px rgba(84, 214, 122, .75); transform: translate(-50%, -50%); cursor: pointer; }
-.node.selected { width: 30px; height: 30px; background: var(--amber); box-shadow: 0 0 0 7px rgba(240, 179, 90, .18), 0 0 28px rgba(240, 179, 90, .8); }
+.node.selected {
+  width: 30px;
+  height: 30px;
+  box-shadow: 0 0 0 7px rgba(94, 183, 255, .2), 0 0 28px rgba(94, 183, 255, .85), 0 0 20px rgba(84, 214, 122, .75);
+  animation: selected-pulse 1.8s ease-in-out infinite;
+}
 .node.missing { background: var(--alert); box-shadow: 0 0 18px rgba(255, 93, 82, .75); }
 .node.unpositioned { background: var(--dim); box-shadow: none; }
+body .node.missing.selected { box-shadow: 0 0 0 7px rgba(94, 183, 255, .2), 0 0 28px rgba(94, 183, 255, .85), 0 0 18px rgba(255, 93, 82, .75); }
+body .node.unpositioned.selected { box-shadow: 0 0 0 7px rgba(94, 183, 255, .2), 0 0 28px rgba(94, 183, 255, .85); }
 body.move-mode .node.selected {
   cursor: grab;
-  box-shadow: 0 0 0 9px rgba(94, 183, 255, .18), 0 0 30px rgba(94, 183, 255, .8);
-  background: var(--sync);
+  box-shadow: 0 0 0 10px rgba(94, 183, 255, .26), 0 0 34px rgba(94, 183, 255, .95);
+}
+@keyframes selected-pulse {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(94, 183, 255, .16), 0 0 20px rgba(94, 183, 255, .62), 0 0 18px rgba(84, 214, 122, .65); }
+  50% { box-shadow: 0 0 0 10px rgba(94, 183, 255, .28), 0 0 34px rgba(94, 183, 255, .9), 0 0 22px rgba(84, 214, 122, .75); }
 }
 body.move-mode .map { cursor: crosshair; }
 .zoom-controls {

@@ -165,7 +165,9 @@ The map should look like a working field plot:
 - visible edge buffer around the field extents; normalized `(0,0)` and `(1,1)`
   should not sit directly on the screen edge
 - node dots with liveness color
-- selected node ring
+- selected node keeps its underlying liveness color and gets a cyan outline/highlight;
+  the outline may pulse subtly, but do not recolor selected nodes because color
+  already carries status
 - unpositioned nodes in a side/bottom queue
 - stale nodes dimmed or red-rimmed
 - current recipe preview rendered directly on nodes when possible
@@ -208,9 +210,9 @@ surface**:
   raw events, replace/forget.
 - Keep global actions out of the lantern detail surface unless they relate directly
   to the selected lantern.
-- `Move` should enter direct manipulation mode: drag the selected lantern on the
-  map, release, then send the new normalized `(x,y)` assignment. Avoid raw coordinate
-  prompts in the normal operator flow.
+- `Move` should arm direct manipulation mode: then click-drag or touch-drag the
+  selected lantern on the map, release, and send the new normalized `(x,y)`
+  assignment. Avoid raw coordinate prompts in the normal operator flow.
 
 Show:
 

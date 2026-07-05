@@ -8,6 +8,7 @@ let pinchStartDistance = null;
 let pinchStartZoom = 1;
 let dragStart = null;
 let movingLanternMac = null;
+let movingDrag = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -95,6 +96,7 @@ function renderMap() {
     button.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
     button.addEventListener("click", () => selectLantern(lantern.mac));
     button.addEventListener("pointerdown", startLanternMove);
+    button.addEventListener("mousedown", startLanternMove);
     map.appendChild(button);
   });
   renderMapZoom();
@@ -224,7 +226,7 @@ function pointToField(clientX, clientY) {
 }
 
 function setLanternPreview(mac, x, y) {
-  const node = $(`.node[data-mac="${cssEscape(mac)}"]`);
+  const node = $$(".node").find((item) => item.dataset.mac === mac);
   if (!node) return;
   node.style.left = `${mapCoord(x) * 100}%`;
   node.style.top = `${mapCoord(y) * 100}%`;
@@ -242,14 +244,18 @@ function startLanternMove(event) {
   if (event.pointerType === "touch" || event.button !== 0 || movingLanternMac !== event.currentTarget.dataset.mac) return;
   event.stopPropagation();
   event.preventDefault();
-  event.currentTarget.setPointerCapture(event.pointerId);
+  movingDrag = { pointerId: event.pointerId ?? null };
+  if (event.pointerId !== undefined && event.currentTarget.setPointerCapture) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
 }
 
 async function finishLanternMove(clientX, clientY) {
-  if (!movingLanternMac) return;
+  if (!movingLanternMac || !movingDrag) return;
   const mac = movingLanternMac;
   const position = pointToField(clientX, clientY);
   movingLanternMac = null;
+  movingDrag = null;
   document.body.classList.remove("move-mode");
   setLanternPreview(mac, position.x, position.y);
   try {
@@ -263,10 +269,6 @@ async function finishLanternMove(clientX, clientY) {
     toast(error.message, true);
     await refresh();
   }
-}
-
-function cssEscape(value) {
-  return window.CSS?.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 }
 
 async function refresh() {
@@ -396,9 +398,8 @@ $$(".filters .chip").forEach((chip) => {
 });
 
 document.addEventListener("click", (event) => {
-  const action = event.target.dataset.action;
-  if (action) runAction(action);
-  const zoom = event.target.dataset.zoom;
+  const zoomTarget = event.target.closest("[data-zoom]");
+  const zoom = zoomTarget?.dataset.zoom;
   if (zoom === "in") setMapZoom(mapZoom + 0.25);
   if (zoom === "out") setMapZoom(mapZoom - 0.25);
   if (zoom === "reset") {
@@ -406,6 +407,10 @@ document.addEventListener("click", (event) => {
     mapPanY = 0;
     setMapZoom(1);
   }
+});
+
+$$("[data-action]").forEach((button) => {
+  button.addEventListener("click", () => runAction(button.dataset.action));
 });
 
 $("#brightness").addEventListener("input", (event) => {
@@ -435,18 +440,25 @@ $("#map").addEventListener("wheel", (event) => {
 $("#map").addEventListener("touchstart", (event) => {
   if (event.touches.length === 2) {
     dragStart = null;
+    movingDrag = null;
     pinchStartDistance = touchDistance(event.touches);
     pinchStartZoom = mapZoom;
     return;
   }
-  if (event.touches.length === 1 && !event.target.classList.contains("node")) {
+  if (event.touches.length === 1 && movingLanternMac && event.target.classList.contains("node") && event.target.dataset.mac === movingLanternMac) {
+    const touch = event.touches[0];
+    movingDrag = { touchId: touch.identifier };
+    event.preventDefault();
+    return;
+  }
+  if (event.touches.length === 1 && !event.target.classList.contains("node") && !event.target.closest("button")) {
     const touch = event.touches[0];
     dragStart = { x: touch.clientX, y: touch.clientY, panX: mapPanX, panY: mapPanY };
   }
-}, { passive: true });
+}, { passive: false });
 
 $("#map").addEventListener("touchmove", (event) => {
-  if (event.touches.length === 1 && movingLanternMac) {
+  if (event.touches.length === 1 && movingLanternMac && movingDrag) {
     event.preventDefault();
     const touch = event.touches[0];
     const position = pointToField(touch.clientX, touch.clientY);
@@ -466,7 +478,7 @@ $("#map").addEventListener("touchmove", (event) => {
 }, { passive: false });
 
 $("#map").addEventListener("touchend", (event) => {
-  if (movingLanternMac && event.changedTouches.length) {
+  if (movingLanternMac && movingDrag && event.changedTouches.length) {
     const touch = event.changedTouches[0];
     finishLanternMove(touch.clientX, touch.clientY);
     return;
@@ -476,31 +488,48 @@ $("#map").addEventListener("touchend", (event) => {
 }, { passive: true });
 
 $("#map").addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node") || movingLanternMac) return;
+  if (event.pointerType === "touch" || event.button !== 0 || event.target.classList.contains("node") || event.target.closest("button") || movingLanternMac) return;
   dragStart = { x: event.clientX, y: event.clientY, panX: mapPanX, panY: mapPanY };
   $("#map").setPointerCapture(event.pointerId);
 });
 
 $("#map").addEventListener("pointermove", (event) => {
-  if (movingLanternMac && event.pointerType !== "touch") {
-    const position = pointToField(event.clientX, event.clientY);
-    setLanternPreview(movingLanternMac, position.x, position.y);
-    return;
-  }
   if (!dragStart || event.pointerType === "touch") return;
   setMapPan(dragStart.panX + event.clientX - dragStart.x, dragStart.panY + event.clientY - dragStart.y);
 });
 
 $("#map").addEventListener("pointerup", (event) => {
-  if (movingLanternMac && event.pointerType !== "touch") {
-    finishLanternMove(event.clientX, event.clientY);
-    return;
-  }
   if (event.pointerType !== "touch") dragStart = null;
 });
 
 $("#map").addEventListener("pointercancel", () => {
   dragStart = null;
+});
+
+window.addEventListener("pointermove", (event) => {
+  if (!movingLanternMac || !movingDrag || event.pointerType === "touch") return;
+  const position = pointToField(event.clientX, event.clientY);
+  setLanternPreview(movingLanternMac, position.x, position.y);
+});
+
+window.addEventListener("pointerup", (event) => {
+  if (!movingLanternMac || !movingDrag || event.pointerType === "touch") return;
+  finishLanternMove(event.clientX, event.clientY);
+});
+
+window.addEventListener("pointercancel", () => {
+  movingDrag = null;
+});
+
+window.addEventListener("mousemove", (event) => {
+  if (!movingLanternMac || !movingDrag) return;
+  const position = pointToField(event.clientX, event.clientY);
+  setLanternPreview(movingLanternMac, position.x, position.y);
+});
+
+window.addEventListener("mouseup", (event) => {
+  if (!movingLanternMac || !movingDrag) return;
+  finishLanternMove(event.clientX, event.clientY);
 });
 
 refresh().then(connectWebSocket).catch((error) => toast(error.message, true));
