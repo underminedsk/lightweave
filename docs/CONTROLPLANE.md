@@ -95,7 +95,7 @@ Snapshot shape:
   "power": {
     "light_sleep_check_s": 4,
     "deep_sleep_check_min": 15,
-    "led_on_start_min": 1080,
+    "led_on_start_min": 1200,
     "led_on_end_min": 360,
     "current_min": 720,
     "schedule_enabled": false,

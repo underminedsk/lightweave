@@ -99,7 +99,7 @@ RTC_DATA_ATTR static bool g_rtc_was_day = false;
 // Runtime field power policy. The conductor persists these knobs and includes
 // them in every beacon; performers apply the latest received policy directly, so
 // changing schedule/intervals is a control-plane action, not a reflash.
-static PowerPolicy g_power_policy = {4, 15, 18 * 60, 6 * 60, 12 * 60, 0};
+static PowerPolicy g_power_policy = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0};
 static uint16_t    g_policy_base_min = 12 * 60;
 static int64_t     g_policy_clock_set_us = 0;
 
@@ -223,7 +223,7 @@ static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0},
-                             {4, 15, 18 * 60, 6 * 60, 12 * 60, 0}, 0};
+                             {4, 15, 20 * 60, 6 * 60, 12 * 60, 0}, 0};
 static uint32_t g_tx_seq = 0;
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 

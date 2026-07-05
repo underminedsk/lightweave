@@ -386,7 +386,7 @@ function powerSnapshotFromState(power = state?.power || {}) {
   return {
     light_sleep_check_s: Number(power.light_sleep_check_s ?? 4),
     deep_sleep_check_s: Number(power.deep_sleep_check_min ?? 15) * 60,
-    led_on_start_min: Number(power.led_on_start_min ?? 18 * 60),
+    led_on_start_min: Number(power.led_on_start_min ?? 20 * 60),
     led_on_end_min: Number(power.led_on_end_min ?? 6 * 60),
     schedule_enabled: Boolean(power.schedule_enabled),
   };
@@ -436,7 +436,7 @@ function renderPowerPolicy() {
 
 function powerWindowActive(power) {
   const minute = Number(power.current_min ?? currentMinuteOfDay()) % 1440;
-  const start = Number(power.led_on_start_min ?? 18 * 60) % 1440;
+  const start = Number(power.led_on_start_min ?? 20 * 60) % 1440;
   const end = Number(power.led_on_end_min ?? 6 * 60) % 1440;
   if (start === end) return true;
   if (start < end) return minute >= start && minute < end;

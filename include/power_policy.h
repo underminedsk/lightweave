@@ -40,7 +40,7 @@ inline void powerPolicySanitize(PowerPolicy& p) {
 }
 
 inline PowerPolicy powerPolicyDefault() {
-  PowerPolicy p = {4, 15, 18 * 60, 6 * 60, 12 * 60, 0};
+  PowerPolicy p = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0};
   return p;
 }
 
@@ -68,4 +68,3 @@ inline bool powerPolicyLedsOn(const PowerPolicy& p) {
   return powerPolicyInLedWindow(p.current_min, p.led_on_start_min,
                                 p.led_on_end_min);
 }
-

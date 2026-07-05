@@ -49,7 +49,7 @@ struct SerialJsonCommand {
   bool has_current_min = false;
   uint16_t light_sleep_check_s = 4;
   uint16_t deep_sleep_check_min = 15;
-  uint16_t led_on_start_min = 18 * 60;
+  uint16_t led_on_start_min = 20 * 60;
   uint16_t led_on_end_min = 6 * 60;
   bool schedule_enabled = false;
   bool force_awake = false;
