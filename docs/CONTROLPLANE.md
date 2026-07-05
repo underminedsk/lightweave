@@ -26,7 +26,7 @@ naming.
    free). **Anything the UI can do, an agent can do over HTTP** — no
    UI-only paths, no server-rendered actions. This makes the field
    scriptable/agent-drivable from day one.
-2. **The conductor stays authoritative.** Table, recipe, and (later) show
+2. **The conductor stays authoritative.** Table, pattern, and (later) show
    program live in conductor NVS. The server holds only derived/history
    data (power logs, event log). Unplug the server and the field keeps
    running — same rule as today.
@@ -49,7 +49,7 @@ naming.
 - Roster view: MAC, friendly id, last-seen age; stale (silent > ~30 s) and
   expected-but-never-seen nodes flagged.
 - Count check at a glance: "58 of 60 alive".
-- Conductor status: beacon seq, current recipe, table row count, `wake`
+- Conductor status: beacon seq, current pattern, table row count, `wake`
   flag, uptime.
 - Cross-checks: in roster but not table (unpositioned); in table but not
   roster (dead lantern?).
@@ -73,7 +73,7 @@ naming.
   bench-only flag).
 - Brightness slider + per-pattern param controls with human labels
   ("sweep period: 8 s", "hue: amber" — not `params[1] = 340`).
-- Recipe preview: the browser renders `f(x,y,t)` live on the map *before*
+- Pattern preview: the browser renders `f(x,y,t)` live on the map *before*
   broadcasting (JS port of the pure `pattern_math.h`). Cheap because the
   math is pure and host-tested; turns knob-tuning into instant feedback.
   Also the backbone of the agent-assisted pattern-authoring workflow (see
@@ -110,7 +110,7 @@ naming.
 - Raw serial console passthrough to the conductor CLI (the playa will
   produce a situation the UI didn't anticipate).
 - Event log: registrations, table edits, errors — timestamped, server-side.
-- Conductor config backup/restore (table + recipe + program as one JSON
+- Conductor config backup/restore (table + pattern + program as one JSON
   blob).
 - Server self-health: serial connect/reconnect state, auto-reconnect on
   USB flap.
@@ -164,7 +164,7 @@ compact local instructions, interpolate colors, and drive the LEDs.
 
 There are three pattern-delivery tiers:
 
-1. **Built-in recipes (current firmware):** conductor broadcasts `pattern_id` +
+1. **Built-in patterns (current firmware):** conductor broadcasts `pattern_id` +
    params; performers evaluate known C++ patterns locally. Tiny, live-tunable,
    resilient, and still the right path for simple primitives like GLOW/SWEEP.
 2. **Precomputed per-node clips (target creative layer):** the Pi/brain knows
@@ -233,9 +233,9 @@ deferred until needed.)
 
 **Reality check:** until OTA, a new pattern means USB-reflashing every
 deployed board — so the pattern *vocabulary* wants to be locked pre-event,
-while the **recipe space (pattern × brightness × params) is the live
+while the **pattern space (pattern × brightness × params) is the live
 authoring surface** on the playa. That's the division of labor: agents +
-preview expand the vocabulary before the event; the UI tunes recipes during
+preview expand the vocabulary before the event; the UI tunes patterns during
 it.
 
 ## Deliberately out of scope

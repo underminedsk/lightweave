@@ -32,7 +32,7 @@ pio test -e native
 - Mock conductor adapter
 - API-backed Map/Table/Show/Ops UI shell
 - Shared lantern detail sheet
-- Mock actions for identify, assign, forget, recipe broadcast, and blackout
+- Mock actions for identify, assign, forget, pattern broadcast, and blackout
 
 Next step: add the real serial adapter and firmware-side structured JSON command
 protocol while preserving the existing human CLI.

@@ -86,7 +86,7 @@ class MockConductor:
     def __post_init__(self) -> None:
         if not self.events:
             self._event("mock conductor started")
-            self._event("beacon seq=184221 recipe=GLOW bri=48 wake=on")
+            self._event("beacon seq=184221 pattern=GLOW bri=48 wake=on")
 
     def snapshot(self) -> dict[str, Any]:
         now = _now()
@@ -120,7 +120,7 @@ class MockConductor:
         self.seq += 20
         for lantern in self._lanterns:
             lantern.last_seen_s += 5
-        self._event(f"beacon seq={self.seq} recipe={self.recipe['pattern'].upper()} bri={self.recipe['brightness']}")
+        self._event(f"beacon seq={self.seq} pattern={self.recipe['pattern'].upper()} bri={self.recipe['brightness']}")
 
     def identify(self, mac: str) -> dict[str, Any]:
         lantern = self._find(mac)
@@ -161,7 +161,7 @@ class MockConductor:
 
     def update_recipe(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]:
         self.recipe = {"pattern": pattern, "brightness": brightness, "params": dict(params)}
-        self._event(f"recipe pattern={pattern} bri={brightness}")
+        self._event(f"pattern={pattern} bri={brightness}")
         return {"ok": True, "message": f"broadcast {pattern}", "recipe": deepcopy(self.recipe)}
 
     def blackout(self) -> dict[str, Any]:

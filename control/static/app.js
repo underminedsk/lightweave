@@ -138,7 +138,7 @@ function renderDetail() {
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
     `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(lantern.status)}`,
-    `recipe=${escapeHtml(state.recipe.pattern)} bri=${state.recipe.brightness} · seq=${state.conductor.seq}`,
+    `pattern=${escapeHtml(state.recipe.pattern)} bri=${state.recipe.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
   document.body.classList.toggle("move-mode", movingLanternMac !== null);
