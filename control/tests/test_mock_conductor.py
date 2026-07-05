@@ -53,6 +53,8 @@ def test_replace_moves_label_and_position_to_unpositioned_spare() -> None:
     assert ack["ok"] is True
     assert old["position"] == "Missing"
     assert old["label"] == "#18 retired"
+    assert old["status"] == "retired"
+    assert old["attention"] == "Retired"
     assert new["position"] == "Set"
     assert new["label"] == "#18"
     assert new["x"] == 0.66

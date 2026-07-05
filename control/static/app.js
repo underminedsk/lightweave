@@ -49,12 +49,14 @@ function replacementCandidates() {
 }
 
 function statusText(lantern) {
+  if (lantern.status === "retired") return "retired";
   if (lantern.status === "missing") return "missing";
   if (lantern.position === "Missing") return "needs position";
   return "alive";
 }
 
 function cssStatus(lantern) {
+  if (lantern.status === "retired") return "retired";
   if (lantern.status === "missing") return "missing";
   if (lantern.position === "Missing") return "unpositioned";
   return "";
@@ -126,7 +128,7 @@ function renderUnpositionedTray() {
   tray.innerHTML = [
     `<span class="tray-label">Unpositioned</span>`,
     ...unpositioned.map((lantern) => `<button type="button" class="tray-node ${lantern.mac === selectedMac ? "selected" : ""}" data-mac="${escapeHtml(lantern.mac)}">
-      <span class="dot ${lantern.status === "missing" ? "bad" : "warn"}"></span>
+      <span class="dot ${lantern.status === "missing" || lantern.status === "retired" ? "bad" : "warn"}"></span>
       <span>${escapeHtml(lantern.label)}</span>
     </button>`),
   ].join("");
@@ -144,12 +146,13 @@ function renderRows() {
   });
 
   $("#lantern-rows").innerHTML = rows.map((lantern) => {
-    const dotClass = lantern.status === "missing" ? "bad" : lantern.position === "Missing" ? "warn" : "";
-    const attentionClass = lantern.attention === "None" ? "" : lantern.status === "missing" ? "bad" : "warn";
+    const isBad = lantern.status === "missing" || lantern.status === "retired";
+    const dotClass = isBad ? "bad" : lantern.position === "Missing" ? "warn" : "";
+    const attentionClass = lantern.attention === "None" ? "" : isBad ? "bad" : "warn";
     return `<tr data-mac="${lantern.mac}" class="${lantern.mac === selectedMac ? "selected" : ""}">
       <td><strong>${escapeHtml(lantern.label)}</strong><br><span class="mono">${escapeHtml(lantern.mac)}</span></td>
       <td><span class="status"><span class="dot ${dotClass}"></span>${statusText(lantern)}</span></td>
-      <td class="${lantern.status === "missing" ? "bad" : "ok"}">${escapeHtml(lantern.last_seen_label)}</td>
+      <td class="${isBad ? "bad" : "ok"}">${escapeHtml(lantern.last_seen_label)}</td>
       <td class="${lantern.position === "Missing" ? "warn" : ""}">${escapeHtml(lantern.position)}</td>
       <td class="${attentionClass}">${escapeHtml(lantern.attention)}</td>
     </tr>`;

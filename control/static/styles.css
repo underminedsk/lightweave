@@ -193,7 +193,7 @@ input[type="range"] { width: 100%; accent-color: var(--amber); margin: 12px 0 18
   .toolbar { align-items: stretch; flex-direction: column; }
   .actions, .segmented { grid-template-columns: 1fr 1fr; }
   .button-row { display: grid; }
-  .unpositioned-tray { max-width: none; right: 74px; }
+  .unpositioned-tray { max-width: none; right: 16px; bottom: 118px; }
   .view { min-height: 430px; }
   .map { min-height: 430px; }
   th, td { padding: 12px 10px; }

@@ -26,6 +26,8 @@ class Lantern:
         attention = "None"
         if self.status == "missing":
             attention = "Not seen"
+        elif self.status == "retired":
+            attention = "Retired"
         elif not has_position:
             attention = "Needs position"
 
@@ -165,6 +167,7 @@ class MockConductor:
         old.x = None
         old.y = None
         old.label = f"{old_label} retired"
+        old.status = "retired"
         self._event(f"replace old={old.mac} new={new.mac} label={old_label}")
         return {
             "ok": True,
