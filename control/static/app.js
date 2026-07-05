@@ -186,6 +186,9 @@ function renderDetailVisibility() {
 }
 
 function detailSummary(lantern) {
+  if (lantern.status === "retired") {
+    return `This MAC was replaced and should not be used as a spare.`;
+  }
   if (lantern.status === "missing") {
     return `Last seen ${lantern.last_seen_label}. Use Identify after it returns, or Replace if this lantern is physically gone.`;
   }
