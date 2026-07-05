@@ -65,9 +65,10 @@ Snapshot shape:
     "wake": true,
     "sync": "locked",
     "firmware": {
-      "proto": 3,
-      "build_id": 31694882,
-      "build_label": "01e3a022",
+      "version": "0.1.0",
+      "proto": 4,
+      "build_id": 3225866068,
+      "build_label": "c046bf54",
       "dirty": false
     }
   },
@@ -81,7 +82,8 @@ Snapshot shape:
       "matching": 8,
       "seen": 8,
       "expected": 9,
-      "build_label": "01e3a022",
+      "version": "0.1.0",
+      "build_label": "c046bf54",
       "dirty": false
     }
   },
@@ -101,7 +103,7 @@ Snapshot shape:
       "y": 0.47,
       "position": "Set",
       "attention": "None",
-      "firmware": {"proto": 3, "build_id": 31694882, "build_label": "01e3a022", "dirty": false},
+      "firmware": {"version": "0.1.0", "proto": 4, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
       "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
       "updated_at": 1720123456.0
     }
@@ -118,7 +120,8 @@ Lantern status values currently used by the prototype:
   a replacement spare.
 
 Lantern attention can also be `Firmware mismatch` when a registered node has
-the same wire protocol but a different build id or dirty flag than the conductor.
+the same wire protocol but a different release version, build id, or dirty flag
+than the conductor.
 `summary.firmware` is the OTA safety invariant: manual field-wide OTA should not
 start unless every reachable node is on the expected build, or the UI explicitly
 keeps the operator in a recovery flow.
@@ -277,9 +280,9 @@ position", and table rows not currently registered show as "Not seen".
 
 ### 7. Ops & escape hatches
 
-- Field firmware panel: conductor build id, dirty flag, and consistency count
-  (`N / total on this build`). Mixed firmware is red and also appears in the
-  Node List as `Firmware mismatch`.
+- Field firmware panel: conductor release version, GitHub-linked commit hash,
+  dirty flag, and consistency count (`N / total on this build`). Mixed firmware
+  is red and also appears in the Node List as `Firmware mismatch`.
 - Raw serial console passthrough to the conductor CLI (the playa will
   produce a situation the UI didn't anticipate).
 - Event log: registrations, table edits, errors — timestamped, server-side.
@@ -293,9 +296,9 @@ position", and table rows not currently registered show as "Not seen".
 - Manual maintenance-mode OTA only. No autonomous/opportunistic updates.
 - Field-wide firmware updates only. No selected-node OTA; mixed firmware is a
   recovery state, not a supported operating mode.
-- Built foundation: REGISTER reports protocol + build id + dirty flag, the
-  control-plane state exposes per-node and conductor firmware versions, and
-  Operations shows version consistency.
+- Built foundation: REGISTER reports release version + protocol + build id +
+  dirty flag, the control-plane state exposes per-node and conductor firmware
+  versions, and Operations shows version consistency with linked commits.
 - Not built yet: firmware upload/transfer, OTA window command, readiness states,
   timeout/recovery UI.
 

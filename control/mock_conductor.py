@@ -11,9 +11,10 @@ def _now() -> float:
 
 
 FIELD_FIRMWARE = {
-    "proto": 3,
-    "build_id": 0x01E3A022,
-    "build_label": "01e3a022",
+    "version": "0.1.0",
+    "proto": 4,
+    "build_id": 0xC046BF54,
+    "build_label": "c046bf54",
     "dirty": False,
 }
 
@@ -25,6 +26,7 @@ def _firmware_matches(expected: dict[str, Any], actual: dict[str, Any] | None) -
         actual.get("proto") == expected.get("proto")
         and actual.get("build_id") == expected.get("build_id")
         and bool(actual.get("dirty")) == bool(expected.get("dirty"))
+        and actual.get("version") == expected.get("version")
     )
 
 
@@ -227,6 +229,7 @@ class MockConductor:
             "matching": matching,
             "seen": len(positioned),
             "expected": table_rows,
+            "version": FIELD_FIRMWARE["version"],
             "build_label": FIELD_FIRMWARE["build_label"],
             "dirty": FIELD_FIRMWARE["dirty"],
         }

@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 
+#include "firmware_version.h"
 #include "powermon.h"  // PowerSample — MSG_POWER's payload IS the logic struct
 
 // Bumped on any incompatible wire-layout change. Receivers reject a mismatch
@@ -21,7 +22,8 @@
 // in REGISTER so the conductor can spot a straggler running stale firmware.
 // v2: BeaconMsg grew `flags` (field-awake override for daytime deep-sleep).
 // v3: RegisterMsg reports a build id + dirty flag for OTA version consistency.
-static constexpr uint8_t PROTO_VERSION = 3;
+// v4: RegisterMsg also reports the human firmware version string.
+static constexpr uint8_t PROTO_VERSION = 4;
 
 // BeaconMsg.flags bits.
 // FIELD_AWAKE: conductor-commanded override — "the field should be awake now,
@@ -71,6 +73,7 @@ typedef struct __attribute__((packed)) {
   uint8_t   fw;      // sender's PROTO_VERSION (wire compatibility marker)
   uint32_t  build;   // sender's firmware build id (git-derived)
   uint8_t   dirty;   // sender was built from uncommitted firmware changes
+  char      version[FIRMWARE_VERSION_MAX];  // human release version, NUL-padded
 } RegisterMsg;
 
 // One row of the layout table on the wire: a node's MAC and its (x,y) position.

@@ -73,7 +73,26 @@ function cssStatus(lantern) {
 function firmwareLabel(firmware) {
   if (!firmware) return "unknown";
   const dirty = firmware.dirty ? " dirty" : "";
-  return `${firmware.build_label || String(firmware.build_id || "unknown")} / p${firmware.proto}${dirty}`;
+  const version = firmware.version ? `v${firmware.version}` : "version unknown";
+  const build = firmware.build_label || String(firmware.build_id || "unknown");
+  return `${version} (${build} / p${firmware.proto}${dirty})`;
+}
+
+function commitUrl(buildLabel) {
+  if (!/^[0-9a-f]{7,40}$/i.test(buildLabel || "")) return null;
+  return `https://github.com/underminedsk/baskets-lights/commit/${buildLabel}`;
+}
+
+function firmwareHtml(firmware) {
+  if (!firmware) return "unknown";
+  const dirty = firmware.dirty ? " dirty" : "";
+  const version = firmware.version ? `v${escapeHtml(firmware.version)}` : "version unknown";
+  const build = firmware.build_label || String(firmware.build_id || "unknown");
+  const url = commitUrl(build);
+  const hash = url
+    ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(build)}</a>`
+    : escapeHtml(build);
+  return `${version} <span class="firmware-hash">${hash}</span> <span class="muted-inline">p${escapeHtml(String(firmware.proto))}${dirty}</span>`;
 }
 
 function render() {
@@ -299,7 +318,7 @@ function renderDetail() {
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
     `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(lantern.status)}`,
-    `firmware=${escapeHtml(firmwareLabel(lantern.firmware))}`,
+    `firmware=${firmwareHtml(lantern.firmware)}`,
     `pattern=${escapeHtml(state.pattern.pattern)} bri=${state.pattern.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
@@ -320,9 +339,15 @@ function renderDetailVisibility() {
 function renderFirmware() {
   const summary = state.summary.firmware || {};
   const conductorFirmware = state.conductor.firmware || {};
-  const build = summary.build_label || conductorFirmware.build_label || "--";
+  const firmware = {
+    version: summary.version || conductorFirmware.version,
+    build_label: summary.build_label || conductorFirmware.build_label,
+    build_id: conductorFirmware.build_id,
+    proto: conductorFirmware.proto,
+    dirty: summary.dirty ?? conductorFirmware.dirty,
+  };
   const dirty = summary.dirty || conductorFirmware.dirty ? " dirty" : "";
-  $("#firmware-build").textContent = `${build}${dirty}`;
+  $("#firmware-build").innerHTML = firmwareHtml(firmware);
   $("#firmware-build").className = `ops-value ${dirty ? "warn" : ""}`;
   const expected = summary.expected ?? state.summary.total;
   const matching = summary.matching ?? 0;

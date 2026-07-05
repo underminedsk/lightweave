@@ -9,14 +9,19 @@ next steps only.
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
 (**89 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-05): **OTA safety foundation hardware-verified** —
-all three bench boards were flashed to `PROTO_VERSION 3` build `c046bf54` with
-dirty=false; `/api/state` reports `summary.firmware.consistent=true`,
-`matching=2`, `expected=2`, and the Operations tab shows `2 / 2 on this build`.
-REGISTER now carries protocol + git-derived build id + dirty flag, the machine
-state exposes conductor/per-node firmware versions, and the Operations UI shows
-field firmware consistency so mixed firmware is visible before OTA transfer
-exists. Previous latest: **real control plane on the bench** —
+build clean. Latest on `main` (2026-07-05): **release version display for OTA
+safety is code-complete** — firmware now reports `VERSION` (`0.1.0`) in addition
+to protocol, git-derived build id, and dirty flag; the Operations/detail UI
+shows the human version and links the commit hash to GitHub. This bumps
+`PROTO_VERSION` to 4, so the three bench boards need an all-board reflash before
+the live serial UI will show the new version field. Previous latest: **OTA
+safety foundation hardware-verified** — all three bench boards were flashed to
+`PROTO_VERSION 3` build `c046bf54` with dirty=false; `/api/state` reports
+`summary.firmware.consistent=true`, `matching=2`, `expected=2`, and the
+Operations tab shows `2 / 2 on this build`. REGISTER carries protocol +
+git-derived build id + dirty flag in that verified build, and the machine state
+exposes conductor/per-node firmware identity so mixed firmware is visible before
+OTA transfer exists. Previous latest: **real control plane on the bench** —
 the FastAPI UI/API can now talk to the conductor over USB serial using
 newline-delimited JSON while preserving the human CLI. Hardware-verified with
 one conductor + two performers: `/api/state` sees both performers, map placement
@@ -49,7 +54,7 @@ Priority order:
    window, readiness/status reporting, timeout, and UI copy. Do not implement
    autonomous/opportunistic updates.
 2. **Optional negative OTA-safety check:** if useful, intentionally flash one
-   performer with a same-v3 but different build and confirm it appears as
+   performer with a same-v4 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
    or older boards simply vanish from the roster due to the version gate.
 3. **Monday (parts in hand):** wire a phototransistor → calibrate
@@ -126,10 +131,11 @@ power measurement):
   serial input** — hit Enter in a monitor to revive a quiet node (see
   FLASHING.md). Exception: the conductor's `[power]` telemetry log is
   deliberately ungated (it's the overnight audit trail).
-- **Wire protocol is v3** (`PROTO_VERSION 3`; REGISTER now includes protocol,
-  build id, and dirty flag for OTA version consistency). Protocol-mismatched
-  nodes silently reject each other — **flash every board together**. A same-protocol
-  stale build is reported as `Firmware mismatch`.
+- **Wire protocol is v4** (`PROTO_VERSION 4`; REGISTER now includes release
+  version, protocol, build id, and dirty flag for OTA version consistency).
+  Protocol-mismatched nodes silently reject each other — **flash every board
+  together**. A same-protocol stale version/build is reported as
+  `Firmware mismatch`.
 - **Host unit tests** (`test/test_logic/`, 89): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
@@ -496,7 +502,7 @@ field. Four independent layers guarantee daytime testability:
    and listens for a beacon before it may re-sleep — a flagged beacon pins it
    awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
    ≤ one resample interval. Historical note: this originally grew the wire format
-   to `PROTO_VERSION 2`; the current protocol is **v3**, and every protocol bump
+   to `PROTO_VERSION 2`; the current protocol is **v4**, and every protocol bump
    still means reflashing every board together.
 2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
    for 10 min, 60 s light debounce on top). Per-lantern physical override via the
@@ -585,8 +591,8 @@ missing the field-* envs, and the field envs copy-pasting instead of
   `TableMsg.chunk/chunks` written but never read. Removing the wire fields would
   change layout → PROTO_VERSION bump → reflash every board together; fold it
   into the next deliberate protocol rev instead of doing it standalone. Roster
-  firmware reporting is no longer dead: v3 REGISTER includes `fw` + build id +
-  dirty flag for OTA consistency checks.
+  firmware reporting is no longer dead: v4 REGISTER includes `fw` + release
+  version + build id + dirty flag for OTA consistency checks.
 
 ### After Milestone 3
 Milestone 4 — battery enclosure + final go/no-go on the **FireBeetle** (lower draw

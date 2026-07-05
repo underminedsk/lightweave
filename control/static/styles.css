@@ -200,6 +200,10 @@ tr.selected { background: rgba(240, 179, 90, .08); }
 .ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 .ops-grid > div { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; }
 .ops-value { margin-top: 8px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ops-value a, .details a { color: var(--sync); text-decoration: none; }
+.ops-value a:hover, .details a:hover { text-decoration: underline; }
+.firmware-hash { font-family: "JetBrains Mono", "IBM Plex Mono", monospace; font-size: .9em; }
+.muted-inline { color: var(--muted); font-size: .82em; font-weight: 500; }
 .segmented { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
 .pattern-param { margin-top: 12px; }
 .pattern-param[hidden], .segmented[hidden] { display: none; }

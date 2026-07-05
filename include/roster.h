@@ -23,6 +23,7 @@ struct RosterEntry {
   uint8_t  fw;       // node's PROTO_VERSION (spot a stale wire protocol)
   uint32_t build;    // node's firmware build id (spot same-protocol stragglers)
   uint8_t  dirty;    // node was built from an uncommitted firmware tree
+  char     version[FIRMWARE_VERSION_MAX];  // human release version
   int64_t  last_us;  // local time of this node's most recent REGISTER
 };
 
@@ -46,7 +47,8 @@ inline int rosterFind(const Roster& r, const uint8_t mac[6]) {
 // registration is dropped rather than evicting a known node (a known MAC still
 // updates even when full).
 inline bool rosterUpsert(Roster& r, const uint8_t mac[6], uint16_t id, uint8_t fw,
-                         uint32_t build, uint8_t dirty, int64_t t) {
+                         uint32_t build, uint8_t dirty, const char* version,
+                         int64_t t) {
   int i = rosterFind(r, mac);
   if (i < 0) {
     if (r.count >= ROSTER_MAX) return false;
@@ -57,11 +59,13 @@ inline bool rosterUpsert(Roster& r, const uint8_t mac[6], uint16_t id, uint8_t f
   r.entries[i].fw = fw;
   r.entries[i].build = build;
   r.entries[i].dirty = dirty;
+  firmwareCopyVersion(r.entries[i].version, version);
   r.entries[i].last_us = t;
   return true;
 }
 
 inline FirmwareVersion rosterEntryFirmware(const RosterEntry& e) {
-  FirmwareVersion v = {e.fw, e.build, e.dirty};
+  FirmwareVersion v = {e.fw, e.build, e.dirty, {0}};
+  firmwareCopyVersion(v.version, e.version);
   return v;
 }

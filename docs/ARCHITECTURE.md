@@ -282,10 +282,10 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
   `FF:FF:FF:FF:FF:FF`, `WIFI_STA`. The hot path (sync.h) reads `epoch_us`+`seq`.
 - **[done]** Bidirectional ESP-NOW: a performer learns the conductor's MAC from the
   recv-info, adds it as a peer, and unicasts
-  `MSG_REGISTER {mac, id, fw, build, dirty}` every 10 s; the conductor builds a
-  MAC-keyed roster (`roster` serial command). `fw` is wire compatibility
-  (`PROTO_VERSION`); `build` + `dirty` are the OTA safety marker that catches
-  same-protocol stale firmware.
+  `MSG_REGISTER {mac, id, fw, build, dirty, version}` every 10 s; the conductor
+  builds a MAC-keyed roster (`roster` serial command). `fw` is wire
+  compatibility (`PROTO_VERSION`); `version` + `build` + `dirty` are the OTA
+  safety marker that catches same-protocol stale firmware.
 - **[done]** `MSG_TABLE`: the conductor broadcasts the layout table in chunks
   (`TableRow` ×17/packet); nodes adopt their own row. `chunk`/`chunks` fields let a
   receiver tell how much it has seen.
@@ -303,12 +303,13 @@ OTA is manual maintenance-mode only and field-wide only. The system must never
 offer selected-node firmware updates as a normal workflow. Mixed firmware can
 still happen after a failed update, but it is treated as an error/recovery state.
 
-The foundation is in place: device builds get a git-derived 32-bit build id and
-dirty flag via `scripts/firmware_build_id.py`; performers report that identity in
-REGISTER; the conductor exposes conductor/per-node firmware in machine state; the
-control plane shows field firmware consistency in Operations and flags
-`Firmware mismatch` in the Node List. Actual OTA upload/transfer and maintenance
-window control are still planned.
+The foundation is in place: device builds get a release version from `VERSION`,
+a git-derived 32-bit build id, and dirty flag via `scripts/firmware_build_id.py`;
+performers report that identity in REGISTER; the conductor exposes
+conductor/per-node firmware in machine state; the control plane shows field
+firmware consistency in Operations, links build hashes to GitHub commits, and
+flags `Firmware mismatch` in the Node List. Actual OTA upload/transfer and
+maintenance window control are still planned.
 
 ## 8. Resilience model
 

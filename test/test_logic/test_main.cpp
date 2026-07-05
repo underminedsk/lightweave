@@ -280,8 +280,8 @@ void test_roster_appends_distinct_macs() {
   uint8_t a[6], b[6];
   macN(a, 1);
   macN(b, 2);
-  TEST_ASSERT_TRUE(rosterUpsert(r, a, 1, 1, 0x11111111, 0, 100));
-  TEST_ASSERT_TRUE(rosterUpsert(r, b, 2, 1, 0x11111111, 0, 200));
+  TEST_ASSERT_TRUE(rosterUpsert(r, a, 1, 1, 0x11111111, 0, "0.1.0", 100));
+  TEST_ASSERT_TRUE(rosterUpsert(r, b, 2, 1, 0x11111111, 0, "0.1.0", 200));
   TEST_ASSERT_EQUAL_UINT8(2, r.count);
   TEST_ASSERT_EQUAL_INT(0, rosterFind(r, a));
   TEST_ASSERT_EQUAL_INT(1, rosterFind(r, b));
@@ -293,14 +293,15 @@ void test_roster_dedup_updates_in_place() {
   rosterInit(r);
   uint8_t a[6];
   macN(a, 1);
-  rosterUpsert(r, a, 1, 1, 0x11111111, 0, 100);
-  rosterUpsert(r, a, 7, 2, 0x22222222, 1, 500);  // same MAC, new id/fw/time
+  rosterUpsert(r, a, 1, 1, 0x11111111, 0, "0.1.0", 100);
+  rosterUpsert(r, a, 7, 2, 0x22222222, 1, "0.2.0", 500);  // same MAC, new id/fw/time
   TEST_ASSERT_EQUAL_UINT8(1, r.count);
   int i = rosterFind(r, a);
   TEST_ASSERT_EQUAL_UINT16(7, r.entries[i].id);
   TEST_ASSERT_EQUAL_UINT8(2, r.entries[i].fw);
   TEST_ASSERT_EQUAL_UINT32(0x22222222, r.entries[i].build);
   TEST_ASSERT_EQUAL_UINT8(1, r.entries[i].dirty);
+  TEST_ASSERT_EQUAL_STRING("0.2.0", r.entries[i].version);
   TEST_ASSERT_EQUAL_INT64(500, r.entries[i].last_us);
 }
 
@@ -310,38 +311,40 @@ void test_roster_overflow_drops_new_keeps_existing() {
   for (int n = 0; n < ROSTER_MAX; n++) {
     uint8_t m[6];
     macN(m, (uint8_t)n);
-    TEST_ASSERT_TRUE(rosterUpsert(r, m, (uint16_t)n, 1, 0x11111111, 0, n));
+    TEST_ASSERT_TRUE(rosterUpsert(r, m, (uint16_t)n, 1, 0x11111111, 0, "0.1.0", n));
   }
   TEST_ASSERT_EQUAL_UINT8(ROSTER_MAX, r.count);
   // A brand-new MAC is dropped when full (returns false); count unchanged.
   uint8_t over[6];
   macN(over, 200);
-  TEST_ASSERT_FALSE(rosterUpsert(r, over, 999, 1, 0x11111111, 0, 9999));
+  TEST_ASSERT_FALSE(rosterUpsert(r, over, 999, 1, 0x11111111, 0, "0.1.0", 9999));
   TEST_ASSERT_EQUAL_UINT8(ROSTER_MAX, r.count);
   // But an already-known MAC still updates in place even when full.
   uint8_t known[6];
   macN(known, 3);
-  TEST_ASSERT_TRUE(rosterUpsert(r, known, 42, 1, 0x33333333, 0, 12345));
+  TEST_ASSERT_TRUE(rosterUpsert(r, known, 42, 1, 0x33333333, 0, "0.1.0", 12345));
   TEST_ASSERT_EQUAL_UINT16(42, r.entries[rosterFind(r, known)].id);
 }
 
 void test_firmware_version_matches_proto_build_and_dirty() {
-  FirmwareVersion a = {3, 0x12345678, 0};
-  FirmwareVersion b = {3, 0x12345678, 0};
-  FirmwareVersion dirty = {3, 0x12345678, 1};
-  FirmwareVersion other_build = {3, 0x87654321, 0};
-  FirmwareVersion other_proto = {4, 0x12345678, 0};
+  FirmwareVersion a = {3, 0x12345678, 0, "0.1.0"};
+  FirmwareVersion b = {3, 0x12345678, 0, "0.1.0"};
+  FirmwareVersion dirty = {3, 0x12345678, 1, "0.1.0"};
+  FirmwareVersion other_build = {3, 0x87654321, 0, "0.1.0"};
+  FirmwareVersion other_proto = {4, 0x12345678, 0, "0.1.0"};
+  FirmwareVersion other_version = {3, 0x12345678, 0, "0.2.0"};
 
   TEST_ASSERT_TRUE(firmwareSame(a, b));
   TEST_ASSERT_FALSE(firmwareSame(a, dirty));
   TEST_ASSERT_FALSE(firmwareSame(a, other_build));
   TEST_ASSERT_FALSE(firmwareSame(a, other_proto));
+  TEST_ASSERT_FALSE(firmwareSame(a, other_version));
 }
 
 void test_firmware_fleet_consistency_requires_every_seen_node_to_match() {
-  FirmwareVersion expected = {3, 0x12345678, 0};
-  FirmwareVersion matching[2] = {{3, 0x12345678, 0}, {3, 0x12345678, 0}};
-  FirmwareVersion mixed[2] = {{3, 0x12345678, 0}, {3, 0x12345678, 1}};
+  FirmwareVersion expected = {3, 0x12345678, 0, "0.1.0"};
+  FirmwareVersion matching[2] = {{3, 0x12345678, 0, "0.1.0"}, {3, 0x12345678, 0, "0.1.0"}};
+  FirmwareVersion mixed[2] = {{3, 0x12345678, 0, "0.1.0"}, {3, 0x12345678, 1, "0.1.0"}};
 
   TEST_ASSERT_TRUE(firmwareFleetConsistent(expected, matching, 2));
   TEST_ASSERT_FALSE(firmwareFleetConsistent(expected, mixed, 2));

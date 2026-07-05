@@ -13,12 +13,14 @@ def test_snapshot_counts_healthy_placed_over_placed_total() -> None:
     assert snapshot["summary"]["firmware"]["consistent"] is True
     assert snapshot["summary"]["firmware"]["matching"] == 8
     assert snapshot["summary"]["firmware"]["expected"] == 9
+    assert snapshot["summary"]["firmware"]["version"] == "0.1.0"
 
 
 def test_firmware_mismatch_is_attention() -> None:
     conductor = MockConductor()
     conductor._lanterns[0].firmware = {
-        "proto": 3,
+        "version": "0.1.0",
+        "proto": 4,
         "build_id": 0xDEADBEEF,
         "build_label": "deadbeef",
         "dirty": False,
