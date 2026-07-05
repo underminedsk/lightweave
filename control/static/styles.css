@@ -199,7 +199,7 @@ tr.selected { background: rgba(240, 179, 90, .08); }
 .panel p { margin: 0 0 16px; color: var(--muted); }
 .ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 .ops-grid > div { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; }
-.ops-value { margin-top: 8px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ops-value { margin-top: 8px; font-size: 18px; line-height: 1.25; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .ops-value a, .details a { color: var(--sync); text-decoration: none; }
 .ops-value a:hover, .details a:hover { text-decoration: underline; }
 .firmware-hash { font-family: "JetBrains Mono", "IBM Plex Mono", monospace; font-size: .9em; }
@@ -212,8 +212,24 @@ input[type="number"], input[type="time"] { width: 100%; min-height: 42px; margin
 .ops-section { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; margin: 0 0 14px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .section-head h3 { margin: 0; font-size: 15px; }
-.ops-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.check-row { display: inline-flex; align-items: center; gap: 9px; margin: 4px 0 12px; color: var(--text); font-weight: 650; }
+.ops-form-grid { display: grid; margin-top: 6px; border-top: 1px solid rgba(38, 48, 42, .72); }
+.ops-form-grid .control-label {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid rgba(38, 48, 42, .72);
+}
+.ops-form-grid input[type="number"],
+.ops-form-grid input[type="time"] {
+  width: 154px;
+  min-height: 36px;
+  margin-top: 0;
+  text-align: right;
+  background: #080b09;
+}
+.check-row { display: inline-flex; align-items: center; gap: 9px; margin: 4px 0 8px; color: var(--text); font-weight: 650; }
 .check-row input { width: 18px; height: 18px; accent-color: var(--amber); }
 .button-row { display: flex; gap: 8px; margin-top: 14px; }
 .log { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px; font-size: 12px; line-height: 1.8; color: var(--muted); overflow: auto; font-family: "JetBrains Mono", "IBM Plex Mono", monospace; }
@@ -244,7 +260,7 @@ input[type="number"], input[type="time"] { width: 100%; min-height: 42px; margin
   .summary .tile:last-child { grid-column: 1 / -1; }
   .toolbar { align-items: stretch; flex-direction: column; }
   .actions, .segmented { grid-template-columns: 1fr 1fr; }
-  .ops-form-grid { grid-template-columns: 1fr; }
+  .ops-grid { grid-template-columns: 1fr; }
   .button-row { display: grid; }
   .unpositioned-tray { max-width: none; right: 16px; bottom: 118px; }
   .view { min-height: 430px; }
