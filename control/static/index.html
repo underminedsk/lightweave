@@ -22,9 +22,9 @@
 
     <nav class="tabs" aria-label="Primary">
       <button class="active" data-view="map">Map</button>
-      <button data-view="table">Table</button>
-      <button data-view="show">Show</button>
-      <button data-view="ops">Ops</button>
+      <button data-view="table">Node List</button>
+      <button data-view="show">Patterns</button>
+      <button data-view="ops">Operations</button>
     </nav>
 
     <main>
@@ -67,7 +67,7 @@
 
       <section class="view" id="view-show">
         <div class="panel">
-          <h2>Show</h2>
+          <h2>Patterns</h2>
           <p>Global controls affect the whole field after the conductor acknowledges the write.</p>
           <div class="segmented" id="pattern-picker">
             <button data-pattern="Pulse">Pulse</button>
@@ -92,7 +92,7 @@
 
       <section class="view" id="view-ops">
         <div class="panel">
-          <h2>Ops</h2>
+          <h2>Operations</h2>
           <p>Technical escape hatch. This stays out of the default operator path.</p>
           <div class="log" id="event-log"></div>
         </div>
