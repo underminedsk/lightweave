@@ -83,10 +83,21 @@ function renderPatternControls() {
 function renderMap() {
   const map = $("#map-content");
   $$(".node").forEach((node) => node.remove());
+  $$(".selection-ring").forEach((ring) => ring.remove());
+  const selected = selectedLantern();
+  if (selected) {
+    const ring = document.createElement("div");
+    ring.className = "selection-ring";
+    const fallbackIndex = Math.max(0, lanterns().findIndex((lantern) => lantern.mac === selected.mac));
+    const fallbackX = 0.18 + (fallbackIndex % 7) * 0.11;
+    const fallbackY = 0.28 + Math.floor(fallbackIndex / 7) * 0.18;
+    ring.style.left = `${mapCoord(selected.x ?? fallbackX) * 100}%`;
+    ring.style.top = `${mapCoord(selected.y ?? fallbackY) * 100}%`;
+    map.appendChild(ring);
+  }
   lanterns().forEach((lantern, index) => {
     const button = document.createElement("button");
     button.className = `node ${cssStatus(lantern)}`;
-    if (lantern.mac === selectedMac) button.classList.add("selected");
     button.dataset.mac = lantern.mac;
     button.type = "button";
     button.ariaLabel = lantern.label;
@@ -140,6 +151,7 @@ function renderDetail() {
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
   document.body.classList.toggle("move-mode", movingLanternMac !== null);
+  renderSelectionRing();
 }
 
 function renderDetailVisibility() {
@@ -230,6 +242,24 @@ function setLanternPreview(mac, x, y) {
   if (!node) return;
   node.style.left = `${mapCoord(x) * 100}%`;
   node.style.top = `${mapCoord(y) * 100}%`;
+  if (mac === selectedMac) {
+    const ring = $(".selection-ring");
+    if (ring) {
+      ring.style.left = node.style.left;
+      ring.style.top = node.style.top;
+    }
+  }
+}
+
+function renderSelectionRing() {
+  const lantern = selectedLantern();
+  const ring = $(".selection-ring");
+  if (!lantern || !ring) return;
+  const fallbackIndex = Math.max(0, lanterns().findIndex((item) => item.mac === lantern.mac));
+  const fallbackX = 0.18 + (fallbackIndex % 7) * 0.11;
+  const fallbackY = 0.28 + Math.floor(fallbackIndex / 7) * 0.18;
+  ring.style.left = `${mapCoord(lantern.x ?? fallbackX) * 100}%`;
+  ring.style.top = `${mapCoord(lantern.y ?? fallbackY) * 100}%`;
 }
 
 function startMoveMode() {

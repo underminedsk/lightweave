@@ -165,9 +165,9 @@ The map should look like a working field plot:
 - visible edge buffer around the field extents; normalized `(0,0)` and `(1,1)`
   should not sit directly on the screen edge
 - node dots with liveness color
-- selected node keeps its underlying liveness color and gets a cyan outline/highlight;
-  the outline may pulse subtly, but do not recolor selected nodes because color
-  already carries status
+- selected node keeps its underlying liveness color and does not change size,
+  position, or hit target; render selection as a separate cyan overlay ring so
+  color continues to mean status
 - unpositioned nodes in a side/bottom queue
 - stale nodes dimmed or red-rimmed
 - current recipe preview rendered directly on nodes when possible
