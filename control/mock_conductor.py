@@ -10,6 +10,24 @@ def _now() -> float:
     return time.time()
 
 
+FIELD_FIRMWARE = {
+    "proto": 3,
+    "build_id": 0x01E3A022,
+    "build_label": "01e3a022",
+    "dirty": False,
+}
+
+
+def _firmware_matches(expected: dict[str, Any], actual: dict[str, Any] | None) -> bool:
+    if not actual:
+        return False
+    return (
+        actual.get("proto") == expected.get("proto")
+        and actual.get("build_id") == expected.get("build_id")
+        and bool(actual.get("dirty")) == bool(expected.get("dirty"))
+    )
+
+
 @dataclass
 class Lantern:
     mac: str
@@ -20,6 +38,7 @@ class Lantern:
     y: float | None
     power_wh: float | None = None
     avg_w: float | None = None
+    firmware: dict[str, Any] = field(default_factory=lambda: deepcopy(FIELD_FIRMWARE))
 
     def as_dict(self, now: float) -> dict[str, Any]:
         has_position = self.x is not None and self.y is not None
@@ -30,6 +49,8 @@ class Lantern:
             attention = "Retired"
         elif not has_position:
             attention = "Needs position"
+        elif not _firmware_matches(FIELD_FIRMWARE, self.firmware):
+            attention = "Firmware mismatch"
 
         return {
             "mac": self.mac,
@@ -41,6 +62,7 @@ class Lantern:
             "y": self.y,
             "position": "Set" if has_position else "Missing",
             "attention": attention,
+            "firmware": deepcopy(self.firmware),
             "power": {
                 "wh": self.power_wh,
                 "avg_w": self.avg_w,
@@ -103,12 +125,14 @@ class MockConductor:
                 "seq": self.seq,
                 "wake": self.wake,
                 "sync": "locked",
+                "firmware": deepcopy(FIELD_FIRMWARE),
             },
             "summary": {
                 "alive": alive,
                 "total": table_rows,
                 "attention": attention,
                 "table_rows": table_rows,
+                "firmware": self._firmware_summary(lanterns, table_rows),
             },
             "pattern": deepcopy(self.pattern),
             "lanterns": lanterns,
@@ -193,3 +217,16 @@ class MockConductor:
 
     def _event(self, message: str) -> None:
         self.events.append({"ts": _now(), "message": message})
+
+    def _firmware_summary(self, lanterns: list[dict[str, Any]], table_rows: int) -> dict[str, Any]:
+        positioned = [item for item in lanterns if item["position"] == "Set" and item["status"] == "alive"]
+        matching = sum(1 for item in positioned if _firmware_matches(FIELD_FIRMWARE, item.get("firmware")))
+        consistent = all(_firmware_matches(FIELD_FIRMWARE, item.get("firmware")) for item in positioned)
+        return {
+            "consistent": consistent,
+            "matching": matching,
+            "seen": len(positioned),
+            "expected": table_rows,
+            "build_label": FIELD_FIRMWARE["build_label"],
+            "dirty": FIELD_FIRMWARE["dirty"],
+        }

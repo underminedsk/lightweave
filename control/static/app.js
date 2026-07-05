@@ -65,8 +65,15 @@ function statusText(lantern) {
 function cssStatus(lantern) {
   if (lantern.status === "retired") return "retired";
   if (lantern.status === "missing") return "missing";
+  if (lantern.attention === "Firmware mismatch") return "mismatch";
   if (lantern.position === "Missing") return "unpositioned";
   return "";
+}
+
+function firmwareLabel(firmware) {
+  if (!firmware) return "unknown";
+  const dirty = firmware.dirty ? " dirty" : "";
+  return `${firmware.build_label || String(firmware.build_id || "unknown")} / p${firmware.proto}${dirty}`;
 }
 
 function render() {
@@ -88,6 +95,7 @@ function render() {
   renderUnpositionedTray();
   renderRows();
   renderDetail();
+  renderFirmware();
   renderEvents();
   renderDetailVisibility();
 }
@@ -264,8 +272,9 @@ function renderRows() {
 
   $("#lantern-rows").innerHTML = rows.map((lantern) => {
     const isBad = lantern.status === "missing" || lantern.status === "retired";
-    const dotClass = isBad ? "bad" : lantern.position === "Missing" ? "warn" : "";
-    const attentionClass = lantern.attention === "None" ? "" : isBad ? "bad" : "warn";
+    const isFirmwareBad = lantern.attention === "Firmware mismatch";
+    const dotClass = isBad || isFirmwareBad ? "bad" : lantern.position === "Missing" ? "warn" : "";
+    const attentionClass = lantern.attention === "None" ? "" : isBad || isFirmwareBad ? "bad" : "warn";
     return `<tr data-mac="${lantern.mac}" class="${lantern.mac === selectedMac ? "selected" : ""}">
       <td><strong>${escapeHtml(lantern.label)}</strong><br><span class="mono">${escapeHtml(lantern.mac)}</span></td>
       <td><span class="status"><span class="dot ${dotClass}"></span>${statusText(lantern)}</span></td>
@@ -290,6 +299,7 @@ function renderDetail() {
   $("#detail-summary").textContent = detailSummary(lantern);
   $("#detail-tech").innerHTML = [
     `MAC ${escapeHtml(lantern.mac)} · x=${fmt(lantern.x)} y=${fmt(lantern.y)} · status=${escapeHtml(lantern.status)}`,
+    `firmware=${escapeHtml(firmwareLabel(lantern.firmware))}`,
     `pattern=${escapeHtml(state.pattern.pattern)} bri=${state.pattern.brightness} · seq=${state.conductor.seq}`,
     `power E=${fmt(lantern.power.wh)}Wh avg=${fmt(lantern.power.avg_w)}W · last report=${escapeHtml(lantern.power.last_report_label || "none")}`,
   ].join("<br>");
@@ -305,6 +315,23 @@ function renderDetail() {
 function renderDetailVisibility() {
   const activeView = $(".tabs button.active")?.dataset.view;
   $("#detail-sheet").hidden = !(activeView === "map" || activeView === "table");
+}
+
+function renderFirmware() {
+  const summary = state.summary.firmware || {};
+  const conductorFirmware = state.conductor.firmware || {};
+  const build = summary.build_label || conductorFirmware.build_label || "--";
+  const dirty = summary.dirty || conductorFirmware.dirty ? " dirty" : "";
+  $("#firmware-build").textContent = `${build}${dirty}`;
+  $("#firmware-build").className = `ops-value ${dirty ? "warn" : ""}`;
+  const expected = summary.expected ?? state.summary.total;
+  const matching = summary.matching ?? 0;
+  const seen = summary.seen ?? 0;
+  const consistent = summary.consistent !== false;
+  $("#firmware-consistency").textContent = consistent
+    ? `${matching} / ${expected} on this build`
+    : `${matching} / ${seen} match`;
+  $("#firmware-consistency").className = `ops-value ${consistent ? "ok" : "bad"}`;
 }
 
 function detailSummary(lantern) {

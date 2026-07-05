@@ -30,6 +30,7 @@
 #include "beacon.h"
 #include "bootplan.h"
 #include "dusk.h"
+#include "firmware_version.h"
 #include "identity.h"
 #include "macaddr.h"
 #include "napsched.h"
@@ -316,7 +317,7 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       // Known-ness is checked BEFORE the upsert so a full roster (which drops
       // the insert without a count change) can't mask a new node.
       bool known = rosterFind(g_roster, r.mac) >= 0;
-      rosterUpsert(g_roster, r.mac, r.id, r.fw, now_us());
+      rosterUpsert(g_roster, r.mac, r.id, r.fw, r.build, r.dirty, now_us());
       // A first-join or unprovisioned node needs its table row NOW — its radio
       // is provably on (it just transmitted), and the 60 s steady-state
       // rebroadcast is a lottery through the ~13% radio duty cycle. Stash the
@@ -469,7 +470,8 @@ static void maybeRegister(int64_t t) {
   g_next_register_us = t + REGISTER_INTERVAL_US;
 
   RegisterMsg r = {{BEACON_MAGIC, PROTO_VERSION, MSG_REGISTER}, {0}, g_id.id,
-                   PROTO_VERSION};
+                   PROTO_VERSION, (uint32_t)FIRMWARE_BUILD_ID,
+                   (uint8_t)FIRMWARE_BUILD_DIRTY};
   memcpy(r.mac, g_mac, 6);
   esp_now_send(cmac, (const uint8_t*)&r, sizeof(r));
 }
@@ -680,6 +682,9 @@ static void printInfo() {
   Serial.printf("role=%s  id=%u  mac=%s  x=%.2f  y=%.2f\n",
                 isConductor() ? "CONDUCTOR" : "PERFORMER", g_id.id,
                 macStr(g_mac, mac), g_id.x, g_id.y);
+  Serial.printf("  firmware: proto=%u  build=%08lx%s\n", PROTO_VERSION,
+                (unsigned long)(uint32_t)FIRMWARE_BUILD_ID,
+                FIRMWARE_BUILD_DIRTY ? " dirty" : "");
   Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", b.pattern_id,
                 b.brightness, b.params[0], b.params[1],
                 b.params[2], b.params[3]);
@@ -713,9 +718,10 @@ static void printRoster() {
   Serial.printf("roster: %u node(s)\n", snap.count);
   for (uint8_t i = 0; i < snap.count; i++) {
     char mac[18];
-    Serial.printf("  [%u] %s  id=%u  fw=%u  last_seen=%lld ms ago\n", i,
+    Serial.printf("  [%u] %s  id=%u  fw=%u  build=%08lx%s  last_seen=%lld ms ago\n", i,
                   macStr(snap.entries[i].mac, mac), snap.entries[i].id,
-                  snap.entries[i].fw,
+                  snap.entries[i].fw, (unsigned long)snap.entries[i].build,
+                  snap.entries[i].dirty ? " dirty" : "",
                   (long long)((t - snap.entries[i].last_us) / 1000));
   }
 }
@@ -780,7 +786,8 @@ static void printPatternJson(const BeaconMsg& b) {
 
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
                              const char* status, int64_t last_seen_s, float x,
-                             float y, bool has_position, const char* attention) {
+                             float y, bool has_position, const char* attention,
+                             const FirmwareVersion* firmware) {
   char mac[18];
   Serial.printf("{\"mac\":\"%s\",\"label\":\"%s\",\"status\":\"%s\",",
                 macStr(mac_bytes, mac), label, status);
@@ -795,7 +802,17 @@ static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
   } else {
     Serial.print("\"x\":null,\"y\":null,\"position\":\"Missing\",");
   }
-  Serial.printf("\"attention\":\"%s\",\"power\":{\"wh\":null,\"avg_w\":null,"
+  Serial.printf("\"attention\":\"%s\",", attention);
+  if (firmware) {
+    Serial.printf("\"firmware\":{\"proto\":%u,\"build_id\":%lu,"
+                  "\"build_label\":\"%08lx\",\"dirty\":%s},",
+                  firmware->proto, (unsigned long)firmware->build_id,
+                  (unsigned long)firmware->build_id,
+                  firmware->dirty ? "true" : "false");
+  } else {
+    Serial.print("\"firmware\":null,");
+  }
+  Serial.printf("\"power\":{\"wh\":null,\"avg_w\":null,"
                 "\"last_report_label\":null}}",
                 attention);
 }
@@ -813,25 +830,53 @@ static void printMachineState(uint32_t id) {
   portEXIT_CRITICAL(&g_sync_mux);
 
   int64_t t = now_us();
+  FirmwareVersion conductor_fw = currentFirmwareVersion(PROTO_VERSION);
   uint8_t attention = 0;
   uint8_t placed_alive = 0;
+  uint8_t firmware_seen = 0;
+  uint8_t firmware_matching = 0;
+  bool firmware_mixed = false;
   for (uint8_t i = 0; i < g_table.count; i++) {
-    if (rosterFind(roster, g_table.entries[i].mac) < 0) attention++;
-    else placed_alive++;
+    int r = rosterFind(roster, g_table.entries[i].mac);
+    if (r < 0) {
+      attention++;
+    } else {
+      placed_alive++;
+      FirmwareVersion fw = rosterEntryFirmware(roster.entries[r]);
+      firmware_seen++;
+      if (firmwareSame(conductor_fw, fw)) firmware_matching++;
+      else {
+        firmware_mixed = true;
+        attention++;
+      }
+    }
   }
   for (uint8_t i = 0; i < roster.count; i++) {
+    FirmwareVersion fw = rosterEntryFirmware(roster.entries[i]);
     if (tableFind(g_table, roster.entries[i].mac) < 0) attention++;
+    if (!firmwareSame(conductor_fw, fw)) firmware_mixed = true;
   }
 
   Serial.printf("{\"id\":%lu,\"ok\":true,\"state\":{", (unsigned long)id);
   Serial.printf("\"conductor\":{\"connected\":true,\"uptime_s\":%.1f,"
-                "\"seq\":%lu,\"wake\":%s,\"sync\":\"%s\"},",
+                "\"seq\":%lu,\"wake\":%s,\"sync\":\"%s\","
+                "\"firmware\":{\"proto\":%u,\"build_id\":%lu,"
+                "\"build_label\":\"%08lx\",\"dirty\":%s}},",
                 millis() / 1000.0f, (unsigned long)g_tx_seq,
                 g_wake_flag ? "true" : "false",
-                isConductor() ? "locked" : (locked ? "locked" : "free-run"));
+                isConductor() ? "locked" : (locked ? "locked" : "free-run"),
+                conductor_fw.proto, (unsigned long)conductor_fw.build_id,
+                (unsigned long)conductor_fw.build_id,
+                conductor_fw.dirty ? "true" : "false");
   Serial.printf("\"summary\":{\"alive\":%u,\"total\":%u,\"attention\":%u,"
-                "\"table_rows\":%u},",
-                placed_alive, g_table.count, attention, g_table.count);
+                "\"table_rows\":%u,\"firmware\":{\"consistent\":%s,"
+                "\"matching\":%u,\"seen\":%u,\"expected\":%u,"
+                "\"build_label\":\"%08lx\",\"dirty\":%s}},",
+                placed_alive, g_table.count, attention, g_table.count,
+                firmware_mixed ? "false" : "true", firmware_matching,
+                firmware_seen, g_table.count,
+                (unsigned long)conductor_fw.build_id,
+                conductor_fw.dirty ? "true" : "false");
   printPatternJson(b);
   Serial.print(",\"lanterns\":[");
   bool first = true;
@@ -844,8 +889,16 @@ static void printMachineState(uint32_t id) {
     if (!first) Serial.print(",");
     first = false;
     int64_t age_s = r >= 0 ? (t - roster.entries[r].last_us) / 1000000 : -1;
+    FirmwareVersion fw;
+    FirmwareVersion* fw_ptr = nullptr;
+    const char* attention_text = r >= 0 ? "None" : "Not seen";
+    if (r >= 0) {
+      fw = rosterEntryFirmware(roster.entries[r]);
+      fw_ptr = &fw;
+      if (!firmwareSame(conductor_fw, fw)) attention_text = "Firmware mismatch";
+    }
     printLanternJson(row.mac, label, r >= 0 ? "alive" : "missing", age_s, row.x,
-                     row.y, true, r >= 0 ? "None" : "Not seen");
+                     row.y, true, attention_text, fw_ptr);
   }
   for (uint8_t i = 0; i < roster.count; i++) {
     const RosterEntry& row = roster.entries[i];
@@ -856,8 +909,11 @@ static void printMachineState(uint32_t id) {
     if (!first) Serial.print(",");
     first = false;
     int64_t age_s = (t - row.last_us) / 1000000;
+    FirmwareVersion fw = rosterEntryFirmware(row);
+    const char* attention_text = firmwareSame(conductor_fw, fw) ? "Needs position"
+                                                                : "Firmware mismatch";
     printLanternJson(row.mac, label, "alive", age_s, 0.0f, 0.0f, false,
-                     "Needs position");
+                     attention_text, &fw);
   }
   Serial.print("],\"events\":[]}}\n");
 }

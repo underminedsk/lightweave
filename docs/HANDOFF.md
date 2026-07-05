@@ -8,8 +8,12 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**87 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-05): **real control plane on the bench** —
+(**89 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
+build clean. Latest on `main` (2026-07-05): **OTA safety foundation started** —
+REGISTER now carries protocol + git-derived build id + dirty flag, the machine
+state exposes conductor/per-node firmware versions, and the Operations UI shows
+field firmware consistency so mixed firmware is visible before OTA transfer
+exists. Previous latest: **real control plane on the bench** —
 the FastAPI UI/API can now talk to the conductor over USB serial using
 newline-delimited JSON while preserving the human CLI. Hardware-verified with
 one conductor + two performers: `/api/state` sees both performers, map placement
@@ -37,17 +41,16 @@ arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 ## ▶ Next session: pick up here (updated 2026-07-05)
 
 Priority order:
-1. **Land or checkpoint the control-plane batch.** Current working tree is a
-   broad but reviewed local diff: serial adapter, FastAPI API, static UI,
-   firmware JSON command support, pattern-control polish, and docs. Before
-   shipping, run the normal final checks:
-   `PYTHONPATH=. pytest control/tests`, `pio test -e native`, and at least
-   `pio run -e devkitc` (already green after review fixes).
-2. **Optional focused QA before ship:** use the live server at
-   `http://127.0.0.1:8001` with `CONTROL_CONDUCTOR=serial` and
-   `CONTROL_SERIAL_PORT=/dev/cu.usbserial-7`; verify map placement, pattern
-   dirty-state behavior, and one real pattern change. Restore the field to the
-   desired show scene afterward.
+1. **Hardware-verify firmware version reporting.** Flash all three bench boards
+   together because `PROTO_VERSION` is now **3**; confirm `/api/state` shows
+   `summary.firmware.consistent=true` and the Operations tab reports all seen
+   nodes on one build. Deliberately leaving one board unflashed should make it
+   vanish from the roster via the protocol gate, which is expected; a same-v3
+   stale build should show `Firmware mismatch`.
+2. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
+   selected-node updates. Start with the non-writing control flow: enter/exit OTA
+   window, readiness/status reporting, timeout, and UI copy. Do not implement
+   autonomous/opportunistic updates.
 3. **Monday (parts in hand):** wire a phototransistor → calibrate
    `DUSK_DAY_MV`/`DUSK_NIGHT_MV`/`DUSK_DAY_ABOVE` against the real divider →
    verify the full dusk sleep → timer-wake → re-sleep → `wake on` summon cycle;
@@ -100,7 +103,7 @@ power measurement):
   off the FastAPI event loop, so one serial timeout does not block unrelated
   async work. The UI has Map, Node List, Patterns, and Operations views; map
   zoom/pan, drag-to-move/place, unpositioned tray, single bottom-sheet actions,
-  and per-pattern controls are all wired.
+  per-pattern controls, and field firmware consistency display are all wired.
 - **Protocol foundation Half 1** (hardware-verified): typed message header
   `{magic, version, type}` with type dispatch; **MAC identity** read at boot and
   shown in `info`; **bidirectional ESP-NOW** — performers unicast `REGISTER`
@@ -122,15 +125,17 @@ power measurement):
   serial input** — hit Enter in a monitor to revive a quiet node (see
   FLASHING.md). Exception: the conductor's `[power]` telemetry log is
   deliberately ungated (it's the overnight audit trail).
-- **Wire protocol is v2** (`PROTO_VERSION 2`, beacon grew a `flags` byte for
-  FIELD_AWAKE). v1 and v2 nodes silently reject each other — **flash every
-  board together** (all 3 bench boards are on v2 as of 2026-07-03).
-- **Host unit tests** (`test/test_logic/`, 87): sync core, pattern math, roster,
+- **Wire protocol is v3** (`PROTO_VERSION 3`; REGISTER now includes protocol,
+  build id, and dirty flag for OTA version consistency). Protocol-mismatched
+  nodes silently reject each other — **flash every board together**. A same-protocol
+  stale build is reported as `Firmware mismatch`.
+- **Host unit tests** (`test/test_logic/`, 89): sync core, pattern math, roster,
   layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
   MAC text parsing, table wire (chunking / length validation / own-row scan /
-  row-reply decision + builder), and boot classification.
+  row-reply decision + builder), firmware version consistency, and boot
+  classification.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -254,9 +259,10 @@ is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 
 **Not built yet:** Pi packaging (AP hotspot, mDNS, systemd, serial device naming),
 auto-calibration, show program / scheduling, real identify blink over ESP-NOW,
-OTA. (Structured machine serial and the dev laptop UI/API are built now; INA228
-telemetry firmware IS built too — see the section above; it awaits the physical
-chip.)
+OTA transfer. (The OTA safety foundation — build/version reporting and mixed
+firmware detection — is built; structured machine serial and the dev laptop
+UI/API are built now; INA228 telemetry firmware IS built too — see the section
+above; it awaits the physical chip.)
 
 ## Hardware state
 
@@ -311,7 +317,7 @@ dimming real shows. Watts are fine; the gating issue is *hours* → daytime slee
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 83 host tests
+pio test -e native                                  # 89 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -486,8 +492,9 @@ field. Four independent layers guarantee daytime testability:
    every beacon. A dusk-sleeping node wakes every **15 min** (`DUSK_RESAMPLE_US`)
    and listens for a beacon before it may re-sleep — a flagged beacon pins it
    awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
-   ≤ one resample interval. **Wire format grew a `flags` byte → PROTO_VERSION 2 —
-   reflash every board together; v1/v2 nodes reject each other's packets.**
+   ≤ one resample interval. Historical note: this originally grew the wire format
+   to `PROTO_VERSION 2`; the current protocol is **v3**, and every protocol bump
+   still means reflashing every board together.
 2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
    for 10 min, 60 s light debounce on top). Per-lantern physical override via the
    battery toggle switch — no firmware bug can remove it.
@@ -572,12 +579,11 @@ missing the field-* envs, and the field envs copy-pasting instead of
 
 **Known debt (deliberate, not yet done):**
 - Dead wire artifacts: `palette_id` unused, `MSG_ROSTER`/`MSG_ACK` unsent,
-  `TableMsg.chunk/chunks` written but never read, roster `fw` can never differ
-  from PROTO_VERSION (the version gate rejects stragglers before dispatch — a
-  stale-firmware node just vanishes from the roster instead of being flagged).
-  Removing the wire fields would change layout → PROTO_VERSION bump → reflash
-  every board together; fold it into the next deliberate protocol rev instead
-  of doing it standalone.
+  `TableMsg.chunk/chunks` written but never read. Removing the wire fields would
+  change layout → PROTO_VERSION bump → reflash every board together; fold it
+  into the next deliberate protocol rev instead of doing it standalone. Roster
+  firmware reporting is no longer dead: v3 REGISTER includes `fw` + build id +
+  dirty flag for OTA consistency checks.
 
 ### After Milestone 3
 Milestone 4 — battery enclosure + final go/no-go on the **FireBeetle** (lower draw

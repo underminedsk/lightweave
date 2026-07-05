@@ -281,8 +281,11 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 - **[done]** `MSG_BEACON` (clock + pattern) broadcast on a fixed channel to
   `FF:FF:FF:FF:FF:FF`, `WIFI_STA`. The hot path (sync.h) reads `epoch_us`+`seq`.
 - **[done]** Bidirectional ESP-NOW: a performer learns the conductor's MAC from the
-  recv-info, adds it as a peer, and unicasts `MSG_REGISTER {mac, id, fw}` every 10 s;
-  the conductor builds a MAC-keyed roster (`roster` serial command).
+  recv-info, adds it as a peer, and unicasts
+  `MSG_REGISTER {mac, id, fw, build, dirty}` every 10 s; the conductor builds a
+  MAC-keyed roster (`roster` serial command). `fw` is wire compatibility
+  (`PROTO_VERSION`); `build` + `dirty` are the OTA safety marker that catches
+  same-protocol stale firmware.
 - **[done]** `MSG_TABLE`: the conductor broadcasts the layout table in chunks
   (`TableRow` ×17/packet); nodes adopt their own row. `chunk`/`chunks` fields let a
   receiver tell how much it has seen.
@@ -293,6 +296,19 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 - **[planned]** `MSG_ACK` + richer machine Pi↔conductor serial (lands with the Pi
   UI).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
+
+### 7.1 OTA policy foundation **[done; transfer planned]**
+
+OTA is manual maintenance-mode only and field-wide only. The system must never
+offer selected-node firmware updates as a normal workflow. Mixed firmware can
+still happen after a failed update, but it is treated as an error/recovery state.
+
+The foundation is in place: device builds get a git-derived 32-bit build id and
+dirty flag via `scripts/firmware_build_id.py`; performers report that identity in
+REGISTER; the conductor exposes conductor/per-node firmware in machine state; the
+control plane shows field firmware consistency in Operations and flags
+`Firmware mismatch` in the Node List. Actual OTA upload/transfer and maintenance
+window control are still planned.
 
 ## 8. Resilience model
 
@@ -334,11 +350,11 @@ and Lever 2 (dusk deep-sleep for calendar life) are still planned.
 | Refactor — symmetric runtime role + NVS pattern persistence + rainbow drift pattern | ✅ done, hardware-verified |
 | Protocol foundation, Half 1 — typed header, MAC identity, bidirectional ESP-NOW, registration + roster | ✅ done, hardware-verified |
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
-| Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
+| Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | ✅ done for dev laptop UI/API; Pi packaging still planned |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
 | 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) ✅ hardware-verified on bench 2026-07-03 (power re-measure owed); Lever 2 (daytime deep-sleep, `dusk.h`, fail-awake design, `wake on|off` field-summon flag, default off) 🛠 code-complete + host-tested, awaiting the pilot phototransistors; INA228 instrumentation (§4.2) ✅ firmware done + host-tested (`powermon.h`, `MSG_POWER`), awaiting the chip |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
-| 5 — OTA + enclosure | 📐 planned |
+| 5 — OTA + enclosure | 🛠 OTA safety foundation done (build/version reporting + mixed detection); transfer/enclosure planned |
 
 ## 10. Resolved & open decisions
 

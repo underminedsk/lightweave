@@ -10,6 +10,27 @@ def test_snapshot_counts_healthy_placed_over_placed_total() -> None:
     assert snapshot["summary"]["total"] == 9
     assert snapshot["summary"]["attention"] == 2
     assert snapshot["pattern"]["pattern"] == "Glow"
+    assert snapshot["summary"]["firmware"]["consistent"] is True
+    assert snapshot["summary"]["firmware"]["matching"] == 8
+    assert snapshot["summary"]["firmware"]["expected"] == 9
+
+
+def test_firmware_mismatch_is_attention() -> None:
+    conductor = MockConductor()
+    conductor._lanterns[0].firmware = {
+        "proto": 3,
+        "build_id": 0xDEADBEEF,
+        "build_label": "deadbeef",
+        "dirty": False,
+    }
+
+    snapshot = conductor.snapshot()
+    lantern = next(item for item in snapshot["lanterns"] if item["mac"] == "8C:94:DF:8F:71:50")
+
+    assert lantern["attention"] == "Firmware mismatch"
+    assert snapshot["summary"]["firmware"]["consistent"] is False
+    assert snapshot["summary"]["firmware"]["matching"] == 7
+    assert snapshot["summary"]["attention"] == 3
 
 
 def test_assign_sets_position_and_clears_attention() -> None:

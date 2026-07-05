@@ -63,13 +63,27 @@ Snapshot shape:
     "uptime_s": 12.3,
     "seq": 184221,
     "wake": true,
-    "sync": "locked"
+    "sync": "locked",
+    "firmware": {
+      "proto": 3,
+      "build_id": 31694882,
+      "build_label": "01e3a022",
+      "dirty": false
+    }
   },
   "summary": {
     "alive": 8,
     "total": 9,
     "attention": 2,
-    "table_rows": 9
+    "table_rows": 9,
+    "firmware": {
+      "consistent": true,
+      "matching": 8,
+      "seen": 8,
+      "expected": 9,
+      "build_label": "01e3a022",
+      "dirty": false
+    }
   },
   "pattern": {
     "pattern": "Glow",
@@ -87,6 +101,7 @@ Snapshot shape:
       "y": 0.47,
       "position": "Set",
       "attention": "None",
+      "firmware": {"proto": 3, "build_id": 31694882, "build_label": "01e3a022", "dirty": false},
       "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
       "updated_at": 1720123456.0
     }
@@ -101,6 +116,12 @@ Lantern status values currently used by the prototype:
 - `missing` — expected/positioned but stale or not seen.
 - `retired` — old MAC after a replacement; keep for audit, never offer as
   a replacement spare.
+
+Lantern attention can also be `Firmware mismatch` when a registered node has
+the same wire protocol but a different build id or dirty flag than the conductor.
+`summary.firmware` is the OTA safety invariant: manual field-wide OTA should not
+start unless every reachable node is on the expected build, or the UI explicitly
+keeps the operator in a recovery flow.
 
 `summary.alive / summary.total` means healthy placed lanterns over placed
 lanterns in the field table. Unpositioned live lanterns are available substrate
@@ -256,6 +277,9 @@ position", and table rows not currently registered show as "Not seen".
 
 ### 7. Ops & escape hatches
 
+- Field firmware panel: conductor build id, dirty flag, and consistency count
+  (`N / total on this build`). Mixed firmware is red and also appears in the
+  Node List as `Firmware mismatch`.
 - Raw serial console passthrough to the conductor CLI (the playa will
   produce a situation the UI didn't anticipate).
 - Event log: registrations, table edits, errors — timestamped, server-side.
@@ -266,9 +290,14 @@ position", and table rows not currently registered show as "Not seen".
 
 ### 8. OTA (Milestone 5)
 
-- Firmware upload, per-node version dashboard, staged fleet rollout.
-- This is what makes the roster's currently-dead `fw` field meaningful —
-  it revives rather than being deleted in the dead-field cleanup.
+- Manual maintenance-mode OTA only. No autonomous/opportunistic updates.
+- Field-wide firmware updates only. No selected-node OTA; mixed firmware is a
+  recovery state, not a supported operating mode.
+- Built foundation: REGISTER reports protocol + build id + dirty flag, the
+  control-plane state exposes per-node and conductor firmware versions, and
+  Operations shows version consistency.
+- Not built yet: firmware upload/transfer, OTA window command, readiness states,
+  timeout/recovery UI.
 
 ### Cross-cutting
 

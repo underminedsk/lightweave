@@ -25,6 +25,8 @@ def test_state_endpoint_returns_mock_state() -> None:
     assert body["summary"]["alive"] == 8
     assert body["summary"]["total"] == 9
     assert body["conductor"]["sync"] == "locked"
+    assert body["conductor"]["firmware"]["proto"] == 3
+    assert body["summary"]["firmware"]["consistent"] is True
 
 
 def test_identify_unknown_lantern_is_404() -> None:

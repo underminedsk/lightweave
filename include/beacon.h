@@ -20,7 +20,8 @@
 // rather than misparse a packet from a node on different firmware. Also reported
 // in REGISTER so the conductor can spot a straggler running stale firmware.
 // v2: BeaconMsg grew `flags` (field-awake override for daytime deep-sleep).
-static constexpr uint8_t PROTO_VERSION = 2;
+// v3: RegisterMsg reports a build id + dirty flag for OTA version consistency.
+static constexpr uint8_t PROTO_VERSION = 3;
 
 // BeaconMsg.flags bits.
 // FIELD_AWAKE: conductor-commanded override — "the field should be awake now,
@@ -67,7 +68,9 @@ typedef struct __attribute__((packed)) {
   MsgHeader hdr;
   uint8_t   mac[6];  // sender's WiFi STA MAC — the node's stable identity
   uint16_t  id;      // human label (0 if unprovisioned)
-  uint8_t   fw;      // sender's PROTO_VERSION (firmware/protocol marker)
+  uint8_t   fw;      // sender's PROTO_VERSION (wire compatibility marker)
+  uint32_t  build;   // sender's firmware build id (git-derived)
+  uint8_t   dirty;   // sender was built from uncommitted firmware changes
 } RegisterMsg;
 
 // One row of the layout table on the wire: a node's MAC and its (x,y) position.

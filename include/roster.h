@@ -12,13 +12,17 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "firmware_version.h"
+
 // Max nodes the conductor tracks. 60-node field + headroom; ~24 bytes/entry.
 static constexpr uint8_t ROSTER_MAX = 64;
 
 struct RosterEntry {
   uint8_t  mac[6];
   uint16_t id;       // human label reported by the node (0 if unprovisioned)
-  uint8_t  fw;       // node's PROTO_VERSION (spot a straggler on stale firmware)
+  uint8_t  fw;       // node's PROTO_VERSION (spot a stale wire protocol)
+  uint32_t build;    // node's firmware build id (spot same-protocol stragglers)
+  uint8_t  dirty;    // node was built from an uncommitted firmware tree
   int64_t  last_us;  // local time of this node's most recent REGISTER
 };
 
@@ -42,7 +46,7 @@ inline int rosterFind(const Roster& r, const uint8_t mac[6]) {
 // registration is dropped rather than evicting a known node (a known MAC still
 // updates even when full).
 inline bool rosterUpsert(Roster& r, const uint8_t mac[6], uint16_t id, uint8_t fw,
-                         int64_t t) {
+                         uint32_t build, uint8_t dirty, int64_t t) {
   int i = rosterFind(r, mac);
   if (i < 0) {
     if (r.count >= ROSTER_MAX) return false;
@@ -51,6 +55,13 @@ inline bool rosterUpsert(Roster& r, const uint8_t mac[6], uint16_t id, uint8_t f
   memcpy(r.entries[i].mac, mac, 6);
   r.entries[i].id = id;
   r.entries[i].fw = fw;
+  r.entries[i].build = build;
+  r.entries[i].dirty = dirty;
   r.entries[i].last_us = t;
   return true;
+}
+
+inline FirmwareVersion rosterEntryFirmware(const RosterEntry& e) {
+  FirmwareVersion v = {e.fw, e.build, e.dirty};
+  return v;
 }
