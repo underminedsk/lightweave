@@ -467,7 +467,7 @@ position", and table rows not currently registered show as "Not seen".
 | **1** | Machine serial protocol; API server + OpenAPI; dashboard, layout map, live show control, power panel, ops console | Serial protocol header + glue; **identify-node** message |
 | **2** | Show program: conductor schedule in NVS + editor UI | Show-program feature (§4.1 decisions land here) |
 | **3** | Calibration wizard | Calibration mode messages (§6) |
-| **M5** | OTA UI | OTA via on-demand AP |
+| **M5** | OTA UI | Manual maintenance-mode OTA over serial + ESP-NOW |
 
 Everything in Phase 1 is testable end-to-end on the 3 bench DevKitC boards —
 no Pi, no new parts.
@@ -555,7 +555,7 @@ what makes authoring fast and lets an agent do most of it:
    GIF loops remain a later extension; JSON frame sequences are implemented.
 3. **Bench:** flash the 3 bench boards, tune params live through the show
    controls.
-4. **Fleet:** pre-event reflash, or OTA once Milestone 5 lands.
+4. **Fleet:** pre-event reflash or manual maintenance-mode OTA.
 
 **Keeping C++ and the JS preview in sync:** the preview is a second
 implementation of the pattern math, which will drift. Plan: a shared
@@ -565,12 +565,13 @@ consumes the same file. (If drift still bites, `pattern_math.h` is
 dependency-free and could compile to WASM for a single-source preview —
 deferred until needed.)
 
-**Reality check:** until OTA, a new pattern means USB-reflashing every
-deployed board — so the pattern *vocabulary* wants to be locked pre-event,
-while the **pattern space (pattern × brightness × params) is the live
-authoring surface** on the playa. That's the division of labor: agents +
-preview expand the vocabulary before the event; the UI tunes patterns during
-it.
+**Reality check:** until the precomputed-clip layer exists, a new built-in
+pattern still means a firmware rollout — now possible via manual maintenance
+OTA, but still heavier than a normal show edit. The pattern *vocabulary* wants
+to be locked pre-event, while the **pattern space (pattern × brightness ×
+params) is the live authoring surface** on the playa. That's the division of
+labor: agents + preview expand the vocabulary before the event; the UI tunes
+patterns during it.
 
 ## Deliberately out of scope
 
