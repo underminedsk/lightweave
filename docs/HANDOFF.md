@@ -34,7 +34,10 @@ build drill: `ba705b46`, `860928` bytes / `6726` chunks / sha256
 image restored both performers. That restore exposed a final `ota_end` serial
 ack timeout after all chunks had landed and the field had actually rebooted
 cleanly; the API now handles that shape by forcing post-reboot verification
-instead of leaving the install failed. Previous verified recovery artifact:
+instead of leaving the install failed. A follow-up restore also proved that a
+periodic `ota_progress` serial timeout during the stream is non-fatal: the API
+records `last_progress_error`, keeps transferring chunks, and relies on the next
+poll or post-reboot verification. Previous verified recovery artifact:
 `860944` bytes / `6727` chunks / sha256
 `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`; the final
 live run intentionally recovered one same-protocol mismatched performer
@@ -200,6 +203,9 @@ power measurement):
   its row, adopts its `(x,y)`, and caches it (survives reboot, no laptop needed).
   Conductor edits it with `assign <mac> <x> <y>` / `table` / `forget <mac>`.
   Verified: a node took a position set only on the conductor, no serial to it.
+  Re-adoption hardware check 2026-07-06: performer #2 was erased/reflashed after
+  its table row existed; it registered as `#?` but re-adopted `(0.6115, 0.4646)`
+  from the conductor's single-row table reply within the normal roster window.
 - **GPIO2 heartbeat** blinks on the synced beat (zero-wiring sync check).
 - **Serial commands:** `info`, `roster` / `table` / `assign` / `forget`
   (conductor), `role conductor|performer`, `id <n>`, `pos <x> <y>`,

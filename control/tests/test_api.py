@@ -121,6 +121,18 @@ class FinalAckTimeoutConductor(MockConductor):
         raise SerialProtocolError("timeout waiting for ota_end ack")
 
 
+class ProgressTimeoutConductor(MockConductor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.progress_timeouts = 0
+
+    def ota_progress(self) -> dict:
+        if self._ota_write is not None and len(self._ota_write) >= 64 * 128 and self.progress_timeouts == 0:
+            self.progress_timeouts += 1
+            raise SerialProtocolError("timeout waiting for ota_progress ack")
+        return super().ota_progress()
+
+
 class NoOtaStatusConductor(MockConductor):
     def ota_progress(self) -> dict:
         progress = super().ota_progress()
@@ -857,6 +869,30 @@ def test_ota_install_stops_on_polled_node_failure(tmp_path) -> None:
     assert install["complete"] is False
     assert install["error"] == "ota node failure"
     assert any(node["phase"] == "failed" for node in install["nodes"])
+
+
+def test_ota_install_continues_after_periodic_progress_timeout(tmp_path) -> None:
+    conductor = ProgressTimeoutConductor()
+    missing = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
+    missing.status = "alive"
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 40
+    stage = client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    ).json()
+
+    response = client.post("/api/operations/ota-install")
+
+    assert response.status_code == 200
+    assert conductor.progress_timeouts == 1
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is True
+    assert install["error"] is None
+    assert install["chunks_sent"] == stage["artifact"]["chunks"]
+    assert install["last_progress_error"] == "timeout waiting for ota_progress ack"
 
 
 def test_ota_install_retries_retryable_chunk_nack(tmp_path) -> None:

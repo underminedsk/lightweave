@@ -919,7 +919,13 @@ def create_app(
                     offset += len(chunk)
                     chunks_sent = int(app.state.ota_install.get("chunks_sent") or 0)
                     if chunks_sent == artifact.chunks or chunks_sent % OTA_PROGRESS_POLL_CHUNKS == 0:
-                        progress = await asyncio.to_thread(conductor.ota_progress)
+                        try:
+                            progress = await asyncio.to_thread(conductor.ota_progress)
+                        except SerialProtocolError as error:
+                            app.state.ota_install.update({
+                                "last_progress_error": str(error),
+                            })
+                            continue
                         nodes = apply_ota_progress(progress, artifact)
                         if any(node.get("phase") == "failed" for node in nodes):
                             error = "ota node failure"

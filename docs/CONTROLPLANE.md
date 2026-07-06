@@ -391,7 +391,10 @@ position", and table rows not currently registered show as "Not seen".
   exactly match the expected full/tail chunk length at the current offset, so a
   truncated serial command cannot advance the flash writer to a non-chunk
   boundary. The API also polls conductor `ota_progress` to recover after
-  retryable timeouts/NACKs, but rejects unsafe mid-chunk resume offsets.
+  retryable chunk timeouts/NACKs, but rejects unsafe mid-chunk resume offsets.
+  A timeout from a periodic progress poll is recorded as `last_progress_error`
+  and does not abort the stream; the next successful poll or post-reboot
+  verification is authoritative.
   Pyserial writes use `write_timeout=2.0` and do not call unbounded `flush()`
   after every line.
 - Hardware-verified 2026-07-06 on the 3-board bench: staged `firmware.bin`
@@ -425,6 +428,11 @@ position", and table rows not currently registered show as "Not seen".
   after all chunks had landed and the field had actually rebooted cleanly; the
   API now treats that exact shape as post-reboot verification instead of a hard
   failure, and still fails if all expected performers do not verify.
+- Follow-up restore 2026-07-06: the clean staged `a11fffec` image restored the
+  mixed field again after a periodic `ota_progress` serial timeout during the
+  stream. The API kept transferring, returned `ota install complete; rebooting`,
+  and post-reboot `/api/state` showed both performers on `a11fffec` with
+  `summary.firmware.consistent=true`.
 - Recovery flow: `/api/state.recovery` classifies missing placed lanterns, mixed
   firmware, and failed OTA nodes into one Operations card. A failed install from
   `/api/operations/ota-install` also drives that card so the operator sees the
