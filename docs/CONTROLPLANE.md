@@ -417,6 +417,14 @@ position", and table rows not currently registered show as "Not seen".
   467 s, and post-reboot state showed conductor + both performers on `0.3.0`
   build `a11fffec`, `dirty=false`, recovery `ready`. Final install status
   reported both performers `complete` at `offset=860944`, `crc32=723916971`.
+- Negative safety drill 2026-07-06: direct-flashed performer #2 to same-protocol
+  build `9821db52`. `/api/state` reported `summary.firmware.consistent=false`,
+  `attention=1`, `recovery.status=mixed_firmware`, and the mismatched MAC in
+  `recovery.mismatched`. Reinstalling the clean staged `a11fffec` image restored
+  both performers. That restore exposed a final serial `ota_end` ack timeout
+  after all chunks had landed and the field had actually rebooted cleanly; the
+  API now treats that exact shape as post-reboot verification instead of a hard
+  failure, and still fails if all expected performers do not verify.
 - Recovery flow: `/api/state.recovery` classifies missing placed lanterns, mixed
   firmware, and failed OTA nodes into one Operations card. A failed install from
   `/api/operations/ota-install` also drives that card so the operator sees the

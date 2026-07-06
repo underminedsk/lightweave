@@ -114,6 +114,13 @@ class PartialOtaStatusConductor(MockConductor):
         return ack
 
 
+class FinalAckTimeoutConductor(MockConductor):
+    def ota_end(self) -> dict:
+        ack = super().ota_end()
+        assert ack["ok"] is True
+        raise SerialProtocolError("timeout waiting for ota_end ack")
+
+
 class NoOtaStatusConductor(MockConductor):
     def ota_progress(self) -> dict:
         progress = super().ota_progress()
@@ -965,6 +972,31 @@ def test_ota_install_infers_nodes_from_post_reboot_state_when_status_missing(tmp
     assert install["complete"] is True
     assert {node["source"] for node in install["nodes"]} == {"post_reboot_state"}
     assert all(node["offset"] == stage["artifact"]["size"] for node in install["nodes"])
+
+
+def test_ota_install_treats_final_ack_timeout_as_verify_after_reboot(tmp_path) -> None:
+    conductor = FinalAckTimeoutConductor()
+    missing = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
+    missing.status = "alive"
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 40
+    stage = client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    ).json()
+
+    response = client.post("/api/operations/ota-install")
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "ota end ack timed out; verifying post-reboot state"
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is True
+    assert install["error"] is None
+    assert install["last_finalize_error"] == "timeout waiting for ota_end ack"
+    assert {node["source"] for node in install["nodes"]} == {"post_reboot_state"}
+    assert {node["offset"] for node in install["nodes"]} == {stage["artifact"]["size"]}
 
 
 def test_ota_install_fails_when_not_all_expected_nodes_verify(tmp_path) -> None:

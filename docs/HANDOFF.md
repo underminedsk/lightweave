@@ -28,7 +28,13 @@ showed conductor and both performers on `0.3.0` build `a11fffec`,
 terminal `complete` with `offset=860944` and `crc32=723916971`. Previous clean
 build drill: `ba705b46`, `860928` bytes / `6726` chunks / sha256
 `106cfda591acc64ece0c9c1272d4570e7b0b8e418520ac3faedc22e26f05dbee`, about
-400 s. Previous verified recovery artifact:
+400 s. Negative safety drill: direct-flashed performer #2 to same-protocol build
+`9821db52`; `/api/state` reported `Firmware mismatch` and
+`recovery.status=mixed_firmware`, and reinstalling the clean staged `a11fffec`
+image restored both performers. That restore exposed a final `ota_end` serial
+ack timeout after all chunks had landed and the field had actually rebooted
+cleanly; the API now handles that shape by forcing post-reboot verification
+instead of leaving the install failed. Previous verified recovery artifact:
 `860944` bytes / `6727` chunks / sha256
 `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`; the final
 live run intentionally recovered one same-protocol mismatched performer

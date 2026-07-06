@@ -843,6 +843,7 @@ def create_app(
             "chunks_total": artifact.chunks,
             "started_at": time.time(),
         }
+        ack: dict[str, Any] | None = None
         try:
             async with app.state.conductor_lock:
                 conductor = app.state.conductor
@@ -930,7 +931,20 @@ def create_app(
                                 "completed_at": time.time(),
                             })
                             raise HTTPException(status_code=400, detail=error)
-                ack = await asyncio.to_thread(conductor.ota_end)
+                try:
+                    ack = await asyncio.to_thread(conductor.ota_end)
+                except SerialProtocolError as error:
+                    if int(app.state.ota_install.get("bytes_sent") or 0) < artifact.size:
+                        raise
+                    app.state.ota_install.update({
+                        "last_finalize_error": str(error),
+                    })
+                    ack = {
+                        "ok": True,
+                        "message": "ota end ack timed out; verifying post-reboot state",
+                        "nodes": [],
+                        "post_reboot_verify": True,
+                    }
         except asyncio.CancelledError:
             app.state.ota_install.update({"running": False, "error": "ota install cancelled"})
             raise
@@ -939,10 +953,13 @@ def create_app(
         except SerialProtocolError as error:
             app.state.ota_install.update({"running": False, "error": str(error)})
             raise HTTPException(status_code=503, detail=str(error)) from error
+        assert ack is not None
         if not ack["ok"]:
             app.state.ota_install.update({"running": False, "error": ack["error"]})
             raise HTTPException(status_code=400, detail=ack["error"])
-        nodes = fresh_ota_nodes(ack.get("nodes") or app.state.ota_install.get("nodes") or [])
+        nodes = [] if ack.get("post_reboot_verify") else fresh_ota_nodes(
+            ack.get("nodes") or app.state.ota_install.get("nodes") or []
+        )
         failed_nodes = [node for node in nodes if node.get("phase") == "failed"]
         if failed_nodes:
             error = "ota node failure"
