@@ -306,7 +306,7 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
   UI).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
 
-### 7.1 OTA policy, transfer, and recovery **[done; failure dry-runs planned]**
+### 7.1 OTA policy, transfer, and recovery **[done; 3-board bench verified]**
 
 OTA is manual maintenance-mode only and field-wide only. The system must never
 offer selected-node firmware updates as a normal workflow. Mixed firmware can
@@ -338,7 +338,10 @@ Performer OTA status is freshness filtered; the API only reports install success
 after every expected placed performer reports complete or verifies from live
 post-reboot firmware consistency. Missing placed lanterns block install with a
 Recovery row, and post-reboot verification failures synthesize per-node failed
-OTA rows for expected performers that did not verify. Remaining deployment
+OTA rows for expected performers that did not verify. A final `ota_end` serial
+ACK timeout after all bytes land is treated as a post-reboot verification path,
+not an immediate install failure; periodic `ota_progress` poll timeouts are
+recorded and ignored while chunk transfer continues. Remaining deployment
 hardening: decide whether a 60-node deployment needs explicit performer ACK/retry
 beyond the current status reporting.
 
@@ -413,7 +416,7 @@ not required for the main installation behavior.
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
 | 3 — power management (radio duty-cycle, schedule deep-sleep, optional LDR fallback, INA228 energy monitor) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified + measured (85→~55 mA @ 12V); Stage B (CPU light-sleep between work, `napsched.h`) ✅ hardware-verified on bench 2026-07-03 (power re-measure owed); schedule-driven deep sleep ✅ code-complete + host-tested + UI/API built, hardware verification owed; photodiode dusk sensing is now optional/fallback; INA228 instrumentation (§4.2) ✅ firmware done + host-tested (`powermon.h`, `MSG_POWER`), awaiting the chip |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
-| 5 — OTA + enclosure | 🛠 OTA safety foundation done (build/version reporting + mixed detection); transfer/enclosure planned |
+| 5 — OTA + enclosure | 🛠 OTA transfer/recovery done and 3-board bench-verified; enclosure/RF still planned |
 
 ## 10. Resolved & open decisions
 
