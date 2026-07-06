@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from control.adapters import SerialProtocolError
 from control.app import create_app
-from control.mock_conductor import MockConductor
+from control.mock_conductor import Lantern, MockConductor
 from control.ota_store import OtaArtifactStore
 from control.pattern_store import PatternStore
 
@@ -100,6 +100,20 @@ class ProgressFailedOtaConductor(MockConductor):
         return super().ota_end()
 
 
+class PartialOtaStatusConductor(MockConductor):
+    def ota_progress(self) -> dict:
+        progress = super().ota_progress()
+        progress["nodes"] = progress.get("nodes", [])[:10]
+        return progress
+
+    def ota_end(self) -> dict:
+        ack = super().ota_end()
+        if ack.get("ok"):
+            ack = dict(ack)
+            ack["nodes"] = ack.get("nodes", [])[:10]
+        return ack
+
+
 class NoOtaStatusConductor(MockConductor):
     def ota_progress(self) -> dict:
         progress = super().ota_progress()
@@ -148,6 +162,22 @@ class LegacyMixedFirmwareOtaConductor(MockConductor):
             state["ota"]["ready_count"] = state["summary"]["firmware"]["matching"]
             state["ota"]["blocked"] = ["firmware mismatch"]
         return state
+
+
+def make_placed_conductor(count: int) -> MockConductor:
+    conductor = MockConductor()
+    conductor._lanterns = [
+        Lantern(
+            mac=f"02:00:00:00:{index // 256:02X}:{index % 256:02X}",
+            label=f"#{index + 1}",
+            status="alive",
+            last_seen_s=index % 17,
+            x=(index % 10) / 9,
+            y=(index // 10) / 5,
+        )
+        for index in range(count)
+    ]
+    return conductor
 
 
 def test_state_endpoint_returns_mock_state() -> None:
@@ -724,6 +754,54 @@ def test_ota_install_streams_staged_artifact_when_ready(tmp_path) -> None:
     ota = client.get("/api/state").json()["ota"]
     assert {node["phase"] for node in ota["nodes"]} == {"complete"}
     assert all(node["offset"] == stage["artifact"]["size"] for node in ota["nodes"])
+
+
+def test_ota_install_scales_to_60_expected_nodes(tmp_path) -> None:
+    conductor = make_placed_conductor(60)
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 40
+    stage = client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    ).json()
+
+    state = client.get("/api/state").json()
+    response = client.post("/api/operations/ota-install")
+
+    assert state["summary"]["total"] == 60
+    assert state["ota"]["ready"] is True
+    assert state["ota"]["ready_count"] == 60
+    assert response.status_code == 200
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is True
+    assert install["chunks_sent"] == stage["artifact"]["chunks"]
+    assert len(install["nodes"]) == 60
+    assert {node["phase"] for node in install["nodes"]} == {"complete"}
+    assert {node["offset"] for node in install["nodes"]} == {stage["artifact"]["size"]}
+
+
+def test_ota_install_60_nodes_falls_back_to_post_reboot_verification_when_status_is_partial(tmp_path) -> None:
+    conductor = PartialOtaStatusConductor()
+    conductor._lanterns = make_placed_conductor(60)._lanterns
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 40
+    stage = client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    ).json()
+
+    response = client.post("/api/operations/ota-install")
+
+    assert response.status_code == 200
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is True
+    assert len(install["nodes"]) == 60
+    assert {node["source"] for node in install["nodes"]} == {"post_reboot_state"}
+    assert {node["offset"] for node in install["nodes"]} == {stage["artifact"]["size"]}
 
 
 def test_ota_install_retries_transient_chunk_timeout(tmp_path) -> None:

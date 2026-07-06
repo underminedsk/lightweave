@@ -106,7 +106,9 @@ Priority order:
    transfer. Any performer that reports `failed` stops the install before
    `ota_end`, leaving a concrete Recovery row. Defer explicit per-node chunk
    ACK/retry until a larger bench/field test shows repeated ESP-NOW chunk loss
-   that the current 3x broadcast repetition cannot cover.
+   that the current 3x broadcast repetition cannot cover. Host API coverage now
+   includes 60 placed performers, including partial OTA status followed by
+   post-reboot verification of all 60 expected nodes.
 2. **Optional negative OTA-safety check:** if useful, intentionally flash one
    performer with a same-v6 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
