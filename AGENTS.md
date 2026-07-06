@@ -18,6 +18,13 @@ After those three you'll know what exists, why it's built that way, and what to 
 next. Build/flash/test commands and the read-serial-without-resetting trick are in
 `docs/HANDOFF.md` (Quick reference) and `docs/FLASHING.md`.
 
+## Pattern authoring workflow
+
+When asked to create, compare, review, save, or broadcast show patterns through the
+control plane, read **[`skills/CREATING_PATTERNS.md`](skills/CREATING_PATTERNS.md)**.
+It documents the API-only loop for draft review, PNG/JSON previews, saved pattern
+CRUD, automated scoring, and the guarded live broadcast step.
+
 ## All code should be unit tested
 
 Write tests for new logic — don't ship untested code. The project's pattern: keep

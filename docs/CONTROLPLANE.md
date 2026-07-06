@@ -449,6 +449,8 @@ no Pi, no new parts.
 
 ## Pattern authoring — an agent-assisted workflow, not a UI feature
 
+Agent workflow guide: [`skills/CREATING_PATTERNS.md`](../skills/CREATING_PATTERNS.md).
+
 Pattern authoring should optimize for this operator goal:
 
 > Design patterns in the Pi/brain, distribute them over the control plane, and keep
