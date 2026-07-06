@@ -206,6 +206,8 @@ power measurement):
   Re-adoption hardware check 2026-07-06: performer #2 was erased/reflashed after
   its table row existed; it registered as `#?` but re-adopted `(0.6115, 0.4646)`
   from the conductor's single-row table reply within the normal roster window.
+  Its friendly id was then restored with `id 2` over performer serial, and the
+  control plane returned to `#1` / `#2` with `attention=0`.
 - **GPIO2 heartbeat** blinks on the synced beat (zero-wiring sync check).
 - **Serial commands:** `info`, `roster` / `table` / `assign` / `forget`
   (conductor), `role conductor|performer`, `id <n>`, `pos <x> <y>`,
