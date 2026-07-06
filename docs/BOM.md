@@ -161,11 +161,15 @@ INA228, + ~$125 Pi kit.
 ## Open items before ordering
 
 1. **Enclosure / diffuser** approach + per-unit cost (art-side).
-2. **Dust / weatherproofing** for BRC — sealed enclosure, gasketed battery door,
+2. **RF with buried electronics** — read `RF_ENCLOSURE.md` before production MCU
+   purchase. Buried control boxes likely need external-antenna ESP32-UE boards,
+   above-grade 2.4 GHz antennas, and 3 ft low-loss coax rather than the current
+   DFR0654 onboard-antenna FireBeetles.
+3. **Dust / weatherproofing** for BRC — sealed enclosure, gasketed battery door,
    conformal-coat on boards. Not yet costed; belongs here once the enclosure is known.
-3. **Level shifter** — confirm whether to populate it on every node (reliability) or
+4. **Level shifter** — confirm whether to populate it on every node (reliability) or
    omit (the bench rig ran direct 3.3 V data through the 470 Ω resistor and worked).
-4. **Carrier PCB** — design + fab the node board so 6–13 consolidate onto it; this
+5. **Carrier PCB** — design + fab the node board so 6–13 consolidate onto it; this
    is what makes a 60-unit build assemblable.
 
 ## Price caveat

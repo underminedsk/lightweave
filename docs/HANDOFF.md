@@ -137,6 +137,11 @@ Priority order:
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
    51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
    @ bri 48.
+5. **Hardware topic to revisit:** buried battery/control boxes will likely make
+   onboard 2.4 GHz antennas unreliable. Read `docs/RF_ENCLOSURE.md` before buying
+   more MCUs or committing to enclosure geometry. The pilot FireBeetles already
+   ordered are DFR0654-F onboard-antenna boards; buried-box deployment likely
+   needs external-antenna ESP32-UE boards plus above-grade antennas.
 
 ---
 
