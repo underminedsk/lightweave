@@ -15,17 +15,20 @@ next steps only.
 Operations can enter a maintenance window, stage a `.bin`, stream it over USB
 serial to the conductor, fan it out over ESP-NOW to performers, show chunk
 progress, retry dropped serial chunk ACKs, and reboot the field onto the staged
-image. Latest verified artifact: clean build `ba705b46`, `860928` bytes /
-`6726` chunks / sha256
-`106cfda591acc64ece0c9c1272d4570e7b0b8e418520ac3faedc22e26f05dbee`; the
+image. Latest verified artifact: clean build `a11fffec`, `860944` bytes /
+`6727` chunks / sha256
+`c621ea7eeb366bdad0204a4c3a787b7bf453f82bd457553a60d25e55fe182da2`; the
 2026-07-06 live API drill staged that image, entered maintenance with `2 / 2`
-ready, streamed all chunks in about 400 s, returned
-`ota install complete; rebooting`, and post-reboot `/api/state` showed conductor
-and both performers on `0.3.0` build `ba705b46`, `dirty=false`,
-`summary.alive=2`, `summary.total=2`, `attention=0`, and
-`summary.firmware.consistent=true`. `/api/operations/ota-install` now reports
-elapsed time, transfer rate, and ETA in addition to chunk counts so the long
-serial transfer does not look stalled. Previous verified recovery artifact:
+ready, recovered serial chunk timeouts via retry, streamed all chunks in about
+467 s, returned `ota install complete; rebooting`, and post-reboot `/api/state`
+showed conductor and both performers on `0.3.0` build `a11fffec`,
+`dirty=false`, `summary.alive=2`, `summary.total=2`, `attention=0`, and
+`summary.firmware.consistent=true`. `/api/operations/ota-install` reported
+`chunks_sent=6727`, `bytes_per_s≈1843`, `eta_s=0`, and both performers at
+terminal `complete` with `offset=860944` and `crc32=723916971`. Previous clean
+build drill: `ba705b46`, `860928` bytes / `6726` chunks / sha256
+`106cfda591acc64ece0c9c1272d4570e7b0b8e418520ac3faedc22e26f05dbee`, about
+400 s. Previous verified recovery artifact:
 `860944` bytes / `6727` chunks / sha256
 `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`; the final
 live run intentionally recovered one same-protocol mismatched performer

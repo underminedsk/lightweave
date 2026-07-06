@@ -410,6 +410,13 @@ position", and table rows not currently registered show as "Not seen".
   performers reported terminal `complete` status at `offset=860928` and
   `crc32=84077347`, and post-reboot state showed conductor + both performers on
   `0.3.0` build `ba705b46`, `dirty=false`, with recovery `ready`.
+- Status-polling firmware drill 2026-07-06: staged
+  `firmware-devkitc-a11fffe.bin` (`860944` bytes, `6727` chunks, sha256
+  `c621ea7eeb366bdad0204a4c3a787b7bf453f82bd457553a60d25e55fe182da2`).
+  The API recovered serial chunk timeouts during the stream, completed in about
+  467 s, and post-reboot state showed conductor + both performers on `0.3.0`
+  build `a11fffec`, `dirty=false`, recovery `ready`. Final install status
+  reported both performers `complete` at `offset=860944`, `crc32=723916971`.
 - Recovery flow: `/api/state.recovery` classifies missing placed lanterns, mixed
   firmware, and failed OTA nodes into one Operations card. A failed install from
   `/api/operations/ota-install` also drives that card so the operator sees the
