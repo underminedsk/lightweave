@@ -7,7 +7,7 @@ next steps only.
 **Read order:** this doc → `ARCHITECTURE.md` → `README.md` →
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
-**Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
+**Repo:** https://github.com/underminedsk/lightweave · `pio test -e native`
 (**101 pass**) is green; all four device envs (`devkitc` / `firebeetle` /
 `field-devkitc` / `field-firebeetle`) build clean. Latest on `main`
 (2026-07-06):

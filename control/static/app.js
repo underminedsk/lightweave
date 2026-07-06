@@ -99,7 +99,7 @@ function firmwareLabel(firmware) {
 
 function commitUrl(buildLabel) {
   if (!/^[0-9a-f]{7,40}$/i.test(buildLabel || "")) return null;
-  return `https://github.com/underminedsk/baskets-lights/commit/${buildLabel}`;
+  return `https://github.com/underminedsk/lightweave/commit/${buildLabel}`;
 }
 
 function firmwareHtml(firmware) {
