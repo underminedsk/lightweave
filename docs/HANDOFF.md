@@ -8,7 +8,7 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/lightweave · `pio test -e native`
-(**101 pass**) is green; all four device envs (`devkitc` / `firebeetle` /
+(**102 pass**) is green; all four device envs (`devkitc` / `firebeetle` /
 `field-devkitc` / `field-firebeetle`) build clean. Latest on `main`
 (2026-07-06):
 **manual field-wide OTA is end-to-end hardware-verified and retry-hardened on the 3-board bench** —
@@ -57,6 +57,13 @@ explicit chunk-length mismatch responses, wait for maintenance beacons to settle
 before `ota_begin`, and require all expected placed performers to report complete
 or verify from post-reboot field firmware consistency. Performers also report
 begin/writing/complete OTA status so future failures expose their offset/error.
+Previous latest: **12 V power monitoring is code-complete in firmware/API/UI** —
+the conductor retains the latest `MSG_POWER` sample per metered MAC and exposes it
+in `/api/state`; Operations estimates field draw and per-node SOC from sparse
+INA228 reference nodes, defaulting to the 153.6 Wh TalentCell pack. SOC is based
+on Wh used since a full-charge anchor, not a voltage curve: voltage at or above
+the configured full threshold (default 14.6 V) can auto-anchor a metered node to
+100%, and each metered node has a manual **Sync to 100%** button after charging.
 Previous latest: **runtime power schedule is
 code-complete** — Operations can set light-sleep/radio check interval,
 deep-sleep check interval, LED-on window, and force-awake override. The conductor
@@ -300,8 +307,8 @@ color at a fixed hue, no time term, so the field holds one calm color with a *fl
 a genuine warm/gentle show pattern. Host test covers the warm-hue color math (39
 tests now).
 
-**INA228 power telemetry — CODE-COMPLETE 2026-07-04, host-tested (65 native
-tests green), both device envs build — NOT hardware-verified (chip arrives with
+**INA228 power telemetry — CODE-COMPLETE 2026-07-04, host-tested,
+both device envs build — NOT hardware-verified (chip arrives with
 Monday's order).** ARCHITECTURE §4.2. Reviewed same day (8-angle /code-review,
 10 verified candidates → 4 fixes applied: avg-W plausibility bound, time-gate
 before the spinlock in maybePowerReport, PowerSample embedded in PowerMsg,
@@ -338,6 +345,11 @@ conductor self-log on the tested scheduler). What landed:
   USB and read with the **no-reset pyserial trick** (FLASHING.md) *or* just
   read the conductor's scrollback; a DTR reset no longer zeroes the chip, only
   the elapsed anchor.
+- Control plane (2026-07-06): `/api/state` includes `power_monitor` summary from
+  sparse reference-node samples. Operators can configure battery capacity
+  (default 153.6 Wh) and the full-voltage threshold (default 14.6 V), see
+  estimated field draw / node SOC in Operations, and click **Sync to 100%** per
+  metered node after charging to anchor that node's current Wh as full.
 
 **INA228 bench checklist (Monday, chip in hand):** (1) wire VCC→3V3, GND→GND,
 SDA→21, SCL→22, shunt in series battery+ → buck input; (2) boot log shows
@@ -490,15 +502,18 @@ the **12 V battery rig, USB disconnected** for the true MCU floor before sizing 
 sleep work. (FireBeetle, the M4 candidate, has a lower quiescent draw and shrinks
 this floor further.)
 
-**INA228 precision power monitor: firmware DONE (2026-07-04)** (see the
+**INA228 precision power monitor: firmware/API/UI DONE (2026-07-06)** (see the
 "INA228 power telemetry" section above, `PROJECT_BRIEF.md` readout-path
 section, and `ARCHITECTURE.md` §4.2) — an I2C breakout with hardware
 energy/charge accumulation, wired in series between battery+ and the buck
 input on 1–2 reference nodes. It replaces one-off ET900/DMM snapshots with a
 true continuous Wh integral per night, and instrumented performers report
 accumulated Wh to the conductor over ESP-NOW (`MSG_POWER`) so every overnight
-sync test doubles as a fleet-wide power audit. Awaiting the physical chip
-(Monday's order) — the bench checklist is in the section above.
+sync test doubles as a fleet-wide power audit. The Operations UI rolls those
+sparse samples into an estimated field draw and SOC using the configured battery
+capacity, with auto/manual full-charge anchoring. Awaiting the physical chip
+(Monday's order) for hardware verification — the bench checklist is in the
+section above.
 
 ### Lever 1 (do first): radio off between beacons — performer-only
 

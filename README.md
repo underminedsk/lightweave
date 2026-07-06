@@ -27,7 +27,7 @@ drifts, and calm glows without pushing per-lantern frames or depending on a rout
   patterns, inspect field health, manage sleep settings, and run field-wide OTA.
 - **Battery-conscious runtime.** The firmware supports radio duty cycling,
   light-sleep, daytime/deep-sleep scheduling, hard brightness caps, and optional
-  INA228 power telemetry on reference nodes.
+  INA228 power telemetry on reference nodes with UI-side battery SOC estimates.
 - **Host-tested logic.** The subtle parts live in dependency-free headers with
   native unit tests, so sync math, pattern math, roster/table logic, power policy,
   and OTA helpers can be tested without hardware.
@@ -146,7 +146,9 @@ batch notes.
 - Pattern controls with conductor acknowledgements before writes are treated as
   saved.
 - Operations view for firmware consistency, recovery state, OTA staging/install,
-  and runtime power policy.
+  runtime power policy, and sparse power monitoring. Battery capacity defaults
+  to the 153.6 Wh TalentCell pack and can be changed in the UI; metered nodes can
+  be manually synced to 100% after charging.
 
 ## Quick start
 

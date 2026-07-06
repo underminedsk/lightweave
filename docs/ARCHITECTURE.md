@@ -93,7 +93,7 @@ logic. Open considerations: smooth **transitions/crossfades** between patterns
 (would need a blend factor in the pattern), and the schedule's **time base**
 (uptime vs. dusk-relative once the LDR lands in Milestone 3, vs. a set wall-clock).
 
-### 4.2 Power instrumentation — INA228 **[done — firmware; awaiting the chip]**
+### 4.2 Power instrumentation — INA228 **[done — firmware/UI; awaiting chip verification]**
 
 Firmware landed 2026-07-04, built ahead of the pilot-batch chips (arriving with
 the Monday order) so their arrival is pure hardware verification: I2C probe at
@@ -102,7 +102,8 @@ boot (one image everywhere — a node without the chip skips telemetry silently,
 accumulated Wh), pure logic in the host-tested `include/powermon.h`
 (conversions, plausibility gate, radio-aware report scheduler), a `MSG_POWER`
 unicast on the existing REGISTER path (no PROTO_VERSION bump — new type only),
-ungated conductor-side logging, and `power` / `power reset` serial commands.
+ungated conductor-side logging, conductor retention of the latest per-MAC sample
+for machine JSON, and `power` / `power reset` serial commands.
 
 A precision power monitor (**INA228** breakout, 15 mΩ on-board shunt) wired in series
 between battery+ and the buck input, on **1–2 instrumented reference nodes only** —
@@ -122,16 +123,22 @@ elapsed time.
    morning and read the accumulator (plugging in USB adds power alongside the
    battery rather than replacing it, so this doesn't reset the reading — but never
    disconnect the battery first, since any power gap zeroes the registers).
-3. **Fleet-scale (build before multi-node tests):** each performer returns its
+3. **Fleet-scale:** each performer returns its
    accumulated Wh to the conductor as a small ESP-NOW unicast, piggybacking on the
-   existing bidirectional-ESP-NOW path used by `MSG_REGISTER` (§7) — the conductor
-   logs every node's overnight draw automatically, turning any sync test into a
-   full-fleet power audit with no need to visit each lantern.
+   existing bidirectional-ESP-NOW path used by `MSG_REGISTER` (§7). The conductor
+   logs every report and exposes the latest sample in `/api/state`; the control
+   plane rolls sparse reference nodes into an estimated field draw and per-node
+   battery SOC.
 4. **Future field diagnostic (optional):** expose the current Wh reading over BLE
    for a phone-app spot-check, independent of the conductor link.
 
-This is a validation tool for sizing Milestone 3's power levers (§8.1, Lever 2
-below) against real overnight draw — not a field-wide telemetry system.
+SOC is energy-counter based, not voltage-curve based: the TalentCell pack default
+is **153.6 Wh**, and the control plane computes `100% - Wh used since full /
+capacity`. Voltage is used only as a full-charge anchor: a sample at or above the
+configured full-voltage threshold (default **14.6 V**) resets that node's SOC
+anchor to 100%. Operators can also click **Sync to 100%** per metered node after
+charging. This is a representative-sample tool for sizing Milestone 3's power
+levers (§8.1, Lever 2 below), not a requirement to install INA228 on every node.
 
 ## 5. Layout table — conductor-authoritative `MAC → (x,y)` **[done]**
 

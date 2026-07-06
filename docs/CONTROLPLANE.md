@@ -119,6 +119,15 @@ Snapshot shape:
       "updated_at": 1720123456.0
     }
   ],
+  "power_monitor": {
+    "battery_capacity_wh": 153.6,
+    "full_voltage": 14.6,
+    "sample_count": 2,
+    "usable_sample_count": 2,
+    "estimated_node_soc_percent": 99.7,
+    "estimated_field_avg_w": 6.6,
+    "samples": []
+  },
   "events": [{"ts": 1720123456.0, "message": "mock conductor started"}]
 }
 ```
@@ -177,6 +186,11 @@ The map renders only positioned lanterns.
   `{"pattern":"Sweep","brightness":64,"params":{"period":8000,"spatial":300}}`
 - `POST /api/show/blackout`
 - `POST /api/operations/power-policy` with the runtime sleep/check policy.
+- `POST /api/operations/power-monitor` with
+  `{"battery_capacity_wh":153.6,"full_voltage":14.6}` -> update the SOC
+  estimate capacity and full-charge voltage anchor.
+- `POST /api/lanterns/{mac}/power-sync-full` -> manually anchor that metered
+  node's current Wh reading as 100% SOC.
 - `POST /api/operations/ota-mode` with `{"enabled":true}` or
   `{"enabled":false}`.
 - `GET /api/operations/ota-artifact` -> current staged firmware metadata.
@@ -353,6 +367,10 @@ position", and table rows not currently registered show as "Not seen".
 - Power schedule panel: authoritative place for LED on/off hours and
   force-awake debugging. Schedule-driven sleep is the primary field behavior;
   photodiode dusk sensing is optional/fallback, not required for the main path.
+- Power monitoring panel: sparse INA228 reference nodes report Wh/avg-W/voltage
+  through `MSG_POWER`; Operations estimates whole-field draw and per-node SOC
+  from the configured battery capacity. Voltage is used only to detect/full-anchor
+  a charged pack, and each metered node has a manual **Sync to 100%** action.
 - Raw serial console passthrough to the conductor CLI (the playa will
   produce a situation the UI didn't anticipate).
 - Event log: registrations, table edits, errors — timestamped, server-side.

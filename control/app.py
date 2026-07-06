@@ -26,6 +26,9 @@ STATIC_DIR = Path(__file__).with_name("static")
 OTA_CHUNK_RETRIES = 3
 OTA_STATUS_FRESH_S = 60
 OTA_PROGRESS_POLL_CHUNKS = 64
+POWER_SAMPLE_STALE_S = 5 * 60
+DEFAULT_BATTERY_CAPACITY_WH = 153.6
+DEFAULT_FULL_VOLTAGE = 14.6
 OTA_CHUNK_RETRYABLE_ERRORS = {
     "bad ota chunk data",
     "ota chunk length mismatch",
@@ -66,6 +69,11 @@ class PowerPolicyUpdate(BaseModel):
     force_awake: bool
     current_min: int = Field(ge=0, le=1439)
     current_epoch_s: int = Field(ge=0, le=4_294_967_295)
+
+
+class PowerMonitorUpdate(BaseModel):
+    battery_capacity_wh: float = Field(gt=0, le=10_000)
+    full_voltage: float = Field(gt=0, le=100)
 
 
 class OtaModeUpdate(BaseModel):
@@ -121,6 +129,11 @@ def create_app(
     app.state.ota_store = ota_store or OtaArtifactStore()
     app.state.pattern_store = pattern_store or PatternStore()
     app.state.ota_install = {"running": False, "complete": False, "error": None}
+    app.state.power_monitor_config = {
+        "battery_capacity_wh": float(os.getenv("CONTROL_BATTERY_CAPACITY_WH", DEFAULT_BATTERY_CAPACITY_WH)),
+        "full_voltage": float(os.getenv("CONTROL_BATTERY_FULL_VOLTAGE", DEFAULT_FULL_VOLTAGE)),
+    }
+    app.state.power_full_anchors = {}
     app.state.ota_mode_started_at = None
     app.state.conductor_lock = asyncio.Lock()
     app.state.ws_clients: set[WebSocket] = set()
@@ -222,7 +235,87 @@ def create_app(
             "failed_ota": failed_ota,
         }
 
+    def power_monitor_summary(state: dict[str, Any]) -> dict[str, Any]:
+        config = dict(app.state.power_monitor_config)
+        capacity_wh = float(config.get("battery_capacity_wh") or DEFAULT_BATTERY_CAPACITY_WH)
+        full_voltage = float(config.get("full_voltage") or DEFAULT_FULL_VOLTAGE)
+        lanterns = state.get("lanterns") or []
+        placed_count = sum(1 for item in lanterns if item.get("position") == "Set")
+        samples = []
+        stale_count = 0
+        implausible_count = 0
+        usable_wh = []
+        usable_w = []
+        now = time.time()
+        anchors: dict[str, dict[str, Any]] = app.state.power_full_anchors
+        for lantern in lanterns:
+            power = lantern.get("power") or {}
+            wh = power.get("wh")
+            avg_w = power.get("avg_w")
+            if not isinstance(wh, (int, float)) or not isinstance(avg_w, (int, float)):
+                continue
+            mac = str(lantern.get("mac") or "")
+            bus_v = power.get("bus_v")
+            plausible = power.get("plausible")
+            last_report_s = power.get("last_report_s")
+            stale = isinstance(last_report_s, (int, float)) and last_report_s > POWER_SAMPLE_STALE_S
+            if stale:
+                stale_count += 1
+            if plausible is False:
+                implausible_count += 1
+            full_detected = isinstance(bus_v, (int, float)) and bus_v >= full_voltage
+            anchor = anchors.get(mac)
+            if full_detected:
+                anchor = {"wh": float(wh), "ts": now, "bus_v": float(bus_v)}
+                anchors[mac] = anchor
+            anchor_wh = float(anchor["wh"]) if anchor and isinstance(anchor.get("wh"), (int, float)) else 0.0
+            used_since_full_wh = max(0.0, float(wh) - anchor_wh)
+            soc_percent = max(0.0, min(100.0, 100.0 * (1.0 - used_since_full_wh / capacity_wh)))
+            sample = {
+                "mac": mac,
+                "label": lantern.get("label"),
+                "wh": float(wh),
+                "avg_w": float(avg_w),
+                "used_since_full_wh": used_since_full_wh,
+                "soc_percent": soc_percent,
+                "bus_v": bus_v,
+                "current_ma": power.get("current_ma"),
+                "last_report_s": last_report_s,
+                "last_report_label": power.get("last_report_label"),
+                "stale": stale,
+                "plausible": plausible,
+                "full_detected": full_detected,
+                "full_anchor": anchor,
+            }
+            samples.append(sample)
+            if not stale and plausible is not False:
+                usable_wh.append(used_since_full_wh)
+                usable_w.append(float(avg_w))
+        avg_node_wh = sum(usable_wh) / len(usable_wh) if usable_wh else None
+        avg_node_w = sum(usable_w) / len(usable_w) if usable_w else None
+        estimated_soc = (
+            max(0.0, min(100.0, 100.0 * (1.0 - avg_node_wh / capacity_wh)))
+            if avg_node_wh is not None else None
+        )
+        return {
+            "battery_capacity_wh": capacity_wh,
+            "full_voltage": full_voltage,
+            "full_anchor_policy": "SOC resets to 100% when a sample reports pack voltage at or above the full-voltage threshold.",
+            "placed_count": placed_count,
+            "sample_count": len(samples),
+            "usable_sample_count": len(usable_w),
+            "stale_count": stale_count,
+            "implausible_count": implausible_count,
+            "avg_node_w": avg_node_w,
+            "avg_node_wh_used": avg_node_wh,
+            "estimated_field_avg_w": avg_node_w * placed_count if avg_node_w is not None else None,
+            "estimated_field_wh_used": avg_node_wh * placed_count if avg_node_wh is not None else None,
+            "estimated_node_soc_percent": estimated_soc,
+            "samples": samples,
+        }
+
     def enrich_state(state: dict[str, Any]) -> dict[str, Any]:
+        state["power_monitor"] = power_monitor_summary(state)
         state["recovery"] = recovery_summary(state)
         return state
 
@@ -777,6 +870,30 @@ def create_app(
             raise HTTPException(status_code=400, detail=ack["error"])
         await publish_state("power-policy")
         return ack
+
+    @app.post("/api/operations/power-monitor")
+    async def update_power_monitor(request: PowerMonitorUpdate) -> dict[str, Any]:
+        app.state.power_monitor_config = request.model_dump()
+        await publish_state("power-monitor")
+        return {"ok": True, "message": "power monitor settings changed", "power_monitor": app.state.power_monitor_config}
+
+    @app.post("/api/lanterns/{mac}/power-sync-full")
+    async def sync_lantern_power_full(mac: str) -> dict[str, Any]:
+        try:
+            state = await conductor_call("snapshot")
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        lantern = next((item for item in state.get("lanterns") or [] if item.get("mac") == mac), None)
+        if not lantern:
+            raise HTTPException(status_code=404, detail="unknown lantern")
+        power = lantern.get("power") or {}
+        wh = power.get("wh")
+        if not isinstance(wh, (int, float)):
+            raise HTTPException(status_code=400, detail="lantern has no power reading")
+        anchor = {"wh": float(wh), "ts": time.time(), "manual": True, "bus_v": power.get("bus_v")}
+        app.state.power_full_anchors[mac] = anchor
+        await publish_state("power-sync-full")
+        return {"ok": True, "message": f"{lantern.get('label') or mac} synced to 100%", "anchor": anchor}
 
     @app.post("/api/operations/ota-mode")
     async def update_ota_mode(request: OtaModeUpdate) -> dict[str, Any]:

@@ -36,6 +36,7 @@
 #include "macaddr.h"
 #include "napsched.h"
 #include "patterns.h"
+#include "power_table.h"
 #include "powermon.h"
 #include "powersave.h"
 #include "roster.h"
@@ -157,6 +158,7 @@ static PowerMsg     g_power_q[POWER_Q_MAX];
 static uint8_t      g_power_q_n = 0;
 static uint32_t     g_power_q_dropped = 0;
 static portMUX_TYPE g_power_mux = portMUX_INITIALIZER_UNLOCKED;
+static PowerTable   g_power_table;
 
 // Conductor's authoritative layout table (table.h logic, host-tested). Declared
 // here so the NVS load/save below can reach it; edited only over serial on the
@@ -720,6 +722,7 @@ static void drainPowerReports() {
   for (uint8_t i = 0; i < n; i++) {
     PowerSample s = q[i].s;  // copy out of the packed msg (no packed-ref binding)
     printPowerSample(q[i].mac, s);
+    powerTableUpsert(g_power_table, q[i].mac, s, now_us());
   }
   if (dropped)
     Serial.printf("[power] %lu report(s) dropped (queue full)\n",
@@ -1316,7 +1319,8 @@ static void handleOtaProgress(const SerialJsonCommand& cmd) {
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
                              const char* status, int64_t last_seen_s, float x,
                              float y, bool has_position, const char* attention,
-                             const FirmwareVersion* firmware) {
+                             const FirmwareVersion* firmware,
+                             const PowerEntry* power, int64_t t) {
   char mac[18];
   Serial.printf("{\"mac\":\"%s\",\"label\":\"%s\",\"status\":\"%s\",",
                 macStr(mac_bytes, mac), label, status);
@@ -1341,9 +1345,27 @@ static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
   } else {
     Serial.print("\"firmware\":null,");
   }
-  Serial.printf("\"power\":{\"wh\":null,\"avg_w\":null,"
-                "\"last_report_label\":null}}",
-                attention);
+  if (power) {
+    int64_t power_age_s = power->last_us > 0 ? (t - power->last_us) / 1000000 : -1;
+    const PowerSample& s = power->sample;
+    Serial.printf("\"power\":{\"wh\":%.3f,\"avg_w\":%.3f,\"mah\":%.1f,"
+                  "\"bus_v\":%.2f,\"current_ma\":%.1f,\"elapsed_s\":%lu,"
+                  "\"plausible\":%s,",
+                  powerWh(s.energy_j), powerAvgW(s.energy_j, s.elapsed_s),
+                  powerMah(s.charge_c), s.bus_v, s.current_ma,
+                  (unsigned long)s.elapsed_s, powerPlausible(s) ? "true" : "false");
+    if (power_age_s >= 0) {
+      Serial.printf("\"last_report_s\":%lld,\"last_report_label\":\"%llds ago\"}}",
+                    (long long)power_age_s, (long long)power_age_s);
+    } else {
+      Serial.print("\"last_report_s\":999999,\"last_report_label\":\"not seen\"}}");
+    }
+  } else {
+    Serial.print("\"power\":{\"wh\":null,\"avg_w\":null,"
+                 "\"mah\":null,\"bus_v\":null,\"current_ma\":null,"
+                 "\"elapsed_s\":null,\"plausible\":null,"
+                 "\"last_report_s\":null,\"last_report_label\":null}}");
+  }
 }
 
 static void printMachineState(uint32_t id) {
@@ -1432,8 +1454,10 @@ static void printMachineState(uint32_t id) {
       fw_ptr = &fw;
       if (!firmwareSame(conductor_fw, fw)) attention_text = "Firmware mismatch";
     }
+    int p = powerTableFind(g_power_table, row.mac);
     printLanternJson(row.mac, label, r >= 0 ? "alive" : "missing", age_s, row.x,
-                     row.y, true, attention_text, fw_ptr);
+                     row.y, true, attention_text, fw_ptr,
+                     p >= 0 ? &g_power_table.entries[p] : nullptr, t);
   }
   for (uint8_t i = 0; i < roster.count; i++) {
     const RosterEntry& row = roster.entries[i];
@@ -1447,8 +1471,10 @@ static void printMachineState(uint32_t id) {
     FirmwareVersion fw = rosterEntryFirmware(row);
     const char* attention_text = firmwareSame(conductor_fw, fw) ? "Needs position"
                                                                 : "Firmware mismatch";
+    int p = powerTableFind(g_power_table, row.mac);
     printLanternJson(row.mac, label, "alive", age_s, 0.0f, 0.0f, false,
-                     attention_text, &fw);
+                     attention_text, &fw,
+                     p >= 0 ? &g_power_table.entries[p] : nullptr, t);
   }
   Serial.print("],\"events\":[]}}\n");
 }
@@ -1762,6 +1788,7 @@ void setup() {
   patternConfigLoad();
   esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
   rosterInit(g_roster);
+  powerTableInit(g_power_table);
   otaStatusInit(g_ota_status);
   tableLoad();
   if (!identityProvisioned(g_id))

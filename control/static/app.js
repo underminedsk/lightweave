@@ -159,6 +159,7 @@ function render() {
   renderDetail();
   renderFirmware();
   renderRecovery();
+  renderPowerMonitor();
   renderOta();
   renderPowerPolicy();
   renderEvents();
@@ -464,6 +465,62 @@ function renderRecovery() {
     <span class="mono">${escapeHtml(item.mac || "")}</span>
     <span>${escapeHtml(item.reason || "")}</span>
   </div>`).join("");
+}
+
+function renderPowerMonitor() {
+  const monitor = state.power_monitor || {};
+  const samples = Array.isArray(monitor.samples) ? monitor.samples : [];
+  const usable = Number(monitor.usable_sample_count || 0);
+  const sampleCount = Number(monitor.sample_count || 0);
+  const soc = monitor.estimated_node_soc_percent;
+  const fieldDraw = monitor.estimated_field_avg_w;
+  const stale = Number(monitor.stale_count || 0);
+  const bad = Number(monitor.implausible_count || 0);
+  $("#power-monitor-status").textContent = sampleCount
+    ? `${usable} / ${sampleCount} samples`
+    : "no samples";
+  $("#power-monitor-status").className = `chip ${usable ? "sync" : ""}`;
+  $("#power-monitor-soc").textContent = soc === null || soc === undefined
+    ? "--"
+    : `${Number(soc).toFixed(1)}%`;
+  $("#power-monitor-soc").className = `ops-value ${soc === null || soc === undefined ? "" : soc < 25 ? "bad" : soc < 50 ? "warn" : "ok"}`;
+  $("#power-monitor-draw").textContent = fieldDraw === null || fieldDraw === undefined
+    ? "--"
+    : `${Number(fieldDraw).toFixed(1)} W`;
+  $("#power-monitor-draw").className = `ops-value ${fieldDraw === null || fieldDraw === undefined ? "" : "sync"}`;
+  $("#battery-capacity").value = monitor.battery_capacity_wh ?? 153.6;
+  $("#battery-full-voltage").value = monitor.full_voltage ?? 14.6;
+
+  const sampleBox = $("#power-samples");
+  if (!samples.length) {
+    sampleBox.innerHTML = `<div class="empty-state">No instrumented node has reported power yet.</div>`;
+    return;
+  }
+  sampleBox.innerHTML = samples.map((sample) => {
+    const classes = [sample.stale ? "warn" : "", sample.plausible === false ? "bad" : ""].filter(Boolean).join(" ");
+    const socLabel = sample.soc_percent === null || sample.soc_percent === undefined ? "--" : `${Number(sample.soc_percent).toFixed(1)}%`;
+    const voltage = sample.bus_v === null || sample.bus_v === undefined ? "--" : `${Number(sample.bus_v).toFixed(2)} V`;
+    const detail = `${fmt(sample.used_since_full_wh)} Wh used · ${fmt(sample.avg_w)} W avg · ${voltage}`;
+    return `<div class="power-sample-row ${classes}">
+      <span><strong>${escapeHtml(sample.label || sample.mac || "node")}</strong><small class="mono">${escapeHtml(sample.mac || "")}</small></span>
+      <span>${escapeHtml(socLabel)}</span>
+      <span>${escapeHtml(detail)}</span>
+      <span>${escapeHtml(sample.last_report_label || "no report age")}</span>
+      <button type="button" data-power-sync="${escapeHtml(sample.mac || "")}">Sync to 100%</button>
+    </div>`;
+  }).join("");
+  if (stale || bad) {
+    sampleBox.insertAdjacentHTML("afterbegin", `<div class="power-warning">${stale ? `${stale} stale ` : ""}${bad ? `${bad} implausible ` : ""}sample${stale + bad === 1 ? "" : "s"} excluded from estimates.</div>`);
+  }
+  $$("[data-power-sync]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const mac = button.dataset.powerSync;
+      if (!mac || !confirm("Sync this meter to 100% at its current reading?")) return;
+      const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/power-sync-full`, { method: "POST" });
+      toast(ack.message);
+      await refresh();
+    });
+  });
 }
 
 function effectiveRecovery() {
@@ -1119,6 +1176,18 @@ async function runAction(action) {
       localStorage.setItem(TIMEZONE_STORAGE_KEY, selectedTimezone());
       powerBaseline = powerSnapshotFromForm();
       updateSleepScheduleDirtyState();
+      toast(ack.message);
+      await refresh();
+      return;
+    }
+    if (action === "save-power-monitor") {
+      const ack = await api("/api/operations/power-monitor", {
+        method: "POST",
+        body: JSON.stringify({
+          battery_capacity_wh: Number($("#battery-capacity").value || 153.6),
+          full_voltage: Number($("#battery-full-voltage").value || 14.6),
+        }),
+      });
       toast(ack.message);
       await refresh();
       return;

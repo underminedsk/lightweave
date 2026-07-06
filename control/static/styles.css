@@ -313,6 +313,43 @@ input[type="number"], input[type="time"], input[type="text"], select { width: 10
 .recovery-row:last-child { border-bottom: 0; }
 .recovery-row strong { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recovery-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.power-samples {
+  margin-top: 10px;
+  border: 1px solid rgba(38, 48, 42, .72);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0b0f0c;
+}
+.power-warning {
+  padding: 8px 10px;
+  color: var(--amber);
+  border-bottom: 1px solid rgba(38, 48, 42, .72);
+  font-size: 12px;
+}
+.power-sample-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .8fr) 62px minmax(150px, 1fr) 76px 118px;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(38, 48, 42, .72);
+  color: var(--muted);
+  font-size: 12px;
+}
+.power-sample-row:last-child { border-bottom: 0; }
+.power-sample-row strong,
+.power-sample-row small,
+.power-sample-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.power-sample-row strong { color: var(--text); font-size: 13px; }
+.power-sample-row button { min-height: 34px; padding: 0 10px; font-size: 12px; }
+.power-sample-row.warn { color: var(--amber); }
+.power-sample-row.bad { color: var(--alert); }
 .ops-form-grid { display: grid; margin-top: 6px; border-top: 1px solid rgba(38, 48, 42, .72); }
 .ops-form-grid .control-label {
   min-height: 52px;
@@ -384,6 +421,19 @@ input[type="number"], input[type="time"], input[type="text"], select { width: 10
   }
   .recovery-row .mono {
     grid-column: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .power-sample-row {
+    grid-template-columns: 1fr 78px;
+    gap: 6px 10px;
+  }
+  .power-sample-row span:nth-child(3),
+  .power-sample-row span:nth-child(4),
+  .power-sample-row button {
+    grid-column: 1 / -1;
+  }
+  .power-sample-row span {
     white-space: normal;
     overflow-wrap: anywhere;
   }

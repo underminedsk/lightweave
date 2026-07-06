@@ -57,6 +57,12 @@ class Lantern:
     y: float | None
     power_wh: float | None = None
     avg_w: float | None = None
+    power_mah: float | None = None
+    bus_v: float | None = None
+    current_ma: float | None = None
+    power_elapsed_s: int | None = None
+    power_plausible: bool | None = None
+    power_last_report_s: float | None = None
     firmware: dict[str, Any] = field(default_factory=lambda: deepcopy(FIELD_FIRMWARE))
 
     def as_dict(self, now: float) -> dict[str, Any]:
@@ -85,15 +91,22 @@ class Lantern:
             "power": {
                 "wh": self.power_wh,
                 "avg_w": self.avg_w,
-                "last_report_label": self._age_label() if self.power_wh is not None else None,
+                "mah": self.power_mah,
+                "bus_v": self.bus_v,
+                "current_ma": self.current_ma,
+                "elapsed_s": self.power_elapsed_s,
+                "plausible": self.power_plausible,
+                "last_report_s": self.power_last_report_s,
+                "last_report_label": self._age_label(self.power_last_report_s) if self.power_wh is not None else None,
             },
             "updated_at": now,
         }
 
-    def _age_label(self) -> str:
-        if self.last_seen_s < 60:
-            return f"{int(self.last_seen_s)}s ago"
-        minutes = int(self.last_seen_s // 60)
+    def _age_label(self, age: float | None = None) -> str:
+        age_s = self.last_seen_s if age is None else age
+        if age_s < 60:
+            return f"{int(age_s)}s ago"
+        minutes = int(age_s // 60)
         return f"{minutes}m ago"
 
 
@@ -120,8 +133,8 @@ class MockConductor:
     events: list[dict[str, Any]] = field(default_factory=list)
     _lanterns: list[Lantern] = field(
         default_factory=lambda: [
-            Lantern("8C:94:DF:8F:71:50", "#0", "alive", 4, 0.54, 0.47, 0.38, 0.71),
-            Lantern("30:76:F5:93:67:3C", "#2", "alive", 8, 0.43, 0.36, None, None),
+            Lantern("8C:94:DF:8F:71:50", "#0", "alive", 4, 0.54, 0.47, 0.38, 0.71, 102.0, 13.28, 53.0, 1920, True, 4),
+            Lantern("30:76:F5:93:67:3C", "#2", "alive", 8, 0.43, 0.36, 0.41, 0.76, 110.0, 13.21, 56.0, 1940, True, 8),
             Lantern("A0:B7:65:11:40:77", "#7", "alive", 9, 0.61, 0.35, None, None),
             Lantern("A0:B7:65:11:42:09", "#9", "alive", 13, 0.34, 0.52, None, None),
             Lantern("A0:B7:65:11:42:14", "#14", "alive", 17, 0.72, 0.55, None, None),

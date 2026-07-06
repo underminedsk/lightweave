@@ -213,6 +213,10 @@ def test_state_endpoint_returns_mock_state() -> None:
     assert body["conductor"]["firmware"]["proto"] == 6
     assert body["summary"]["firmware"]["consistent"] is True
     assert body["power"]["light_sleep_check_s"] == 4
+    assert body["power_monitor"]["battery_capacity_wh"] == 153.6
+    assert body["power_monitor"]["sample_count"] == 2
+    assert body["power_monitor"]["usable_sample_count"] == 2
+    assert body["power_monitor"]["estimated_node_soc_percent"] > 99
     assert body["recovery"]["status"] == "missing_nodes"
 
 
@@ -648,6 +652,40 @@ def test_power_policy_update_round_trips_to_state() -> None:
     assert state["power"]["force_awake"] is False
     assert state["power"]["current_epoch_s"] == 1_720_123_456
     assert state["power"]["leds_on"] is False
+
+
+def test_power_monitor_settings_and_manual_full_sync() -> None:
+    conductor = MockConductor()
+    client = TestClient(create_app(conductor))
+    mac = "8C:94:DF:8F:71:50"
+
+    settings = client.post(
+        "/api/operations/power-monitor",
+        json={"battery_capacity_wh": 200.0, "full_voltage": 14.4},
+    )
+    assert settings.status_code == 200
+    state = client.get("/api/state").json()
+    assert state["power_monitor"]["battery_capacity_wh"] == 200.0
+    assert state["power_monitor"]["full_voltage"] == 14.4
+
+    sync = client.post(f"/api/lanterns/{mac}/power-sync-full")
+    assert sync.status_code == 200
+    state = client.get("/api/state").json()
+    sample = next(item for item in state["power_monitor"]["samples"] if item["mac"] == mac)
+    assert sample["soc_percent"] == 100.0
+    assert sample["full_anchor"]["manual"] is True
+
+
+def test_power_monitor_auto_anchors_when_full_voltage_seen() -> None:
+    conductor = MockConductor()
+    conductor._lanterns[0].bus_v = 14.7
+    client = TestClient(create_app(conductor))
+
+    state = client.get("/api/state").json()
+
+    sample = next(item for item in state["power_monitor"]["samples"] if item["mac"] == "8C:94:DF:8F:71:50")
+    assert sample["full_detected"] is True
+    assert sample["soc_percent"] == 100.0
 
 
 def test_ota_mode_update_round_trips_to_state() -> None:

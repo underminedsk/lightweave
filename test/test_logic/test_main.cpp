@@ -15,6 +15,7 @@
 #include "napsched.h"
 #include "pattern_ids.h"
 #include "pattern_math.h"
+#include "power_table.h"
 #include "powermon.h"
 #include "power_policy.h"
 #include "powersave.h"
@@ -1019,6 +1020,27 @@ void test_power_sched_defers_while_cannot_send_no_burst() {
   TEST_ASSERT_TRUE(powerReportDue(ps, 261 * 1000000LL, I, true));
 }
 
+void test_power_table_upserts_by_mac() {
+  PowerTable t;
+  powerTableInit(t);
+  uint8_t a[6] = {1, 2, 3, 4, 5, 6};
+  PowerSample first = {3600.0f, 3.6f, 13.2f, 55.0f, 3600};
+  PowerSample second = {7200.0f, 7.2f, 13.1f, 56.0f, 7200};
+
+  TEST_ASSERT_TRUE(powerTableUpsert(t, a, first, 1000));
+  TEST_ASSERT_EQUAL_UINT8(1, t.count);
+  int i = powerTableFind(t, a);
+  TEST_ASSERT_EQUAL_INT(0, i);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, powerWh(t.entries[i].sample.energy_j));
+  TEST_ASSERT_EQUAL_INT64(1000, t.entries[i].last_us);
+
+  TEST_ASSERT_TRUE(powerTableUpsert(t, a, second, 2000));
+  TEST_ASSERT_EQUAL_UINT8(1, t.count);
+  i = powerTableFind(t, a);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.0f, powerWh(t.entries[i].sample.energy_j));
+  TEST_ASSERT_EQUAL_INT64(2000, t.entries[i].last_us);
+}
+
 // ---- MAC text parsing (macaddr.h) ----------------------------------------------
 // Gatekeeper for the conductor's `assign`/`forget` commands — a silent misparse
 // would move the wrong lantern.
@@ -1509,6 +1531,7 @@ int main(int, char**) {
   RUN_TEST(test_power_plausible_flags_reboot_inflated_avg);
   RUN_TEST(test_power_sched_first_report_immediate_then_interval);
   RUN_TEST(test_power_sched_defers_while_cannot_send_no_burst);
+  RUN_TEST(test_power_table_upserts_by_mac);
   RUN_TEST(test_mac_parse_valid_any_case);
   RUN_TEST(test_mac_parse_rejects_malformed);
   RUN_TEST(test_mac_parse_rejects_trailing_garbage);
