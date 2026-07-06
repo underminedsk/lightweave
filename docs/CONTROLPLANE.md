@@ -382,14 +382,18 @@ position", and table rows not currently registered show as "Not seen".
   performer writes the image into its own OTA partition and reboots after a
   successful size/CRC/end check. The UI polls install progress and shows chunk
   counts, elapsed time, transfer rate, and ETA while the long request streams.
-  Serial chunk timeouts and retryable conductor chunk NACKs are retried;
-  duplicate already-written chunks are idempotent on both conductor and
-  performers. Firmware rejects any decoded chunk whose length does not exactly
-  match the expected full/tail chunk length at the current offset, so a truncated
-  serial command cannot advance the flash writer to a non-chunk boundary. The
-  API polls conductor `ota_progress` to recover after retryable timeouts/NACKs,
-  but rejects unsafe mid-chunk resume offsets. Pyserial writes use
-  `write_timeout=2.0` and do not call unbounded `flush()` after every line.
+  The conductor's `ota_progress` response includes its own write offset plus
+  performer status rows; the API samples it every 64 chunks so the UI can show
+  node progress during the transfer, and any performer-reported failure aborts
+  before `ota_end`. Serial chunk timeouts and retryable conductor chunk NACKs
+  are retried; duplicate already-written chunks are idempotent on both conductor
+  and performers. Firmware rejects any decoded chunk whose length does not
+  exactly match the expected full/tail chunk length at the current offset, so a
+  truncated serial command cannot advance the flash writer to a non-chunk
+  boundary. The API also polls conductor `ota_progress` to recover after
+  retryable timeouts/NACKs, but rejects unsafe mid-chunk resume offsets.
+  Pyserial writes use `write_timeout=2.0` and do not call unbounded `flush()`
+  after every line.
 - Hardware-verified 2026-07-06 on the 3-board bench: staged `firmware.bin`
   (`860944` bytes, `6727` chunks, sha256
   `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`),

@@ -82,7 +82,30 @@ class PartialAdvancedNackingOtaChunkConductor(MockConductor):
         return super().ota_chunk(offset, data)
 
 
+class ProgressFailedOtaConductor(MockConductor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ended = False
+
+    def ota_progress(self) -> dict:
+        progress = super().ota_progress()
+        if progress.get("written", 0) >= 64 * 128 and progress.get("nodes"):
+            node = progress["nodes"][0]
+            node.update({"phase": "failed", "error": "flash write failed"})
+            self._ota_nodes[node["mac"]] = node
+        return progress
+
+    def ota_end(self) -> dict:
+        self.ended = True
+        return super().ota_end()
+
+
 class NoOtaStatusConductor(MockConductor):
+    def ota_progress(self) -> dict:
+        progress = super().ota_progress()
+        progress["nodes"] = []
+        return progress
+
     def ota_end(self) -> dict:
         ack = super().ota_end()
         if ack.get("ok"):
@@ -725,6 +748,30 @@ def test_ota_install_retries_transient_chunk_timeout(tmp_path) -> None:
     assert install["chunks_sent"] == stage["artifact"]["chunks"]
     assert install["bytes_sent"] == stage["artifact"]["size"]
     assert install["last_retry"]["error"] == "timeout waiting for ota_chunk ack"
+
+
+def test_ota_install_stops_on_polled_node_failure(tmp_path) -> None:
+    conductor = ProgressFailedOtaConductor()
+    missing = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
+    missing.status = "alive"
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 40
+    client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    response = client.post("/api/operations/ota-install")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "ota node failure"
+    assert conductor.ended is False
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is False
+    assert install["error"] == "ota node failure"
+    assert any(node["phase"] == "failed" for node in install["nodes"])
 
 
 def test_ota_install_retries_retryable_chunk_nack(tmp_path) -> None:

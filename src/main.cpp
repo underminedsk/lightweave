@@ -1303,12 +1303,14 @@ static void handleOtaEnd(const SerialJsonCommand& cmd) {
 
 static void handleOtaProgress(const SerialJsonCommand& cmd) {
   Serial.printf("{\"id\":%lu,\"ok\":true,\"active\":%s,"
-                "\"size\":%lu,\"written\":%lu,\"crc32\":%lu}\n",
+                "\"size\":%lu,\"written\":%lu,\"crc32\":%lu,\"nodes\":",
                 (unsigned long)cmd.id,
                 g_ota_write_active ? "true" : "false",
                 (unsigned long)g_ota_write_size,
                 (unsigned long)g_ota_write_written,
                 (unsigned long)g_ota_write_crc);
+  printOtaStatusNodesJson(now_us());
+  Serial.print("}\n");
 }
 
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,

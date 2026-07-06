@@ -309,6 +309,7 @@ class MockConductor:
             "size": self._ota_expected_size,
             "written": len(self._ota_write or b""),
             "crc32": zlib.crc32(self._ota_write or b"") & 0xFFFFFFFF,
+            "nodes": list(self._ota_nodes.values()),
         }
 
     def ota_end(self) -> dict[str, Any]:

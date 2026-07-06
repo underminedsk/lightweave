@@ -97,8 +97,13 @@ Priority order:
    every expected placed performer after reboot before declaring success. Missing
    placed lanterns now block installs with a concrete Recovery row, and failed
    post-reboot verification synthesizes per-node failed OTA rows for operators.
-   Next reliability work is deciding whether the 60-node field needs explicit
-   performer ACK/retry beyond the current status reporting.
+   The current scale-hardening choice is **status-driven early abort, not
+   per-node chunk ACK/retry yet**: the conductor's `ota_progress` response now
+   includes performer status rows, and the API samples it every 64 chunks during
+   transfer. Any performer that reports `failed` stops the install before
+   `ota_end`, leaving a concrete Recovery row. Defer explicit per-node chunk
+   ACK/retry until a larger bench/field test shows repeated ESP-NOW chunk loss
+   that the current 3x broadcast repetition cannot cover.
 2. **Optional negative OTA-safety check:** if useful, intentionally flash one
    performer with a same-v6 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2

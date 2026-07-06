@@ -25,6 +25,7 @@ from .serial_transport import PySerialTransport
 STATIC_DIR = Path(__file__).with_name("static")
 OTA_CHUNK_RETRIES = 3
 OTA_STATUS_FRESH_S = 60
+OTA_PROGRESS_POLL_CHUNKS = 64
 OTA_CHUNK_RETRYABLE_ERRORS = {
     "bad ota chunk data",
     "ota chunk length mismatch",
@@ -145,6 +146,23 @@ def create_app(
             "eta_s": eta_s,
         })
         return progress
+
+    def apply_ota_progress(progress: dict[str, Any], artifact: Any) -> list[dict[str, Any]]:
+        updates: dict[str, Any] = {}
+        if progress.get("ok") is True:
+            written = int(progress.get("written") or 0)
+            if 0 <= written <= int(artifact.size):
+                updates["bytes_sent"] = max(int(app.state.ota_install.get("bytes_sent") or 0), written)
+                updates["chunks_sent"] = max(
+                    int(app.state.ota_install.get("chunks_sent") or 0),
+                    min((written + artifact.chunk_size - 1) // artifact.chunk_size, artifact.chunks),
+                )
+            nodes = fresh_ota_nodes(progress.get("nodes") or [])
+            if nodes:
+                updates["nodes"] = nodes
+        if updates:
+            app.state.ota_install.update(updates)
+        return list(app.state.ota_install.get("nodes") or [])
 
     def recovery_summary(state: dict[str, Any]) -> dict[str, Any]:
         lanterns = state.get("lanterns") or []
@@ -898,6 +916,20 @@ def create_app(
                         "chunks_sent": (offset // artifact.chunk_size) + 1,
                     })
                     offset += len(chunk)
+                    chunks_sent = int(app.state.ota_install.get("chunks_sent") or 0)
+                    if chunks_sent == artifact.chunks or chunks_sent % OTA_PROGRESS_POLL_CHUNKS == 0:
+                        progress = await asyncio.to_thread(conductor.ota_progress)
+                        nodes = apply_ota_progress(progress, artifact)
+                        if any(node.get("phase") == "failed" for node in nodes):
+                            error = "ota node failure"
+                            app.state.ota_install.update({
+                                "running": False,
+                                "complete": False,
+                                "error": error,
+                                "nodes": nodes,
+                                "completed_at": time.time(),
+                            })
+                            raise HTTPException(status_code=400, detail=error)
                 ack = await asyncio.to_thread(conductor.ota_end)
         except asyncio.CancelledError:
             app.state.ota_install.update({"running": False, "error": "ota install cancelled"})
