@@ -126,6 +126,26 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    def ota_install_progress(install: dict[str, Any]) -> dict[str, Any]:
+        progress = dict(install)
+        started_at = progress.get("started_at")
+        if not isinstance(started_at, (int, float)) or started_at <= 0:
+            return progress
+        ended_at = progress.get("completed_at")
+        now = float(ended_at) if isinstance(ended_at, (int, float)) else time.time()
+        elapsed_s = max(0.0, now - float(started_at))
+        bytes_sent = max(0, int(progress.get("bytes_sent") or 0))
+        size = max(0, int(progress.get("size") or 0))
+        bytes_per_s = bytes_sent / elapsed_s if elapsed_s > 0 else 0.0
+        remaining = max(0, size - bytes_sent)
+        eta_s = int(round(remaining / bytes_per_s)) if bytes_per_s > 0 and remaining > 0 else 0
+        progress.update({
+            "elapsed_s": int(round(elapsed_s)),
+            "bytes_per_s": bytes_per_s,
+            "eta_s": eta_s,
+        })
+        return progress
+
     def recovery_summary(state: dict[str, Any]) -> dict[str, Any]:
         lanterns = state.get("lanterns") or []
         ota = state.get("ota") or {}
@@ -773,7 +793,7 @@ def create_app(
             nodes = await infer_ota_complete_nodes(int(install["size"]), int(install.get("crc32") or 0))
             if nodes:
                 install.update({"nodes": nodes})
-        return {"install": app.state.ota_install}
+        return {"install": ota_install_progress(app.state.ota_install)}
 
     @app.post("/api/operations/ota-install")
     async def install_ota_artifact() -> dict[str, Any]:

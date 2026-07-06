@@ -223,6 +223,12 @@ tr.selected { background: rgba(240, 179, 90, .08); }
 }
 .ota-progress.ok .ota-progress-head { color: var(--live); }
 .ota-progress.bad .ota-progress-head { color: var(--alert); }
+.ota-progress-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .ota-progress-bar {
   height: 7px;
   margin-top: 8px;

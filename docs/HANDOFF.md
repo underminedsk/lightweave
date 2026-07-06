@@ -15,7 +15,18 @@ next steps only.
 Operations can enter a maintenance window, stage a `.bin`, stream it over USB
 serial to the conductor, fan it out over ESP-NOW to performers, show chunk
 progress, retry dropped serial chunk ACKs, and reboot the field onto the staged
-image. Latest verified artifact: `860944` bytes / `6727` chunks / sha256
+image. Latest verified artifact: clean build `ba705b46`, `860928` bytes /
+`6726` chunks / sha256
+`106cfda591acc64ece0c9c1272d4570e7b0b8e418520ac3faedc22e26f05dbee`; the
+2026-07-06 live API drill staged that image, entered maintenance with `2 / 2`
+ready, streamed all chunks in about 400 s, returned
+`ota install complete; rebooting`, and post-reboot `/api/state` showed conductor
+and both performers on `0.3.0` build `ba705b46`, `dirty=false`,
+`summary.alive=2`, `summary.total=2`, `attention=0`, and
+`summary.firmware.consistent=true`. `/api/operations/ota-install` now reports
+elapsed time, transfer rate, and ETA in addition to chunk counts so the long
+serial transfer does not look stalled. Previous verified recovery artifact:
+`860944` bytes / `6727` chunks / sha256
 `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`; the final
 live run intentionally recovered one same-protocol mismatched performer
 (`#1`, `0.3.0-mismatch`) by staging the normal `0.3.0` image, entering

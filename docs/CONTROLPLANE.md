@@ -381,15 +381,15 @@ position", and table rows not currently registered show as "Not seen".
   partition and broadcasts the same begin/chunk/end packets over ESP-NOW. Each
   performer writes the image into its own OTA partition and reboots after a
   successful size/CRC/end check. The UI polls install progress and shows chunk
-  counts while the long request streams. Serial chunk timeouts and retryable
-  conductor chunk NACKs are retried; duplicate already-written chunks are
-  idempotent on both conductor and performers. Firmware rejects any decoded chunk
-  whose length does not exactly match the expected full/tail chunk length at the
-  current offset, so a truncated serial command cannot advance the flash writer
-  to a non-chunk boundary. The API polls conductor `ota_progress` to recover
-  after retryable timeouts/NACKs, but rejects unsafe mid-chunk resume offsets.
-  Pyserial writes use `write_timeout=2.0` and do not call unbounded `flush()`
-  after every line.
+  counts, elapsed time, transfer rate, and ETA while the long request streams.
+  Serial chunk timeouts and retryable conductor chunk NACKs are retried;
+  duplicate already-written chunks are idempotent on both conductor and
+  performers. Firmware rejects any decoded chunk whose length does not exactly
+  match the expected full/tail chunk length at the current offset, so a truncated
+  serial command cannot advance the flash writer to a non-chunk boundary. The
+  API polls conductor `ota_progress` to recover after retryable timeouts/NACKs,
+  but rejects unsafe mid-chunk resume offsets. Pyserial writes use
+  `write_timeout=2.0` and do not call unbounded `flush()` after every line.
 - Hardware-verified 2026-07-06 on the 3-board bench: staged `firmware.bin`
   (`860944` bytes, `6727` chunks, sha256
   `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`),
@@ -399,6 +399,13 @@ position", and table rows not currently registered show as "Not seen".
   `summary.firmware.consistent=true`. `install.nodes` reported both performers
   at terminal `complete` status with `offset=860944` and `crc32=3411679313`;
   stale OTA status is ignored.
+- Clean-build drill 2026-07-06: staged `firmware-devkitc-ba705b4.bin`
+  (`860928` bytes, `6726` chunks, sha256
+  `106cfda591acc64ece0c9c1272d4570e7b0b8e418520ac3faedc22e26f05dbee`) against
+  the same 3-board bench. The transfer completed in about 400 s, both
+  performers reported terminal `complete` status at `offset=860928` and
+  `crc32=84077347`, and post-reboot state showed conductor + both performers on
+  `0.3.0` build `ba705b46`, `dirty=false`, with recovery `ready`.
 - Recovery flow: `/api/state.recovery` classifies missing placed lanterns, mixed
   firmware, and failed OTA nodes into one Operations card. A failed install from
   `/api/operations/ota-install` also drives that card so the operator sees the

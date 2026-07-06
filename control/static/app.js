@@ -125,6 +125,14 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds || 0)));
+  const minutes = Math.floor(total / 60);
+  const remaining = total % 60;
+  if (minutes <= 0) return `${remaining}s`;
+  return `${minutes}m ${remaining}s`;
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -549,6 +557,17 @@ function renderOtaProgress() {
   $("#ota-progress-count").textContent = total > 0
     ? `${sent} / ${total} chunks`
     : `${formatBytes(bytesSent)} / ${formatBytes(size)}`;
+  const elapsed = Number(otaInstall?.elapsed_s || 0);
+  const eta = Number(otaInstall?.eta_s || 0);
+  const rate = Number(otaInstall?.bytes_per_s || 0);
+  const rateLabel = rate > 0 ? `${formatBytes(rate)}/s` : "--";
+  $("#ota-progress-meta").textContent = running
+    ? `Elapsed ${formatDuration(elapsed)} · ETA ${formatDuration(eta)} · ${rateLabel}`
+    : complete
+      ? `Completed in ${formatDuration(elapsed)} · average ${rateLabel}`
+      : error
+        ? `Stopped after ${formatDuration(elapsed)}`
+        : "";
   $("#ota-progress-fill").style.width = `${complete ? 100 : percent}%`;
   progress.classList.toggle("bad", Boolean(error));
   progress.classList.toggle("ok", complete && !error);

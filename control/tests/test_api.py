@@ -694,6 +694,9 @@ def test_ota_install_streams_staged_artifact_when_ready(tmp_path) -> None:
     assert install["complete"] is True
     assert install["chunks_sent"] == stage["artifact"]["chunks"]
     assert install["bytes_sent"] == stage["artifact"]["size"]
+    assert install["elapsed_s"] >= 0
+    assert install["bytes_per_s"] >= 0
+    assert install["eta_s"] == 0
     assert {node["phase"] for node in install["nodes"]} == {"complete"}
     ota = client.get("/api/state").json()["ota"]
     assert {node["phase"] for node in ota["nodes"]} == {"complete"}
