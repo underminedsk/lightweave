@@ -35,9 +35,9 @@ drifts, and calm glows without pushing per-lantern frames or depending on a rout
 Current release: `0.3.0`. The bench system has been verified with one conductor
 and two performers for sync, layout assignment, pattern control, runtime power
 policy, and the local web control plane. Field-wide OTA is implemented and has
-completed successful bench installs; mixed-firmware recovery is still under active
-hardware verification. See [docs/HANDOFF.md](docs/HANDOFF.md) for the exact
-latest state.
+completed successful bench installs, including same-protocol mixed-firmware
+recovery back to a consistent field. See [docs/HANDOFF.md](docs/HANDOFF.md) for
+the exact latest state.
 
 ## System overview
 
