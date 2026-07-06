@@ -293,11 +293,20 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
   hardware-accumulated energy/charge to the conductor (§4.2), reusing the
   REGISTER unicast path. Added without a PROTO_VERSION bump — no existing
   layout changed, and receivers ignore unknown types via the dispatch default.
+- **[done]** `MSG_OTA_BEGIN`, `MSG_OTA_CHUNK`, `MSG_OTA_END`: conductor
+  broadcasts a staged firmware image during manual maintenance-mode OTA.
+  Performers write the image into their OTA partition and accept it only after
+  size and CRC checks pass. This is field-wide only; no selected-node firmware
+  updates.
+- **[done]** `MSG_OTA_STATUS`: performers report begin/writing/complete/error
+  status with offset and CRC, and the API filters stale statuses. If no fresh
+  terminal ACKs arrive after reboot, the API can record per-node completion from
+  verified post-reboot field state.
 - **[planned]** `MSG_ACK` + richer machine Pi↔conductor serial (lands with the Pi
   UI).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
 
-### 7.1 OTA policy foundation **[done; transfer planned]**
+### 7.1 OTA policy, transfer, and recovery **[done; failure dry-runs planned]**
 
 OTA is manual maintenance-mode only and field-wide only. The system must never
 offer selected-node firmware updates as a normal workflow. Mixed firmware can
@@ -308,8 +317,39 @@ a git-derived 32-bit build id, and dirty flag via `scripts/firmware_build_id.py`
 performers report that identity in REGISTER; the conductor exposes
 conductor/per-node firmware in machine state; the control plane shows field
 firmware consistency in Operations, links build hashes to GitHub commits, and
-flags `Firmware mismatch` in the Node List. Actual OTA upload/transfer and
-maintenance window control are still planned.
+flags `Firmware mismatch` in the Node List.
+
+The transfer path is also in place: the control plane stages a `.bin` artifact,
+streams it over machine serial with `ota_begin`/`ota_chunk`/`ota_end`, the
+conductor writes its own OTA partition, and the conductor broadcasts the same
+chunk stream to performers via ESP-NOW. The UI shows install progress by chunk.
+This was hardware-verified on the 3-board bench on 2026-07-06, including a
+same-protocol mixed-firmware recovery that restored performer #1 from
+`0.3.0-mismatch` to `0.3.0`. Serial chunk timeouts and retryable chunk NACKs are
+retried, duplicate already-written chunks are idempotent on both conductor and
+performers, and unsafe mid-chunk resume offsets are rejected instead of papering
+over a partial write. The current serial/ESP-NOW chunk payload is 128 bytes for
+command-buffer margin. Firmware requires each decoded chunk length to equal the
+expected full/tail length at the current offset; this avoids the old failure mode
+where a truncated but even-length hex command decoded as a shorter chunk and
+advanced the flash writer to a non-chunk boundary. OTA maintenance beacons keep
+performer radios awake for the window so duty cycling does not fight the updater.
+Performer OTA status is freshness filtered; the API only reports install success
+after every expected placed performer reports complete or verifies from live
+post-reboot firmware consistency. Missing placed lanterns block install with a
+Recovery row, and post-reboot verification failures synthesize per-node failed
+OTA rows for expected performers that did not verify. Remaining deployment
+hardening: decide whether a 60-node deployment needs explicit performer ACK/retry
+beyond the current status reporting.
+
+The control plane derives a Recovery summary from live state and the last install
+attempt. It classifies missing placed lanterns, same-protocol mixed firmware, and
+failed OTA nodes into one operator action surface. Mixed firmware is never a
+normal running state: enter maintenance mode, wait for readiness, and reinstall
+the staged firmware field-wide. Same-protocol mixed firmware is allowed to
+proceed with maintenance install as the recovery action once all placed nodes are
+present. Failed OTA installs instruct the operator to reset the maintenance
+window and rerun the same staged firmware after nodes check back in.
 
 ## 8. Resilience model
 

@@ -8,10 +8,11 @@ from control.serial_transport import PySerialTransport
 
 
 class FakeSerial:
-    def __init__(self, port: str, baud: int, timeout: float) -> None:
+    def __init__(self, port: str, baud: int, timeout: float, write_timeout: float) -> None:
         self.port = port
         self.baud = baud
         self.timeout = timeout
+        self.write_timeout = write_timeout
         self.writes: list[bytes] = []
         self.dtr = True
         self.rts = True
@@ -52,8 +53,8 @@ class FakeSerial:
 def test_pyserial_transport_writes_lines_and_deasserts_reset(monkeypatch) -> None:
     created: list[FakeSerial] = []
 
-    def serial_factory(port: str, baud: int, timeout: float) -> FakeSerial:
-        serial = FakeSerial(port, baud, timeout)
+    def serial_factory(port: str, baud: int, timeout: float, write_timeout: float) -> FakeSerial:
+        serial = FakeSerial(port, baud, timeout, write_timeout)
         created.append(serial)
         return serial
 
@@ -65,6 +66,7 @@ def test_pyserial_transport_writes_lines_and_deasserts_reset(monkeypatch) -> Non
 
     assert created[0].port == "/dev/cu.test"
     assert created[0].baud == 57600
+    assert created[0].write_timeout == 2.0
     assert created[0].dtr is False
     assert created[0].rts is False
     assert created[0].reset_count == 1

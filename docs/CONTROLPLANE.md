@@ -136,6 +136,10 @@ than the conductor.
 `summary.firmware` is the OTA safety invariant: manual field-wide OTA should not
 start unless every reachable node is on the expected build, or the UI explicitly
 keeps the operator in a recovery flow.
+`recovery` is the operator-facing classification derived from state and the last
+firmware install attempt. It reports one of `ready`, `missing_nodes`,
+`mixed_firmware`, or `ota_failed`, plus the affected lanterns and the next
+action to take.
 
 `summary.alive / summary.total` means healthy placed lanterns over placed
 lanterns in the field table. Unpositioned live lanterns are available substrate
@@ -149,9 +153,49 @@ The map renders only positioned lanterns.
 - `POST /api/lanterns/{mac}/assign` with `{"x":0.25,"y":0.75}`
 - `POST /api/lanterns/{mac}/forget`
 - `POST /api/lanterns/replace` with `{"old_mac":"...","new_mac":"..."}`
+- `GET /api/patterns` -> saved pattern configs.
+- `POST /api/patterns` with
+  `{"name":"Amber Glow","pattern":"Glow","brightness":48,"params":{"hue":40,"saturation":100}}`
+  -> create a saved pattern config.
+- `GET /api/patterns/{id}` -> one saved pattern config.
+- `PUT /api/patterns/{id}` with the same body as create -> replace a saved
+  pattern config.
+- `DELETE /api/patterns/{id}` -> delete a saved pattern config.
+- `GET /api/patterns/{id}/preview?t=0` -> PNG preview of that saved pattern
+  config on the current positioned lantern layout.
+- `GET /api/patterns/{id}/preview.json?t=0` -> per-lantern RGBW/RGB/luma
+  samples and aggregate metrics for that saved pattern config.
+- `GET /api/patterns/{id}/preview/frames.json?duration_ms=8000&fps=4` ->
+  frame sequence for motion/rhythm review, with per-frame samples and aggregate
+  sequence metrics.
+- `GET /api/patterns/{id}/review?duration_ms=8000&fps=4` -> automated review
+  of the saved pattern config: pass/reject, score, issues, recommendations, and
+  sequence metrics.
+- `POST /api/patterns/{id}/broadcast` -> broadcast that saved pattern config
+  through the existing conductor pattern command and push a state update.
 - `POST /api/show/pattern` with
   `{"pattern":"Sweep","brightness":64,"params":{"period":8000,"spatial":300}}`
 - `POST /api/show/blackout`
+- `POST /api/operations/power-policy` with the runtime sleep/check policy.
+- `POST /api/operations/ota-mode` with `{"enabled":true}` or
+  `{"enabled":false}`.
+- `GET /api/operations/ota-artifact` -> current staged firmware metadata.
+- `PUT /api/operations/ota-artifact?filename=firmware.bin` with raw
+  `application/octet-stream` firmware bytes -> stage a `.bin` artifact.
+- `GET /api/operations/ota-install` -> current/last install progress.
+- `POST /api/operations/ota-install` -> stream the staged artifact to the
+  conductor and field during an OTA maintenance window.
+- `GET /preview?pattern=Glow&brightness=48&hue=40&t=0` -> PNG preview of the
+  simulated field using the current positioned lantern layout. Also accepts
+  `params` as a JSON object query string and direct aliases (`hue`,
+  `saturation`, `period`, `spatial`, `wavelength`) for agent-friendly calls.
+- `GET /preview.json?pattern=Glow&brightness=48&hue=40&t=0` -> machine-readable
+  preview data for agent scoring: positioned lantern samples plus `count`,
+  `lit_count`, luma range, average luma, and contrast metrics.
+- `GET /preview/frames.json?pattern=Sweep&duration_ms=8000&fps=4` -> frame
+  sequence for a draft pattern without saving it first.
+- `GET /review?pattern=Sweep&duration_ms=8000&fps=4` -> automated review for a
+  draft pattern without saving it first.
 
 Every mutation returns an ack:
 
@@ -163,6 +207,9 @@ Adapter errors such as serial timeout surface as HTTP `503`. Command-level
 errors such as unknown MAC or invalid replacement return `404` with the
 adapter's `error` text. Rejected pattern changes return `400`; the UI should
 only treat a pattern change as saved after a successful ack.
+Pattern library CRUD is server-side control-plane state, persisted under
+`.control_patterns/patterns.json`; broadcasting a saved pattern is still a
+separate `POST /api/show/pattern` operation.
 
 ## Adapter contract
 
@@ -181,6 +228,11 @@ forget(mac) -> ack
 replace(old_mac, new_mac) -> ack
 update_pattern(pattern, brightness, params) -> ack
 blackout() -> ack
+update_power_policy(policy) -> ack
+set_ota_mode(enabled) -> ack
+ota_begin(size, crc32) -> ack
+ota_chunk(offset, data) -> ack
+ota_end() -> ack
 ```
 
 `MockConductor` implements this contract for UI development.
@@ -262,7 +314,7 @@ position", and table rows not currently registered show as "Not seen".
   math is pure and host-tested; turns knob-tuning into instant feedback.
   Also the backbone of the agent-assisted pattern-authoring workflow (see
   the "Pattern authoring" section), including its headless
-  `GET /preview` render endpoint.
+  `GET /preview` PNG render endpoint. **[done for PNG still frames]**
 - Blackout button (bri 0).
 
 ### 4. Power & energy
@@ -317,8 +369,54 @@ position", and table rows not currently registered show as "Not seen".
 - Built foundation: REGISTER reports release version + protocol + build id +
   dirty flag, the control-plane state exposes per-node and conductor firmware
   versions, and Operations shows version consistency with linked commits.
-- Not built yet: firmware upload/transfer, OTA window command, readiness states,
-  timeout/recovery UI.
+- Built updater: Operations can enter/exit a 15-minute
+  maintenance window over the same machine serial protocol; state reports
+  `ota.mode`, readiness count, expected count, missing placed lanterns,
+  firmware consistency, blockers, and timeout.
+- Firmware artifacts are staged through the API/UI, persisted under
+  `.control_ota/`, validated for `.bin` extension, size, CRC32, and sha256, and
+  chunked at 128 bytes for the serial/ESP-NOW path.
+- Install flow: the API sends `ota_begin`, then every `ota_chunk`, then
+  `ota_end` over USB serial to the conductor. The conductor writes its own OTA
+  partition and broadcasts the same begin/chunk/end packets over ESP-NOW. Each
+  performer writes the image into its own OTA partition and reboots after a
+  successful size/CRC/end check. The UI polls install progress and shows chunk
+  counts while the long request streams. Serial chunk timeouts and retryable
+  conductor chunk NACKs are retried; duplicate already-written chunks are
+  idempotent on both conductor and performers. Firmware rejects any decoded chunk
+  whose length does not exactly match the expected full/tail chunk length at the
+  current offset, so a truncated serial command cannot advance the flash writer
+  to a non-chunk boundary. The API polls conductor `ota_progress` to recover
+  after retryable timeouts/NACKs, but rejects unsafe mid-chunk resume offsets.
+  Pyserial writes use `write_timeout=2.0` and do not call unbounded `flush()`
+  after every line.
+- Hardware-verified 2026-07-06 on the 3-board bench: staged `firmware.bin`
+  (`860944` bytes, `6727` chunks, sha256
+  `906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`),
+  entered maintenance with `2 / 2 ready`, streamed all chunks, received
+  `ota install complete; rebooting`, and post-reboot `/api/state` showed
+  `summary.alive=2`, `summary.total=2`, `attention=0`, and
+  `summary.firmware.consistent=true`. `install.nodes` reported both performers
+  at terminal `complete` status with `offset=860944` and `crc32=3411679313`;
+  stale OTA status is ignored.
+- Recovery flow: `/api/state.recovery` classifies missing placed lanterns, mixed
+  firmware, and failed OTA nodes into one Operations card. A failed install from
+  `/api/operations/ota-install` also drives that card so the operator sees the
+  reset-and-rerun path immediately. Same-protocol mixed firmware is allowed to
+  enter maintenance install as its recovery action once all placed nodes are
+  present. A 2026-07-06 recovery dry-run found that old performer firmware
+  aborted on repeated already-written OTA chunks; the fixed receiver now treats
+  those duplicates as no-ops and OTA maintenance keeps performer radios awake.
+  A subsequent fixed-receiver recovery rerun exposed the unsafe partial-write
+  case above and a false-success API path; the API now requires all expected
+  placed performers to report complete or verify from post-reboot field firmware
+  consistency before returning success. The latest mixed-firmware recovery run
+  intentionally restored performer #1 from `0.3.0-mismatch` to `0.3.0`.
+  Missing placed lanterns now block install while listing the missing lantern in
+  Recovery, and post-reboot verification failures synthesize per-node failed OTA
+  rows for any expected performer that did not verify. Remaining reliability work
+  before trusting a 60-node deployment: decide whether field scale needs explicit
+  performer ACK/retry beyond the current status reporting.
 
 ### Cross-cutting
 
@@ -414,10 +512,11 @@ what makes authoring fast and lets an agent do most of it:
 2. **Visualize before any flash:** the browser preview (§3) renders the
    proposed pattern on the *real* field layout. An agent drives this via
    browser control, or — cheaper — via a **headless preview endpoint**
-   (`GET /preview?pattern=…&params=…&t=…` → PNG frame or GIF loop of the
-   simulated field), so an agent can "see" a proposed pattern with a plain
-   HTTP call. Worth building the endpoint; it makes the whole loop
-   API-only.
+   (`GET /preview?pattern=…&params=…&t=…` → PNG frame of the simulated
+   field), plus `preview.json`, `preview/frames.json`, and `review` for
+   machine-readable scoring. This makes the loop API-only: draft → still
+   preview → frame-sequence metrics → automated review → save → broadcast.
+   GIF loops remain a later extension; JSON frame sequences are implemented.
 3. **Bench:** flash the 3 bench boards, tune params live through the show
    controls.
 4. **Fleet:** pre-event reflash, or OTA once Milestone 5 lands.

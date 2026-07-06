@@ -8,8 +8,33 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(**93 pass**) and all four device envs (`devkitc` / `firebeetle` / `field-*`)
-build clean. Latest on `main` (2026-07-05): **runtime power schedule is
+(**101 pass**) is green; all four device envs (`devkitc` / `firebeetle` /
+`field-devkitc` / `field-firebeetle`) build clean. Latest on `main`
+(2026-07-06):
+**manual field-wide OTA is end-to-end hardware-verified and retry-hardened on the 3-board bench** —
+Operations can enter a maintenance window, stage a `.bin`, stream it over USB
+serial to the conductor, fan it out over ESP-NOW to performers, show chunk
+progress, retry dropped serial chunk ACKs, and reboot the field onto the staged
+image. Latest verified artifact: `860944` bytes / `6727` chunks / sha256
+`906fc37a03fa2c1afe97c1a35ba4f8153e295df0de5672232312d2fb7e9c1568`; the final
+live run intentionally recovered one same-protocol mismatched performer
+(`#1`, `0.3.0-mismatch`) by staging the normal `0.3.0` image, entering
+maintenance, streaming all chunks, and returning `ota install complete;
+rebooting`. Post-reboot state showed `summary.alive=2`, `summary.total=2`,
+`attention=0`, and `summary.firmware.consistent=true`; `install.nodes` reported
+both performers at `phase=complete`, `offset=860944`, `crc32=3411679313`.
+Root cause of the prior failed recovery path was a pair of OTA correctness bugs:
+200-byte serial chunks were too close to the 512-byte firmware command buffer, so
+a truncated-but-even hex payload could decode as a shorter chunk and advance the
+firmware writer by a non-chunk length; separately, the API could report success
+from a nonempty node list instead of requiring every expected performer to verify.
+Fixes now use 128-byte chunks, require exact decoded length for the current
+offset, remove the invalid per-128-byte `Update.progress()` invariant, retry
+explicit chunk-length mismatch responses, wait for maintenance beacons to settle
+before `ota_begin`, and require all expected placed performers to report complete
+or verify from post-reboot field firmware consistency. Performers also report
+begin/writing/complete OTA status so future failures expose their offset/error.
+Previous latest: **runtime power schedule is
 code-complete** — Operations can set light-sleep/radio check interval,
 deep-sleep check interval, LED-on window, and force-awake override. The conductor
 persists that `PowerPolicy` and broadcasts it in every beacon; performers apply
@@ -51,23 +76,23 @@ full-repo adversarial self-review with all 5 correctness findings fixed, the
 production BOM, and the **pilot-batch order placed 2026-07-03** (most parts
 arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
-## ▶ Next session: pick up here (updated 2026-07-05)
+## ▶ Next session: pick up here (updated 2026-07-06)
 
 Priority order:
-1. **Hardware-verify runtime power schedule:** after committing/flashing v6 to
-   all boards, use Operations to set a short LED-off window + short deep-check
-   interval, confirm performers clear LEDs/deep-sleep/rejoin, then use
-   "Turn boards on" to force the field awake. Keep recent-serial grace in mind:
-   USB-connected boards intentionally stay awake for 5 min after serial input.
-2. **Next OTA slice:** manual maintenance-mode OTA only, field-wide only, no
-   selected-node updates. Start with the non-writing control flow: enter/exit OTA
-   window, readiness/status reporting, timeout, and UI copy. Do not implement
-   autonomous/opportunistic updates.
-3. **Optional negative OTA-safety check:** if useful, intentionally flash one
+1. **Scale-harden OTA before 60 nodes:** manual maintenance OTA and
+   same-protocol mixed-firmware recovery are hardware-verified on the 3-board
+   bench. The updater retries serial chunk timeouts/NACKs, rejects unsafe resume
+   offsets and wrong-length chunks, waits for maintenance readiness, and verifies
+   every expected placed performer after reboot before declaring success. Missing
+   placed lanterns now block installs with a concrete Recovery row, and failed
+   post-reboot verification synthesizes per-node failed OTA rows for operators.
+   Next reliability work is deciding whether the 60-node field needs explicit
+   performer ACK/retry beyond the current status reporting.
+2. **Optional negative OTA-safety check:** if useful, intentionally flash one
    performer with a same-v6 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
    or older boards simply vanish from the roster due to the version gate.
-4. **Monday (parts in hand):** phototransistors are no longer required for the
+3. **Monday (parts in hand):** phototransistors are no longer required for the
    main sleep strategy. Treat them as optional/fallback only. Wire INA228 on one
    reference node (SDA→21, SCL→22, chip in series between
    battery+ and buck input) → run the INA228 bench checklist below → first
@@ -114,11 +139,30 @@ power measurement):
   serves the static operator UI and HTTP/WS API; `JsonLineSerialConductor`
   talks to the conductor over pyserial with request ids and ok/error acks.
   Mutations currently implemented: identify ack, assign/place, forget,
-  replace, pattern changes, and blackout. Serial calls are serialized and run
+  replace, pattern changes, blackout, power policy changes, OTA maintenance
+  mode enter/exit, firmware artifact staging, and field-wide OTA install.
+  Serial calls are serialized and run
   off the FastAPI event loop, so one serial timeout does not block unrelated
   async work. The UI has Map, Node List, Patterns, and Operations views; map
   zoom/pan, drag-to-move/place, unpositioned tray, single bottom-sheet actions,
-  per-pattern controls, and field firmware consistency display are all wired.
+  per-pattern controls, field firmware consistency display, Recovery card, and
+  the OTA updater card are all wired. Hardware-verified 2026-07-05: after flashing
+  all three bench boards, `/api/state.ota` reported maintenance `ready=true`,
+  `ready_count=2`, `expected=2`, no blockers; repeated full OTA installs streamed
+  all chunks and returned the field to idle with both performers healthy and
+  firmware-consistent. The latest run streamed `6727 / 6727` chunks and restored
+  performer #1 from `0.3.0-mismatch` to `0.3.0`; both performers reported
+  terminal `complete` status at the full image offset. Recovery dry-run follow-up
+  2026-07-06: old performer firmware aborted on repeated already-written OTA
+  chunks; `otaChunkDecision()` now makes those duplicate chunks idempotent, OTA
+  maintenance beacons keep performer radios awake until the window ends, and
+  pyserial writes are bounded with no unbounded `flush()`. Follow-up
+  investigation found the actual unsafe partial-write case: a truncated but
+  even-length hex payload could decode as a shorter chunk, advance the firmware
+  writer by a non-chunk length, and leave the API believing the full chunk had
+  landed. The firmware now requires exact decoded chunk length at the current
+  offset, and the API refuses to mark an install complete unless all expected
+  placed performers report complete or verify from post-reboot field state.
 - **Protocol foundation Half 1** (hardware-verified): typed message header
   `{magic, version, type}` with type dispatch; **MAC identity** read at boot and
   shown in `info`; **bidirectional ESP-NOW** — performers unicast `REGISTER`
@@ -142,17 +186,18 @@ power measurement):
   deliberately ungated (it's the overnight audit trail).
 - **Wire protocol is v6** (`PROTO_VERSION 6`; BEACON now includes runtime
   `PowerPolicy` with UTC epoch seconds, and REGISTER includes release version, protocol, build id, and
-  dirty flag for OTA version consistency).
+  dirty flag for OTA version consistency; OTA begin/chunk/end messages carry
+  the staged firmware image during manual maintenance updates).
   Protocol-mismatched nodes silently reject each other — **flash every board
   together**. A same-protocol stale version/build is reported as
   `Firmware mismatch`.
-- **Host unit tests** (`test/test_logic/`, 93): sync core, pattern math, roster,
-  layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
+- **Host unit tests** (`test/test_logic/`, 99) and control tests (40): sync
+  core, pattern math, roster, layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
   MAC text parsing, table wire (chunking / length validation / own-row scan /
-  row-reply decision + builder), firmware version consistency, power-policy
-  schedule math, and boot classification.
+  row-reply decision + builder), firmware version consistency, OTA CRC/hex
+  parsing, power-policy schedule math, and boot classification.
 
 **Hardware-verified (2026-06-28) — Milestone 3, Lever 1, Stage A (performer radio
 duty-cycle):** a performer powers the radio **down** between brief listen windows
@@ -276,27 +321,32 @@ is the on-device glue. NVS namespace is `"node"` (keys: `id`, `x`, `y`, `role`,
 
 **Not built yet:** Pi packaging (AP hotspot, mDNS, systemd, serial device naming),
 auto-calibration, show program / scheduling, real identify blink over ESP-NOW,
-OTA transfer. (The OTA safety foundation — build/version reporting and mixed
-firmware detection — is built; structured machine serial and the dev laptop
-UI/API are built now; INA228 telemetry firmware IS built too — see the section
-above; it awaits the physical chip.)
+and production-grade OTA ACK/retry/recovery. (The manual OTA transfer path is
+built and bench-verified; structured machine serial and the dev laptop UI/API
+are built now; INA228 telemetry firmware IS built too — see the section above;
+it awaits the physical chip.)
 
 ## Hardware state
 
 - 3× DOIT ESP32 DevKit V1, all on the unified image. Rings on 2 of them; LED data
   on **GPIO13 (`D13`)**, USB 5V (no 12 V / buck yet).
-- **As of 2026-07-05 (live API checked on `http://127.0.0.1:8001` after flashing v3):**
+- **As of 2026-07-06 (live API checked on `http://127.0.0.1:8001` after recovery hardening):**
   - `/dev/cu.usbserial-7`, `8C:94:DF:57:7F:14` — **CONDUCTOR**, serial-backed
     API server currently attached here.
   - `8C:94:DF:8F:71:50` — performer, label `#1`, positioned at approximately
     `(0.2249, 0.7570)`.
   - `30:76:F5:93:67:3C` — performer, label `#2`, positioned at approximately
     `(0.8076, 0.4122)`.
-  - Current live state when this doc was updated: `summary.alive=2`,
-    `summary.total=2`, `attention=0`, pattern `Glow`, brightness `27`,
-    params `[50,100,0,0]` (`hue=50`, `saturation=100`), firmware
-    `build_label=c046bf54`, `dirty=false`, `summary.firmware.consistent=true`
-    with `2 / 2` performers matching.
+  - Current live state when this doc was updated after the successful
+    mixed-firmware recovery run: `summary.alive=2`,
+    `summary.total=2`, `attention=0`, firmware `version=0.3.0`,
+    `build_label=ed2e397f`, `dirty=true`, `summary.firmware.consistent=true`
+    with `2 / 2` performers matching, and `recovery.status=ready`. Performer #1
+    was restored to `powersave on` after the OTA debugging run. The staged OTA
+    artifact is persisted in `.control_ota/` and survives API restarts.
+- Uploads were unstable at the previous high serial rate after long OTA
+  sessions, so `platformio.ini` currently sets `upload_speed = 115200`. It is
+  slow but reliable on the bench.
 - Port names still shuffle because all boards report the same USB serial —
   re-check each board with `info` rather than trusting labels.
 - **Gotcha:** factory boards ship with ESP-AT firmware and need a one-time

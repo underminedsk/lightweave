@@ -33,6 +33,71 @@ def test_firmware_mismatch_is_attention() -> None:
     assert snapshot["summary"]["firmware"]["consistent"] is False
     assert snapshot["summary"]["firmware"]["matching"] == 7
     assert snapshot["summary"]["attention"] == 3
+    assert snapshot["recovery"]["status"] == "mixed_firmware"
+    assert snapshot["recovery"]["mismatched"][0]["mac"] == "8C:94:DF:8F:71:50"
+
+
+def test_ota_readiness_requires_maintenance_mode_and_full_present_field() -> None:
+    conductor = MockConductor()
+
+    idle = conductor.snapshot()["ota"]
+    assert idle["mode"] == "idle"
+    assert idle["ready"] is False
+    assert "not in maintenance mode" in idle["blocked"]
+
+    conductor.set_ota_mode(True)
+    missing = conductor.snapshot()["ota"]
+    assert missing["mode"] == "maintenance"
+    assert missing["ready"] is False
+    assert "missing placed lanterns" in missing["blocked"]
+    assert conductor.snapshot()["recovery"]["status"] == "missing_nodes"
+
+    replacement = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
+    replacement.status = "alive"
+    replacement.last_seen_s = 2
+    ready = conductor.snapshot()["ota"]
+    assert ready["ready"] is True
+    assert ready["blocked"] == []
+    assert conductor.snapshot()["recovery"]["status"] == "ready"
+
+    conductor._lanterns[0].firmware = {
+        "version": "0.3.0-mismatch",
+        "proto": 6,
+        "build_id": 0x44D028FD,
+        "build_label": "44d028fd",
+        "dirty": False,
+    }
+    recovery_ready = conductor.snapshot()
+    assert recovery_ready["summary"]["firmware"]["consistent"] is False
+    assert recovery_ready["ota"]["ready"] is True
+    assert recovery_ready["ota"]["blocked"] == []
+    assert recovery_ready["recovery"]["status"] == "mixed_firmware"
+
+
+def test_recovery_summary_reports_failed_ota_node() -> None:
+    conductor = MockConductor()
+    conductor._ota_nodes = {
+        "8C:94:DF:8F:71:50": {
+            "mac": "8C:94:DF:8F:71:50",
+            "phase": "failed",
+            "error": "chunk offset mismatch",
+            "offset": 200,
+            "crc32": 0,
+            "last_seen_s": 1,
+        }
+    }
+
+    recovery = conductor.snapshot()["recovery"]
+
+    assert recovery["status"] == "ota_failed"
+    assert recovery["failed_ota"] == [
+        {
+            "mac": "8C:94:DF:8F:71:50",
+            "label": "#0",
+            "reason": "chunk offset mismatch",
+            "phase": "failed",
+        }
+    ]
 
 
 def test_power_policy_force_awake_overrides_off_window() -> None:

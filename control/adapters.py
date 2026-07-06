@@ -18,11 +18,20 @@ class ConductorAdapter(Protocol):
     def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]: ...
     def blackout(self) -> dict[str, Any]: ...
     def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]: ...
+    def set_ota_mode(self, enabled: bool) -> dict[str, Any]: ...
+    def ota_begin(self, size: int, crc32: int) -> dict[str, Any]: ...
+    def ota_chunk(self, offset: int, data: bytes) -> dict[str, Any]: ...
+    def ota_end(self) -> dict[str, Any]: ...
+    def ota_progress(self) -> dict[str, Any]: ...
 
 
 class JsonLineTransport(Protocol):
     def write_line(self, line: str) -> None: ...
     def read_line(self, timeout_s: float) -> str | None: ...
+
+
+OTA_CHUNK_TIMEOUT_S = 30.0
+OTA_FINALIZE_TIMEOUT_S = 120.0
 
 
 @dataclass
@@ -72,14 +81,30 @@ class JsonLineSerialConductor:
     def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
         return self._request("power_policy", **policy)
 
-    def _request(self, command: str, **payload: Any) -> dict[str, Any]:
+    def set_ota_mode(self, enabled: bool) -> dict[str, Any]:
+        return self._request("ota_mode", enabled=enabled)
+
+    def ota_begin(self, size: int, crc32: int) -> dict[str, Any]:
+        return self._request("ota_begin", _timeout_s=max(self.timeout_s, OTA_FINALIZE_TIMEOUT_S), size=size, crc32=crc32)
+
+    def ota_chunk(self, offset: int, data: bytes) -> dict[str, Any]:
+        return self._request("ota_chunk", _timeout_s=max(self.timeout_s, OTA_CHUNK_TIMEOUT_S), offset=offset, data=data.hex())
+
+    def ota_end(self) -> dict[str, Any]:
+        return self._request("ota_end", _timeout_s=max(self.timeout_s, OTA_FINALIZE_TIMEOUT_S))
+
+    def ota_progress(self) -> dict[str, Any]:
+        return self._request("ota_progress")
+
+    def _request(self, command: str, _timeout_s: float | None = None, **payload: Any) -> dict[str, Any]:
         with self._lock:
             request_id = self._next_id
             self._next_id += 1
             request = {"id": request_id, "cmd": command, **payload}
             self.transport.write_line(json.dumps(request, separators=(",", ":")))
 
-            deadline = time.monotonic() + self.timeout_s
+            timeout_s = self.timeout_s if _timeout_s is None else _timeout_s
+            deadline = time.monotonic() + timeout_s
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

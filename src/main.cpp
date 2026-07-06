@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <NeoPixelBus.h>
 #include <Preferences.h>
+#include <Update.h>
 #include <WiFi.h>
 #include <Wire.h>            // INA228 power monitor (I2C)
 #include <Adafruit_INA228.h>
@@ -103,6 +104,34 @@ static PowerPolicy g_power_policy = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0};
 static uint16_t    g_policy_base_min = 12 * 60;
 static uint32_t    g_policy_base_epoch_s = 0;
 static int64_t     g_policy_clock_set_us = 0;
+static bool        g_ota_maintenance = false;
+static int64_t     g_ota_maintenance_until_us = 0;
+static constexpr int64_t OTA_WINDOW_US = 15LL * 60LL * 1000000LL;
+static bool        g_ota_write_active = false;
+static uint32_t    g_ota_write_size = 0;
+static uint32_t    g_ota_write_written = 0;
+static uint32_t    g_ota_write_crc = 0;
+static uint32_t    g_ota_write_expected_crc = 0;
+static bool        g_ota_finalize_pending = false;
+static bool        g_ota_reboot_pending = false;
+static OtaStatusTable g_ota_status;
+static portMUX_TYPE   g_ota_status_mux = portMUX_INITIALIZER_UNLOCKED;
+static OtaStatusMsg   g_ota_status_pending = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_STATUS},
+                                               {0}, OTA_PHASE_IDLE, OTA_ERR_NONE, 0, 0};
+static bool           g_ota_status_pending_dirty = false;
+
+static bool otaMaintenanceActive(int64_t t);
+static void otaWriteAbort();
+static void otaSetLocalStatus(uint8_t phase, uint8_t error, uint32_t offset,
+                              uint32_t crc32);
+static void maybeOtaStatusReport();
+static void otaRadioBegin(const OtaBeginMsg& msg);
+static void otaRadioChunk(const OtaChunkMsg& msg);
+static void otaRadioEnd();
+static void otaFinalizePending();
+static void otaBroadcastBegin(uint32_t size, uint32_t crc32);
+static void otaBroadcastChunk(uint32_t offset, const uint8_t* data, uint8_t len);
+static void otaBroadcastEnd();
 
 // INA228 power telemetry (powermon.h logic, host-tested; ARCHITECTURE §4.2).
 // Probed over I2C at boot: 1–2 reference nodes carry the breakout in series
@@ -326,7 +355,7 @@ static PowerPolicy powerPolicySnapshot(int64_t t) {
   PowerPolicy p = g_power_policy;
   p.current_min = powerPolicyCurrentMinute(t);
   p.current_epoch_s = powerPolicyCurrentEpoch(t);
-  if (g_wake_flag) p.flags |= POWER_FLAG_FORCE_AWAKE;
+  if (g_wake_flag || otaMaintenanceActive(t)) p.flags |= POWER_FLAG_FORCE_AWAKE;
   else p.flags &= ~POWER_FLAG_FORCE_AWAKE;
   powerPolicySanitize(p);
   return p;
@@ -473,6 +502,41 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       portEXIT_CRITICAL(&g_power_mux);
       break;
     }
+    case MSG_OTA_BEGIN: {
+      if (isConductor()) return;
+      if (len != (int)sizeof(OtaBeginMsg)) return;
+      OtaBeginMsg m;
+      memcpy(&m, data, sizeof(m));
+      otaRadioBegin(m);
+      break;
+    }
+    case MSG_OTA_CHUNK: {
+      if (isConductor()) return;
+      if (len < (int)offsetof(OtaChunkMsg, data)) return;
+      OtaChunkMsg m;
+      memcpy(&m, data, len);
+      if (m.n == 0 || m.n > OTA_SERIAL_CHUNK_MAX) return;
+      if (len != (int)(offsetof(OtaChunkMsg, data) + m.n)) return;
+      otaRadioChunk(m);
+      break;
+    }
+    case MSG_OTA_END: {
+      if (isConductor()) return;
+      if (len != (int)sizeof(OtaEndMsg)) return;
+      otaRadioEnd();
+      break;
+    }
+    case MSG_OTA_STATUS: {
+      if (!isConductor()) return;
+      if (len != (int)sizeof(OtaStatusMsg)) return;
+      OtaStatusMsg m;
+      memcpy(&m, data, sizeof(m));
+      portENTER_CRITICAL(&g_ota_status_mux);
+      otaStatusUpsert(g_ota_status, m.mac, m.phase, m.error, m.offset,
+                      m.crc32, now_us());
+      portEXIT_CRITICAL(&g_ota_status_mux);
+      break;
+    }
     default:
       break;
   }
@@ -568,7 +632,8 @@ static bool conductorPeerReady(uint8_t cmac[6]) {
     memcpy(peer.peer_addr, cmac, 6);
     peer.channel = WIFI_CHANNEL;
     peer.encrypt = false;
-    if (esp_now_add_peer(&peer) == ESP_OK) g_conductor_peer_added = true;
+    esp_err_t err = esp_now_add_peer(&peer);
+    if (err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST) g_conductor_peer_added = true;
   }
   return g_conductor_peer_added;
 }
@@ -925,6 +990,327 @@ static void printPowerPolicyJson(const PowerPolicy& p) {
                 powerPolicyLedsOn(p) ? "true" : "false");
 }
 
+static void printOtaStatusNodesJson(int64_t t) {
+  OtaStatusTable status;
+  portENTER_CRITICAL(&g_ota_status_mux);
+  status = g_ota_status;
+  portEXIT_CRITICAL(&g_ota_status_mux);
+  Serial.print("[");
+  for (uint8_t i = 0; i < status.count; i++) {
+    const OtaNodeStatusEntry& e = status.entries[i];
+    char mac[18];
+    int64_t age_s = e.last_us > 0 ? (t - e.last_us) / 1000000 : -1;
+    if (i) Serial.print(",");
+    Serial.printf("{\"mac\":\"%s\",\"phase\":\"%s\",\"error\":\"%s\","
+                  "\"offset\":%lu,\"crc32\":%lu,\"last_seen_s\":%lld}",
+                  macStr(e.mac, mac), otaPhaseName(e.phase),
+                  otaErrorName(e.error), (unsigned long)e.offset,
+                  (unsigned long)e.crc32, (long long)age_s);
+  }
+  Serial.print("]");
+}
+
+static bool otaMaintenanceActive(int64_t t) {
+  if (!g_ota_maintenance) return false;
+  if (g_ota_maintenance_until_us > 0 && t >= g_ota_maintenance_until_us) {
+    g_ota_maintenance = false;
+    g_ota_maintenance_until_us = 0;
+    return false;
+  }
+  return true;
+}
+
+static void printOtaJson(uint8_t expected, uint8_t placed_alive,
+                         uint8_t firmware_matching, bool firmware_mixed,
+                         int64_t t) {
+  bool active = otaMaintenanceActive(t);
+  uint8_t missing = expected > placed_alive ? expected - placed_alive : 0;
+  bool ready = active && expected > 0 && missing == 0;
+  long timeout_s = active && g_ota_maintenance_until_us > t
+                       ? (long)((g_ota_maintenance_until_us - t) / 1000000LL)
+                       : 0;
+  Serial.printf("\"ota\":{\"mode\":\"%s\",\"enabled\":%s,\"ready\":%s,"
+                "\"ready_count\":%u,\"expected\":%u,\"missing\":%u,"
+                "\"firmware_consistent\":%s,\"timeout_s\":%ld,\"blocked\":[",
+                active ? "maintenance" : "idle", active ? "true" : "false",
+                ready ? "true" : "false", placed_alive, expected, missing,
+                firmware_mixed ? "false" : "true", timeout_s);
+  bool first = true;
+  if (!active) {
+    Serial.print("\"not in maintenance mode\"");
+    first = false;
+  }
+  if (expected == 0) {
+    if (!first) Serial.print(",");
+    Serial.print("\"no placed lanterns\"");
+    first = false;
+  }
+  if (missing > 0) {
+    if (!first) Serial.print(",");
+    Serial.print("\"missing placed lanterns\"");
+    first = false;
+  }
+  if (firmware_mixed && !ready) {
+    if (!first) Serial.print(",");
+    Serial.print("\"firmware mismatch\"");
+  }
+  Serial.print("],\"nodes\":");
+  printOtaStatusNodesJson(t);
+  Serial.print("}");
+}
+
+static void otaWriteAbort() {
+  if (g_ota_write_active) Update.abort();
+  g_ota_write_active = false;
+  g_ota_write_size = 0;
+  g_ota_write_written = 0;
+  g_ota_write_crc = 0;
+  g_ota_write_expected_crc = 0;
+  g_ota_finalize_pending = false;
+}
+
+static void otaSetLocalStatus(uint8_t phase, uint8_t error, uint32_t offset,
+                              uint32_t crc32) {
+  if (isConductor()) return;
+  OtaStatusMsg msg = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_STATUS},
+                      {0}, phase, error, offset, crc32};
+  memcpy(msg.mac, g_mac, 6);
+  portENTER_CRITICAL(&g_ota_status_mux);
+  g_ota_status_pending = msg;
+  g_ota_status_pending_dirty = true;
+  portEXIT_CRITICAL(&g_ota_status_mux);
+}
+
+static void otaStatusReport(bool keep_pending) {
+  if (isConductor() || !g_ota_status_pending_dirty || !g_radio_on) return;
+
+  OtaStatusMsg msg;
+  portENTER_CRITICAL(&g_ota_status_mux);
+  msg = g_ota_status_pending;
+  if (!keep_pending) g_ota_status_pending_dirty = false;
+  portEXIT_CRITICAL(&g_ota_status_mux);
+  esp_now_send(BROADCAST_ADDR, (const uint8_t*)&msg, sizeof(msg));
+}
+
+static void maybeOtaStatusReport() {
+  otaStatusReport(/*keep_pending*/ false);
+}
+
+static void otaRadioBegin(const OtaBeginMsg& msg) {
+  if (msg.size == 0) return;
+  otaWriteAbort();
+  if (!Update.begin(msg.size, U_FLASH)) {
+    otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_BEGIN_FAILED, 0, 0);
+    return;
+  }
+  g_ota_write_active = true;
+  g_ota_write_size = msg.size;
+  g_ota_write_written = 0;
+  g_ota_write_crc = 0;
+  g_ota_write_expected_crc = msg.crc32;
+  otaSetLocalStatus(OTA_PHASE_BEGIN, OTA_ERR_NONE, 0, 0);
+}
+
+static void otaRadioChunk(const OtaChunkMsg& msg) {
+  if (!g_ota_write_active) return;
+  switch (otaChunkDecision(g_ota_write_written, g_ota_write_size,
+                           msg.offset, msg.n)) {
+    case OTA_CHUNK_DUPLICATE:
+      return;
+    case OTA_CHUNK_OFFSET_MISMATCH:
+      otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_OFFSET_MISMATCH,
+                        g_ota_write_written, g_ota_write_crc);
+      otaWriteAbort();
+      return;
+    case OTA_CHUNK_OVERFLOW:
+      otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_OVERFLOW,
+                        g_ota_write_written, g_ota_write_crc);
+      otaWriteAbort();
+      return;
+    case OTA_CHUNK_ACCEPT:
+      break;
+  }
+  size_t written = Update.write((uint8_t*)msg.data, msg.n);
+  if (written != msg.n) {
+    otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_WRITE_FAILED,
+                      g_ota_write_written, g_ota_write_crc);
+    otaWriteAbort();
+    return;
+  }
+  g_ota_write_crc = otaCrc32Update(g_ota_write_crc, msg.data, msg.n);
+  g_ota_write_written += msg.n;
+  if (g_ota_write_written == msg.n ||
+      g_ota_write_written == g_ota_write_size ||
+      (g_ota_write_written % 4096) == 0) {
+    otaSetLocalStatus(OTA_PHASE_WRITING, OTA_ERR_NONE,
+                      g_ota_write_written, g_ota_write_crc);
+  }
+}
+
+static void otaRadioEnd() {
+  if (!g_ota_write_active) return;
+  if (g_ota_write_written != g_ota_write_size) {
+    otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_INCOMPLETE,
+                      g_ota_write_written, g_ota_write_crc);
+    otaWriteAbort();
+    return;
+  }
+  if (g_ota_write_crc != g_ota_write_expected_crc) {
+    otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_CRC_MISMATCH,
+                      g_ota_write_written, g_ota_write_crc);
+    otaWriteAbort();
+    return;
+  }
+  g_ota_finalize_pending = true;
+}
+
+static void otaFinalizePending() {
+  if (!g_ota_finalize_pending) return;
+  g_ota_finalize_pending = false;
+  if (!g_ota_write_active) return;
+  if (!Update.end(true)) {
+    otaSetLocalStatus(OTA_PHASE_ERROR, OTA_ERR_END_FAILED,
+                      g_ota_write_written, g_ota_write_crc);
+    otaWriteAbort();
+    return;
+  }
+  g_ota_write_active = false;
+  otaSetLocalStatus(OTA_PHASE_COMPLETE, OTA_ERR_NONE,
+                    g_ota_write_written, g_ota_write_crc);
+  g_ota_reboot_pending = true;
+}
+
+static void otaSendRepeated(const uint8_t* data, size_t len) {
+  for (uint8_t i = 0; i < 3; i++) {
+    esp_now_send(BROADCAST_ADDR, data, len);
+    delay(2);
+  }
+}
+
+static void otaBroadcastBegin(uint32_t size, uint32_t crc32) {
+  if (!isConductor()) return;
+  OtaBeginMsg msg = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_BEGIN}, size, crc32};
+  otaSendRepeated((const uint8_t*)&msg, sizeof(msg));
+}
+
+static void otaBroadcastChunk(uint32_t offset, const uint8_t* data, uint8_t len) {
+  if (!isConductor() || len == 0 || len > OTA_SERIAL_CHUNK_MAX) return;
+  OtaChunkMsg msg = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_CHUNK}, offset, len, {0}};
+  memcpy(msg.data, data, len);
+  otaSendRepeated((const uint8_t*)&msg, offsetof(OtaChunkMsg, data) + len);
+}
+
+static void otaBroadcastEnd() {
+  if (!isConductor()) return;
+  OtaEndMsg msg = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_END}};
+  otaSendRepeated((const uint8_t*)&msg, sizeof(msg));
+}
+
+static void handleOtaBegin(const SerialJsonCommand& cmd) {
+  if (!otaMaintenanceActive(now_us())) {
+    jsonError(cmd.id, "ota maintenance mode is not active");
+    return;
+  }
+  if (cmd.ota_size == 0) {
+    jsonError(cmd.id, "bad ota size");
+    return;
+  }
+  otaWriteAbort();
+  if (!Update.begin(cmd.ota_size, U_FLASH)) {
+    jsonError(cmd.id, "ota begin failed");
+    return;
+  }
+  g_ota_write_active = true;
+  g_ota_write_size = cmd.ota_size;
+  g_ota_write_written = 0;
+  g_ota_write_crc = 0;
+  g_ota_write_expected_crc = cmd.ota_crc32;
+  otaBroadcastBegin(cmd.ota_size, cmd.ota_crc32);
+  jsonOk(cmd.id, "ota write started");
+}
+
+static void handleOtaChunk(const SerialJsonCommand& cmd) {
+  if (!g_ota_write_active) {
+    jsonError(cmd.id, "ota write is not active");
+    return;
+  }
+  uint8_t bytes[OTA_SERIAL_CHUNK_MAX];
+  size_t len = 0;
+  if (!otaHexDecode(cmd.ota_data_hex, bytes, sizeof(bytes), len) || len == 0) {
+    jsonError(cmd.id, "bad ota chunk data");
+    return;
+  }
+  if (cmd.ota_offset < g_ota_write_written &&
+      cmd.ota_offset + len <= g_ota_write_written) {
+    jsonOk(cmd.id, "ota chunk already written");
+    return;
+  }
+  if (cmd.ota_offset != g_ota_write_written) {
+    jsonError(cmd.id, "ota chunk offset mismatch");
+    return;
+  }
+  if (len != otaExpectedChunkLen(g_ota_write_size, cmd.ota_offset)) {
+    jsonError(cmd.id, "ota chunk length mismatch");
+    return;
+  }
+  if (g_ota_write_written + len > g_ota_write_size) {
+    jsonError(cmd.id, "ota chunk exceeds image size");
+    return;
+  }
+  otaBroadcastChunk(cmd.ota_offset, bytes, (uint8_t)len);
+  size_t written = Update.write(bytes, len);
+  if (written != len) {
+    otaWriteAbort();
+    jsonError(cmd.id, "ota flash write failed");
+    return;
+  }
+  g_ota_write_crc = otaCrc32Update(g_ota_write_crc, bytes, len);
+  g_ota_write_written += (uint32_t)len;
+  jsonOk(cmd.id, "ota chunk written");
+}
+
+static void handleOtaEnd(const SerialJsonCommand& cmd) {
+  if (!g_ota_write_active) {
+    jsonError(cmd.id, "ota write is not active");
+    return;
+  }
+  if (g_ota_write_written != g_ota_write_size) {
+    otaWriteAbort();
+    jsonError(cmd.id, "ota image incomplete");
+    return;
+  }
+  if (g_ota_write_crc != g_ota_write_expected_crc) {
+    otaWriteAbort();
+    jsonError(cmd.id, "ota crc mismatch");
+    return;
+  }
+  if (!Update.end(true)) {
+    otaWriteAbort();
+    jsonError(cmd.id, "ota finalize failed");
+    return;
+  }
+  g_ota_write_active = false;
+  otaBroadcastEnd();
+  delay(10000);
+  Serial.printf("{\"id\":%lu,\"ok\":true,\"message\":\"ota install complete; rebooting\","
+                "\"nodes\":", (unsigned long)cmd.id);
+  printOtaStatusNodesJson(now_us());
+  Serial.print("}\n");
+  Serial.flush();
+  delay(100);
+  ESP.restart();
+}
+
+static void handleOtaProgress(const SerialJsonCommand& cmd) {
+  Serial.printf("{\"id\":%lu,\"ok\":true,\"active\":%s,"
+                "\"size\":%lu,\"written\":%lu,\"crc32\":%lu}\n",
+                (unsigned long)cmd.id,
+                g_ota_write_active ? "true" : "false",
+                (unsigned long)g_ota_write_size,
+                (unsigned long)g_ota_write_written,
+                (unsigned long)g_ota_write_crc);
+}
+
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
                              const char* status, int64_t last_seen_s, float x,
                              float y, bool has_position, const char* attention,
@@ -1023,6 +1409,8 @@ static void printMachineState(uint32_t id) {
   printPatternJson(b);
   Serial.print(",");
   printPowerPolicyJson(policy);
+  Serial.print(",");
+  printOtaJson(g_table.count, placed_alive, firmware_matching, firmware_mixed, t);
   Serial.print(",\"lanterns\":[");
   bool first = true;
   for (uint8_t i = 0; i < g_table.count; i++) {
@@ -1130,6 +1518,27 @@ static void handleMachineCommand(const SerialJsonCommand& cmd) {
       powerPolicyApplyCommand(cmd);
       jsonOk(cmd.id, "power policy changed");
     }
+  } else if (cmd.kind == SJ_OTA_MODE) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "ota mode is conductor-only");
+    } else {
+      if (!cmd.ota_enabled) otaWriteAbort();
+      g_ota_maintenance = cmd.ota_enabled;
+      g_ota_maintenance_until_us = cmd.ota_enabled ? now_us() + OTA_WINDOW_US : 0;
+      portENTER_CRITICAL(&g_ota_status_mux);
+      otaStatusInit(g_ota_status);
+      portEXIT_CRITICAL(&g_ota_status_mux);
+      jsonOk(cmd.id, cmd.ota_enabled ? "ota maintenance mode started"
+                                      : "ota maintenance mode ended");
+    }
+  } else if (cmd.kind == SJ_OTA_BEGIN) {
+    handleOtaBegin(cmd);
+  } else if (cmd.kind == SJ_OTA_CHUNK) {
+    handleOtaChunk(cmd);
+  } else if (cmd.kind == SJ_OTA_END) {
+    handleOtaEnd(cmd);
+  } else if (cmd.kind == SJ_OTA_PROGRESS) {
+    handleOtaProgress(cmd);
   } else {
     jsonError(cmd.id, "unknown cmd");
   }
@@ -1351,6 +1760,7 @@ void setup() {
   patternConfigLoad();
   esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
   rosterInit(g_roster);
+  otaStatusInit(g_ota_status);
   tableLoad();
   if (!identityProvisioned(g_id))
     Serial.println("  (unprovisioned — set 'role …', 'id <n>', 'pos <x> <y>')");
@@ -1416,9 +1826,19 @@ void setup() {
 }
 
 void loop() {
+  otaFinalizePending();
+  if (g_ota_reboot_pending) {
+    for (uint8_t i = 0; i < 20; i++) {
+      otaStatusReport(/*keep_pending*/ true);
+      delay(250);
+    }
+    ESP.restart();
+  }
+
   int64_t t = now_us();
 
   pollSerialCommands();
+  maybeOtaStatusReport();
 
   // Snapshot sync + beacon together up front; render uses them below. The
   // beacon credit (dutyNoteBeacon) must run BEFORE dutyStep: a beacon that
@@ -1483,13 +1903,17 @@ void loop() {
     PowerPolicy policy = b.power;
     powerPolicySanitize(policy);
     powerPolicyAdvanceToSyncedNow(policy, b, s, t);
-    if (g_powersave) {
+    bool field_awake = powerPolicyForceAwake(policy);
+    if (g_ota_write_active && !g_radio_on) radioWake();
+    if (field_awake && !g_radio_on) radioWake();
+    if (g_powersave && !g_ota_write_active && !field_awake) {
       DutyAction act = dutyStep(g_duty, currentDutyConfig(policy), t);
       if (act == DUTY_WAKE) radioWake();
       else if (act == DUTY_SLEEP) radioSleep();
     }
     if (g_radio_on) maybeRegister(t);  // TX only when the radio is powered
     maybePowerReport(t);   // no-op without the INA228; defers until radio-on
+    maybeOtaStatusReport();
     maybeAdoptPosition();  // pure NVS; flush a pending table adoption regardless
 
     // Primary field sleep policy: when the broadcast schedule says LEDs are off,

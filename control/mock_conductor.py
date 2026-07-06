@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import time
+import zlib
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
+
+from .ota_store import OTA_CHUNK_BYTES
 
 
 def _now() -> float:
@@ -29,6 +32,8 @@ DEFAULT_POWER_POLICY = {
     "force_awake": True,
     "leds_on": True,
 }
+
+OTA_WINDOW_S = 15 * 60
 
 
 def _firmware_matches(expected: dict[str, Any], actual: dict[str, Any] | None) -> bool:
@@ -106,6 +111,12 @@ class MockConductor:
             "params": {"hue": 40, "saturation": 100},
         }
     )
+    ota_started_at: float | None = None
+    ota_installed_crc32: int | None = None
+    _ota_write: bytearray | None = field(default=None, init=False, repr=False)
+    _ota_expected_size: int = field(default=0, init=False, repr=False)
+    _ota_expected_crc32: int = field(default=0, init=False, repr=False)
+    _ota_nodes: dict[str, dict[str, Any]] = field(default_factory=dict, init=False, repr=False)
     events: list[dict[str, Any]] = field(default_factory=list)
     _lanterns: list[Lantern] = field(
         default_factory=lambda: [
@@ -133,6 +144,8 @@ class MockConductor:
         table_rows = sum(1 for item in lanterns if item["position"] == "Set")
         alive = sum(1 for item in lanterns if item["status"] == "alive" and item["position"] == "Set")
         attention = sum(1 for item in lanterns if item["attention"] != "None")
+        firmware = self._firmware_summary(lanterns, table_rows)
+        ota = self._ota_summary(lanterns, table_rows, now, firmware)
         return {
             "conductor": {
                 "connected": self.connected,
@@ -147,10 +160,12 @@ class MockConductor:
                 "total": table_rows,
                 "attention": attention,
                 "table_rows": table_rows,
-                "firmware": self._firmware_summary(lanterns, table_rows),
+                "firmware": firmware,
             },
             "pattern": deepcopy(self.pattern),
             "power": deepcopy(self.power),
+            "ota": ota,
+            "recovery": self._recovery_summary(lanterns, ota, firmware),
             "lanterns": lanterns,
             "events": list(reversed(self.events[-20:])),
         }
@@ -240,6 +255,92 @@ class MockConductor:
         )
         return {"ok": True, "message": "power policy changed", "power": deepcopy(self.power)}
 
+    def set_ota_mode(self, enabled: bool) -> dict[str, Any]:
+        self.ota_started_at = _now() if enabled else None
+        if not enabled:
+            self._ota_write = None
+            self._ota_nodes = {}
+        self._event("ota maintenance mode started" if enabled else "ota maintenance mode ended")
+        return {
+            "ok": True,
+            "message": "ota maintenance mode started" if enabled else "ota maintenance mode ended",
+        }
+
+    def ota_begin(self, size: int, crc32: int) -> dict[str, Any]:
+        if self.ota_started_at is None:
+            return {"ok": False, "error": "ota maintenance mode is not active"}
+        self._ota_write = bytearray()
+        self._ota_expected_size = size
+        self._ota_expected_crc32 = crc32
+        self._ota_nodes = {
+            item.mac: {"mac": item.mac, "phase": "begin", "error": "none", "offset": 0, "crc32": 0, "last_seen_s": 0}
+            for item in self._lanterns
+            if item.status == "alive" and item.x is not None and item.y is not None
+        }
+        return {"ok": True, "message": "ota write started"}
+
+    def ota_chunk(self, offset: int, data: bytes) -> dict[str, Any]:
+        if self._ota_write is None:
+            return {"ok": False, "error": "ota write is not active"}
+        if offset < len(self._ota_write) and offset + len(data) <= len(self._ota_write):
+            return {"ok": True, "message": "ota chunk already written"}
+        if offset != len(self._ota_write):
+            for node in self._ota_nodes.values():
+                node.update({"phase": "failed", "error": "chunk offset mismatch", "offset": offset})
+            return {"ok": False, "error": "ota chunk offset mismatch"}
+        expected_len = min(OTA_CHUNK_BYTES, max(0, self._ota_expected_size - offset))
+        if len(data) != expected_len:
+            return {"ok": False, "error": "ota chunk length mismatch"}
+        self._ota_write.extend(data)
+        for node in self._ota_nodes.values():
+            node.update({
+                "phase": "writing",
+                "error": "none",
+                "offset": len(self._ota_write),
+                "crc32": zlib.crc32(self._ota_write) & 0xFFFFFFFF,
+                "last_seen_s": 0,
+            })
+        return {"ok": True, "message": "ota chunk written"}
+
+    def ota_progress(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "active": self._ota_write is not None,
+            "size": self._ota_expected_size,
+            "written": len(self._ota_write or b""),
+            "crc32": zlib.crc32(self._ota_write or b"") & 0xFFFFFFFF,
+        }
+
+    def ota_end(self) -> dict[str, Any]:
+        if self._ota_write is None:
+            return {"ok": False, "error": "ota write is not active"}
+        if len(self._ota_write) != self._ota_expected_size:
+            self._ota_write = None
+            for node in self._ota_nodes.values():
+                node.update({"phase": "failed", "error": "image incomplete", "offset": len(self._ota_write or b"")})
+            return {"ok": False, "error": "ota image incomplete"}
+        if (zlib.crc32(self._ota_write) & 0xFFFFFFFF) != self._ota_expected_crc32:
+            self._ota_write = None
+            for node in self._ota_nodes.values():
+                node.update({"phase": "failed", "error": "crc mismatch", "offset": len(self._ota_write or b"")})
+            return {"ok": False, "error": "ota crc mismatch"}
+        self.ota_installed_crc32 = self._ota_expected_crc32
+        for node in self._ota_nodes.values():
+            node.update({
+                "phase": "complete",
+                "error": "none",
+                "offset": self._ota_expected_size,
+                "crc32": self._ota_expected_crc32,
+                "last_seen_s": 0,
+            })
+        self._ota_write = None
+        self._event("ota install complete")
+        return {
+            "ok": True,
+            "message": "ota install complete; rebooting",
+            "nodes": list(self._ota_nodes.values()),
+        }
+
     def _find(self, mac: str) -> Lantern | None:
         normalized = mac.upper()
         return next((lantern for lantern in self._lanterns if lantern.mac.upper() == normalized), None)
@@ -270,4 +371,102 @@ class MockConductor:
             "version": FIELD_FIRMWARE["version"],
             "build_label": FIELD_FIRMWARE["build_label"],
             "dirty": FIELD_FIRMWARE["dirty"],
+        }
+
+    def _ota_summary(
+        self,
+        lanterns: list[dict[str, Any]],
+        table_rows: int,
+        now: float,
+        firmware_summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.ota_started_at is not None and now - self.ota_started_at >= OTA_WINDOW_S:
+            self.ota_started_at = None
+        positioned = [item for item in lanterns if item["position"] == "Set" and item["status"] == "alive"]
+        firmware_summary = firmware_summary or self._firmware_summary(lanterns, table_rows)
+        active = self.ota_started_at is not None
+        missing = max(0, table_rows - len(positioned))
+        blocked: list[str] = []
+        if not active:
+            blocked.append("not in maintenance mode")
+        if table_rows == 0:
+            blocked.append("no placed lanterns")
+        if missing:
+            blocked.append("missing placed lanterns")
+        firmware_recovery_ready = active and table_rows > 0 and missing == 0
+        if not firmware_summary["consistent"] and not firmware_recovery_ready:
+            blocked.append("firmware mismatch")
+        ready = active and table_rows > 0 and missing == 0
+        timeout_s = max(0, int(OTA_WINDOW_S - (now - self.ota_started_at))) if active else 0
+        return {
+            "mode": "maintenance" if active else "idle",
+            "enabled": active,
+            "ready": ready,
+            "ready_count": len(positioned),
+            "expected": table_rows,
+            "missing": missing,
+            "firmware_consistent": firmware_summary["consistent"],
+            "timeout_s": timeout_s,
+            "blocked": blocked,
+            "nodes": list(self._ota_nodes.values()),
+        }
+
+    def _recovery_summary(
+        self,
+        lanterns: list[dict[str, Any]],
+        ota: dict[str, Any],
+        firmware_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        missing = [
+            {"mac": item["mac"], "label": item["label"], "reason": "not seen"}
+            for item in lanterns
+            if item["status"] == "missing" and item["position"] == "Set"
+        ]
+        mismatched = [
+            {
+                "mac": item["mac"],
+                "label": item["label"],
+                "reason": "firmware mismatch",
+                "firmware": deepcopy(item.get("firmware")),
+            }
+            for item in lanterns
+            if item.get("attention") == "Firmware mismatch"
+        ]
+        failed_ota = []
+        for node in ota.get("nodes", []):
+            if node.get("phase") != "failed":
+                continue
+            mac = str(node.get("mac") or "")
+            lantern = self._find(mac)
+            failed_ota.append({
+                "mac": mac,
+                "label": lantern.label if lantern else (mac or "node"),
+                "reason": node.get("error") or "ota failed",
+                "phase": node.get("phase"),
+            })
+        ready = not missing and not mismatched and not failed_ota and firmware_summary.get("consistent") is True
+        if failed_ota:
+            status = "ota_failed"
+            title = "Firmware update needs recovery"
+            action = "Keep maintenance mode open. Power-cycle the listed lanterns, wait for them to check in, then rerun the same staged firmware."
+        elif mismatched:
+            status = "mixed_firmware"
+            title = "Mixed firmware detected"
+            action = "Enter maintenance mode and reinstall the staged firmware across the whole field. Do not run the show with mixed firmware."
+        elif missing:
+            status = "missing_nodes"
+            title = "Placed lanterns are missing"
+            action = "Wake or power-cycle the listed lanterns. If a lantern is physically gone, replace it with an awake unpositioned spare."
+        else:
+            status = "ready"
+            title = "No recovery needed"
+            action = "Field firmware is consistent and all placed lanterns are healthy."
+        return {
+            "status": status,
+            "ready": ready,
+            "title": title,
+            "action": action,
+            "missing": missing,
+            "mismatched": mismatched,
+            "failed_ota": failed_ota,
         }

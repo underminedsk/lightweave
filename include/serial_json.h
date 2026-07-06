@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "macaddr.h"
+#include "ota_update.h"
 #include "pattern_ids.h"
 
 enum SerialJsonKind {
@@ -25,6 +26,11 @@ enum SerialJsonKind {
   SJ_PATTERN,
   SJ_BLACKOUT,
   SJ_POWER_POLICY,
+  SJ_OTA_MODE,
+  SJ_OTA_BEGIN,
+  SJ_OTA_CHUNK,
+  SJ_OTA_END,
+  SJ_OTA_PROGRESS,
 };
 
 struct SerialJsonCommand {
@@ -56,6 +62,12 @@ struct SerialJsonCommand {
   bool force_awake = false;
   uint16_t current_min = 12 * 60;
   uint32_t current_epoch_s = 0;
+  bool has_ota_enabled = false;
+  bool ota_enabled = false;
+  uint32_t ota_size = 0;
+  uint32_t ota_crc32 = 0;
+  uint32_t ota_offset = 0;
+  char ota_data_hex[OTA_SERIAL_CHUNK_MAX * 2 + 1] = {0};
 };
 
 inline bool serialJsonLooksLike(const char* line) {
@@ -293,6 +305,33 @@ inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
       cmd.has_force_awake = true;
       cmd.force_awake = b;
     }
+  } else if (!strcmp(norm, "otamode")) {
+    cmd.kind = SJ_OTA_MODE;
+    bool b = false;
+    if (!sjBool(json, "enabled", b)) {
+      error = "bad ota mode";
+      return false;
+    }
+    cmd.has_ota_enabled = true;
+    cmd.ota_enabled = b;
+  } else if (!strcmp(norm, "otabegin")) {
+    cmd.kind = SJ_OTA_BEGIN;
+    if (!sjUint(json, "size", cmd.ota_size) ||
+        !sjUint(json, "crc32", cmd.ota_crc32)) {
+      error = "bad ota begin";
+      return false;
+    }
+  } else if (!strcmp(norm, "otachunk")) {
+    cmd.kind = SJ_OTA_CHUNK;
+    if (!sjUint(json, "offset", cmd.ota_offset) ||
+        !sjString(json, "data", cmd.ota_data_hex, sizeof(cmd.ota_data_hex))) {
+      error = "bad ota chunk";
+      return false;
+    }
+  } else if (!strcmp(norm, "otaend")) {
+    cmd.kind = SJ_OTA_END;
+  } else if (!strcmp(norm, "otaprogress")) {
+    cmd.kind = SJ_OTA_PROGRESS;
   } else {
     error = "unknown cmd";
     return false;

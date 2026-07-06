@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "firmware_version.h"
+#include "ota_update.h"
 #include "power_policy.h"
 #include "powermon.h"  // PowerSample — MSG_POWER's payload IS the logic struct
 
@@ -44,6 +45,10 @@ enum MsgType : uint8_t {
   MSG_TABLE    = 3,  // conductor -> all: MAC->(x,y) layout chunk  (Half 2)
   MSG_ACK      = 4,  // generic acknowledgement                   (Half 2)
   MSG_POWER    = 5,  // performer -> conductor: INA228 energy telemetry
+  MSG_OTA_BEGIN = 6, // conductor -> all: begin field firmware OTA
+  MSG_OTA_CHUNK = 7, // conductor -> all: firmware OTA chunk
+  MSG_OTA_END   = 8, // conductor -> all: finalize firmware OTA
+  MSG_OTA_STATUS = 9, // performer -> conductor: OTA progress/error report
 };
 
 typedef struct __attribute__((packed)) {
@@ -120,3 +125,29 @@ typedef struct __attribute__((packed)) {
   uint8_t     mac[6];  // sender's MAC (also in recv-info; kept for the log)
   PowerSample s;       // energy_j / charge_c / bus_v / current_ma / elapsed_s
 } PowerMsg;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+  uint32_t  size;
+  uint32_t  crc32;
+} OtaBeginMsg;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+  uint32_t  offset;
+  uint8_t   n;
+  uint8_t   data[OTA_SERIAL_CHUNK_MAX];
+} OtaChunkMsg;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+} OtaEndMsg;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+  uint8_t   mac[6];
+  uint8_t   phase;   // OtaStatusPhase
+  uint8_t   error;   // OtaStatusError
+  uint32_t  offset;  // bytes accepted so far
+  uint32_t  crc32;   // running CRC32 at offset
+} OtaStatusMsg;

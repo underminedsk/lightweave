@@ -404,6 +404,70 @@ void test_power_policy_sleep_check_aligns_to_utc_interval() {
   TEST_ASSERT_EQUAL_UINT32(900, powerPolicyAlignedSleepSeconds(p));
 }
 
+void test_ota_crc32_matches_standard_vector() {
+  const uint8_t data[] = {'1','2','3','4','5','6','7','8','9'};
+
+  TEST_ASSERT_EQUAL_HEX32(0xCBF43926, otaCrc32Update(0, data, sizeof(data)));
+}
+
+void test_ota_hex_decode_rejects_bad_or_oversized_input() {
+  uint8_t out[4];
+  size_t out_len = 0;
+
+  TEST_ASSERT_TRUE(otaHexDecode("e90010ff", out, sizeof(out), out_len));
+  TEST_ASSERT_EQUAL_UINT(4, out_len);
+  TEST_ASSERT_EQUAL_HEX8(0xE9, out[0]);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, out[3]);
+  TEST_ASSERT_FALSE(otaHexDecode("abc", out, sizeof(out), out_len));
+  TEST_ASSERT_FALSE(otaHexDecode("zz", out, sizeof(out), out_len));
+  TEST_ASSERT_FALSE(otaHexDecode("0011223344", out, sizeof(out), out_len));
+}
+
+void test_ota_chunk_decision_accepts_repeated_written_chunks() {
+  TEST_ASSERT_EQUAL_UINT8(OTA_CHUNK_ACCEPT,
+                          otaChunkDecision(0, 1000, 0, 200));
+  TEST_ASSERT_EQUAL_UINT8(OTA_CHUNK_DUPLICATE,
+                          otaChunkDecision(200, 1000, 0, 200));
+  TEST_ASSERT_EQUAL_UINT8(OTA_CHUNK_OFFSET_MISMATCH,
+                          otaChunkDecision(200, 1000, 100, 200));
+  TEST_ASSERT_EQUAL_UINT8(OTA_CHUNK_OFFSET_MISMATCH,
+                          otaChunkDecision(200, 1000, 400, 200));
+  TEST_ASSERT_EQUAL_UINT8(OTA_CHUNK_OVERFLOW,
+                          otaChunkDecision(900, 1000, 900, 200));
+}
+
+void test_ota_expected_chunk_len_uses_full_chunks_until_tail() {
+  TEST_ASSERT_EQUAL_UINT16(OTA_SERIAL_CHUNK_MAX,
+                           otaExpectedChunkLen(1000, 0));
+  TEST_ASSERT_EQUAL_UINT16(OTA_SERIAL_CHUNK_MAX,
+                           otaExpectedChunkLen(1000, OTA_SERIAL_CHUNK_MAX));
+  TEST_ASSERT_EQUAL_UINT16(1000 - (7 * OTA_SERIAL_CHUNK_MAX),
+                           otaExpectedChunkLen(1000, 7 * OTA_SERIAL_CHUNK_MAX));
+  TEST_ASSERT_EQUAL_UINT16(0, otaExpectedChunkLen(1000, 1000));
+}
+
+void test_ota_status_table_upserts_by_mac() {
+  OtaStatusTable t;
+  otaStatusInit(t);
+  const uint8_t a[6] = {1, 2, 3, 4, 5, 6};
+  const uint8_t b[6] = {1, 2, 3, 4, 5, 7};
+
+  TEST_ASSERT_TRUE(otaStatusUpsert(t, a, OTA_PHASE_BEGIN, OTA_ERR_NONE, 0, 0, 10));
+  TEST_ASSERT_TRUE(otaStatusUpsert(t, b, OTA_PHASE_WRITING, OTA_ERR_NONE, 200, 42, 20));
+  TEST_ASSERT_TRUE(otaStatusUpsert(t, a, OTA_PHASE_COMPLETE, OTA_ERR_NONE, 400, 99, 30));
+
+  TEST_ASSERT_EQUAL_UINT8(2, t.count);
+  int ai = otaStatusFind(t, a);
+  int bi = otaStatusFind(t, b);
+  TEST_ASSERT_TRUE(ai >= 0);
+  TEST_ASSERT_TRUE(bi >= 0);
+  TEST_ASSERT_EQUAL_UINT8(OTA_PHASE_COMPLETE, t.entries[ai].phase);
+  TEST_ASSERT_EQUAL_UINT32(400, t.entries[ai].offset);
+  TEST_ASSERT_EQUAL_UINT8(OTA_PHASE_WRITING, t.entries[bi].phase);
+  TEST_ASSERT_EQUAL_STRING("complete", otaPhaseName(OTA_PHASE_COMPLETE));
+  TEST_ASSERT_EQUAL_STRING("chunk offset mismatch", otaErrorName(OTA_ERR_OFFSET_MISMATCH));
+}
+
 // ---- Layout table: authoritative MAC -> (x,y) -------------------------------
 
 void test_table_set_and_lookup() {
@@ -1104,6 +1168,45 @@ void test_serial_json_power_policy_parses_runtime_sleep_controls() {
   TEST_ASSERT_EQUAL_UINT32(1720123456, cmd.current_epoch_s);
 }
 
+void test_serial_json_ota_mode_parses_enabled_flag() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":12,\"cmd\":\"ota_mode\",\"enabled\":true}",
+      cmd, error));
+
+  TEST_ASSERT_NULL(error);
+  TEST_ASSERT_EQUAL_INT(SJ_OTA_MODE, cmd.kind);
+  TEST_ASSERT_TRUE(cmd.has_ota_enabled);
+  TEST_ASSERT_TRUE(cmd.ota_enabled);
+}
+
+void test_serial_json_ota_begin_chunk_and_end_parse() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":13,\"cmd\":\"ota_begin\",\"size\":4096,\"crc32\":1234}",
+      cmd, error));
+  TEST_ASSERT_EQUAL_INT(SJ_OTA_BEGIN, cmd.kind);
+  TEST_ASSERT_EQUAL_UINT32(4096, cmd.ota_size);
+  TEST_ASSERT_EQUAL_UINT32(1234, cmd.ota_crc32);
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":14,\"cmd\":\"ota_chunk\",\"offset\":160,\"data\":\"e90010ff\"}",
+      cmd, error));
+  TEST_ASSERT_EQUAL_INT(SJ_OTA_CHUNK, cmd.kind);
+  TEST_ASSERT_EQUAL_UINT32(160, cmd.ota_offset);
+  TEST_ASSERT_EQUAL_STRING("e90010ff", cmd.ota_data_hex);
+
+  TEST_ASSERT_TRUE(serialJsonParse("{\"id\":15,\"cmd\":\"ota_end\"}", cmd, error));
+  TEST_ASSERT_EQUAL_INT(SJ_OTA_END, cmd.kind);
+
+  TEST_ASSERT_TRUE(serialJsonParse("{\"id\":16,\"cmd\":\"ota_progress\"}", cmd, error));
+  TEST_ASSERT_EQUAL_INT(SJ_OTA_PROGRESS, cmd.kind);
+}
+
 void test_serial_json_rejects_bad_command() {
   SerialJsonCommand cmd;
   const char* error = nullptr;
@@ -1362,6 +1465,11 @@ int main(int, char**) {
   RUN_TEST(test_power_policy_force_awake_overrides_schedule);
   RUN_TEST(test_power_policy_sanitize_clamps_runtime_intervals);
   RUN_TEST(test_power_policy_sleep_check_aligns_to_utc_interval);
+  RUN_TEST(test_ota_crc32_matches_standard_vector);
+  RUN_TEST(test_ota_hex_decode_rejects_bad_or_oversized_input);
+  RUN_TEST(test_ota_chunk_decision_accepts_repeated_written_chunks);
+  RUN_TEST(test_ota_expected_chunk_len_uses_full_chunks_until_tail);
+  RUN_TEST(test_ota_status_table_upserts_by_mac);
   RUN_TEST(test_table_set_and_lookup);
   RUN_TEST(test_table_set_updates_in_place);
   RUN_TEST(test_table_remove);
@@ -1411,6 +1519,8 @@ int main(int, char**) {
   RUN_TEST(test_serial_json_pattern_maps_name_brightness_and_params);
   RUN_TEST(test_serial_json_glow_maps_hue_and_saturation_params);
   RUN_TEST(test_serial_json_power_policy_parses_runtime_sleep_controls);
+  RUN_TEST(test_serial_json_ota_mode_parses_enabled_flag);
+  RUN_TEST(test_serial_json_ota_begin_chunk_and_end_parse);
   RUN_TEST(test_serial_json_rejects_bad_command);
   RUN_TEST(test_table_wire_len_fits_espnow);
   RUN_TEST(test_table_chunk_count);

@@ -13,6 +13,9 @@ let replaceMode = false;
 let replacementMac = null;
 let patternDraft = null;
 let powerBaseline = null;
+let otaArtifact = null;
+let otaInstall = null;
+let savedPatterns = [];
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -33,6 +36,19 @@ async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(errorMessage(body.detail || response.statusText));
+  }
+  return response.json();
+}
+
+async function apiBinary(path, data) {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: data,
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
@@ -98,6 +114,21 @@ function firmwareHtml(firmware) {
   return `${version} <span class="firmware-hash">${hash}</span> <span class="muted-inline">p${escapeHtml(String(firmware.proto))}${dirty}</span>`;
 }
 
+function shortHash(hash) {
+  return String(hash || "").slice(0, 12);
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function render() {
   if (!state) return;
   if (!selectedMac && lanterns().length) selectedMac = lanterns()[0].mac;
@@ -113,11 +144,14 @@ function render() {
   $("#brightness-value").textContent = patternDraft.brightness;
 
   renderPatternControls();
+  renderSavedPatterns();
   renderMap();
   renderUnpositionedTray();
   renderRows();
   renderDetail();
   renderFirmware();
+  renderRecovery();
+  renderOta();
   renderPowerPolicy();
   renderEvents();
   renderDetailVisibility();
@@ -242,6 +276,38 @@ function renderPatternControls() {
   changeButton.ariaDisabled = String(changeButton.disabled);
 }
 
+function renderSavedPatterns() {
+  const list = $("#saved-pattern-list");
+  const count = $("#saved-pattern-count");
+  if (!list || !count) return;
+  count.textContent = `${savedPatterns.length} saved`;
+  if (!savedPatterns.length) {
+    list.innerHTML = '<div class="empty-state">No saved patterns yet.</div>';
+    return;
+  }
+  list.innerHTML = savedPatterns.map((item) => {
+    const details = `${escapeHtml(item.pattern)} · bri ${escapeHtml(String(item.brightness))}`;
+    const params = Object.entries(item.params || {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join(" ");
+    const id = escapeHtml(item.id);
+    return `
+      <div class="saved-pattern-row">
+        <div>
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${details}</span>
+          <small>${escapeHtml(params || "default params")}</small>
+        </div>
+        <a class="button-link" href="/api/patterns/${encodeURIComponent(item.id)}/preview" target="_blank" rel="noopener noreferrer">Preview</a>
+        <a class="button-link" href="/api/patterns/${encodeURIComponent(item.id)}/preview/frames.json" target="_blank" rel="noopener noreferrer">Frames</a>
+        <a class="button-link" href="/api/patterns/${encodeURIComponent(item.id)}/review" target="_blank" rel="noopener noreferrer">Review</a>
+        <button class="primary" data-pattern-action="broadcast-saved" data-pattern-id="${id}">Broadcast</button>
+        <button class="danger" data-pattern-action="delete-saved" data-pattern-id="${id}">Delete</button>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderMap() {
   const map = $("#map-content");
   $$(".node").forEach((node) => node.remove());
@@ -361,6 +427,161 @@ function renderFirmware() {
     ? `${matching} / ${expected} on this build`
     : `${matching} / ${seen} match`;
   $("#firmware-consistency").className = `ops-value ${consistent ? "ok" : "bad"}`;
+}
+
+function renderRecovery() {
+  const recovery = effectiveRecovery();
+  const status = recovery.status || "ready";
+  const ready = recovery.ready !== false && status === "ready";
+  $("#recovery-status").textContent = ready ? "ready" : "action needed";
+  $("#recovery-status").className = `chip ${ready ? "sync" : "active"}`;
+  $("#recovery-title").textContent = recovery.title || "No recovery needed";
+  $("#recovery-title").className = `recovery-title ${ready ? "ok" : "warn"}`;
+  $("#recovery-action").textContent = recovery.action || "Field firmware is consistent and all placed lanterns are healthy.";
+
+  const rows = [
+    ...(recovery.failed_ota || []).map((item) => ({ ...item, kind: "OTA" })),
+    ...(recovery.mismatched || []).map((item) => ({ ...item, kind: "Firmware" })),
+    ...(recovery.missing || []).map((item) => ({ ...item, kind: "Missing" })),
+  ];
+  const list = $("#recovery-list");
+  list.hidden = rows.length === 0;
+  if (list.hidden) {
+    list.innerHTML = "";
+    return;
+  }
+  list.innerHTML = rows.map((item) => `<div class="recovery-row">
+    <span>${escapeHtml(item.kind)}</span>
+    <strong>${escapeHtml(item.label || item.mac || "node")}</strong>
+    <span class="mono">${escapeHtml(item.mac || "")}</span>
+    <span>${escapeHtml(item.reason || "")}</span>
+  </div>`).join("");
+}
+
+function effectiveRecovery() {
+  if (otaInstall?.error) {
+    const failed = Array.isArray(otaInstall.nodes)
+      ? otaInstall.nodes.filter((node) => node.phase === "failed")
+      : [];
+    return {
+      status: "ota_failed",
+      ready: false,
+      title: "Firmware update needs recovery",
+      action: "Exit maintenance mode, enter it again, wait for readiness, then rerun the same staged firmware. Power-cycle any listed lantern that does not check back in.",
+      missing: [],
+      mismatched: [],
+      failed_ota: failed.length
+        ? failed.map((node) => ({
+          mac: node.mac,
+          label: lanterns().find((item) => item.mac === node.mac)?.label || node.mac || "node",
+          reason: node.error || otaInstall.error,
+          phase: node.phase,
+        }))
+        : [{ mac: "", label: "Field update", reason: otaInstall.error, phase: "failed" }],
+    };
+  }
+  return state.recovery || {};
+}
+
+function renderOta() {
+  const ota = state.ota || {};
+  const active = Boolean(ota.enabled);
+  const ready = Boolean(ota.ready);
+  const installing = Boolean(otaInstall?.running);
+  const expected = Number(ota.expected ?? state.summary.total ?? 0);
+  const readyCount = Number(ota.ready_count ?? 0);
+  const timeout = Number(ota.timeout_s ?? 0);
+  const blockers = Array.isArray(ota.blocked) ? ota.blocked : [];
+  $("#ota-mode").textContent = active ? "maintenance" : "idle";
+  $("#ota-mode").className = `chip ${active ? "sync" : ""}`;
+  $("#ota-readiness").textContent = ready ? `${readyCount} / ${expected} ready` : `${readyCount} / ${expected} ready`;
+  $("#ota-readiness").className = `ops-value ${ready ? "ok" : "warn"}`;
+  $("#ota-timeout").textContent = active ? `${Math.max(0, Math.floor(timeout / 60))}m ${timeout % 60}s` : "closed";
+  $("#ota-timeout").className = `ops-value ${active ? "ok" : ""}`;
+  $("#ota-blockers").textContent = blockers.length
+    ? `Blocked: ${blockers.join(", ")}.`
+    : "Ready for the next firmware upload step.";
+  $("#ota-artifact").innerHTML = otaArtifact
+    ? `Staged ${escapeHtml(otaArtifact.filename)} · ${formatBytes(otaArtifact.size)} · ${otaArtifact.chunks} chunks · sha256 <span class="mono">${escapeHtml(shortHash(otaArtifact.sha256))}</span>`
+    : "No firmware staged.";
+  renderOtaProgress();
+  renderOtaNodes();
+  const fileInput = $("#ota-file");
+  $('[data-action="stage-ota-artifact"]').disabled = installing || !fileInput?.files?.length;
+  $('[data-action="enter-ota"]').disabled = installing || active;
+  $('[data-action="install-ota"]').disabled = installing || !otaReadyForInstall() || !otaArtifact;
+  $('[data-action="exit-ota"]').disabled = installing || !active;
+}
+
+function otaReadyForInstall() {
+  const ota = state?.ota || {};
+  if (ota.ready) return true;
+  const recovery = effectiveRecovery();
+  return (
+    ota.enabled === true
+    && Number(ota.expected || 0) > 0
+    && Number(ota.missing || 0) === 0
+    && (recovery.status === "mixed_firmware" || recovery.status === "ota_failed")
+  );
+}
+
+function renderOtaProgress() {
+  const progress = $("#ota-progress");
+  if (!progress) return;
+  const running = Boolean(otaInstall?.running);
+  const complete = Boolean(otaInstall?.complete);
+  const error = otaInstall?.error;
+  const show = running || complete || error;
+  progress.hidden = !show;
+  if (!show) return;
+
+  const sent = Number(otaInstall?.chunks_sent || 0);
+  const total = Math.max(0, Number(otaInstall?.chunks_total || 0));
+  const bytesSent = Number(otaInstall?.bytes_sent || 0);
+  const size = Number(otaInstall?.size || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
+  const label = error
+    ? `Install failed: ${error}`
+    : complete
+      ? "Install complete; boards rebooting"
+      : `Installing ${otaInstall?.filename || "firmware"}`;
+  $("#ota-progress-label").textContent = label;
+  $("#ota-progress-count").textContent = total > 0
+    ? `${sent} / ${total} chunks`
+    : `${formatBytes(bytesSent)} / ${formatBytes(size)}`;
+  $("#ota-progress-fill").style.width = `${complete ? 100 : percent}%`;
+  progress.classList.toggle("bad", Boolean(error));
+  progress.classList.toggle("ok", complete && !error);
+}
+
+function renderOtaNodes() {
+  const box = $("#ota-nodes");
+  if (!box) return;
+  const liveNodes = Array.isArray(state?.ota?.nodes) ? state.ota.nodes : [];
+  const installNodes = Array.isArray(otaInstall?.nodes) ? otaInstall.nodes : [];
+  const nodes = liveNodes.length ? liveNodes : installNodes;
+  const installing = Boolean(otaInstall?.running);
+  box.hidden = nodes.length === 0 && !installing;
+  if (box.hidden) return;
+  if (nodes.length === 0) {
+    box.innerHTML = `<div class="ota-node-row"><span>Waiting for node reports</span><span class="muted-inline">--</span></div>`;
+    return;
+  }
+  box.innerHTML = nodes.map((node) => {
+    const failed = node.phase === "failed";
+    const complete = node.phase === "complete";
+    const cls = failed ? "bad" : complete ? "ok" : "";
+    const lantern = lanterns().find((item) => item.mac === node.mac);
+    const label = lantern?.label ? `${lantern.label} ${node.mac}` : (node.mac || "node");
+    const detail = failed
+      ? node.error
+      : `${formatBytes(node.offset || 0)}${node.last_seen_s !== undefined ? ` · ${node.last_seen_s}s ago` : ""}`;
+    return `<div class="ota-node-row ${cls}">
+      <span>${escapeHtml(label)}</span>
+      <span>${escapeHtml(node.phase || "idle")}</span>
+      <span class="mono">${escapeHtml(detail)}</span>
+    </div>`;
+  }).join("");
 }
 
 function minutesToTime(minutes) {
@@ -759,7 +980,33 @@ async function placeSelectedLantern(clientX, clientY) {
 
 async function refresh() {
   state = await api("/api/state");
+  savedPatterns = (await api("/api/patterns")).patterns;
+  otaArtifact = (await api("/api/operations/ota-artifact")).artifact;
+  otaInstall = (await api("/api/operations/ota-install")).install;
   render();
+}
+
+async function refreshSavedPatterns() {
+  savedPatterns = (await api("/api/patterns")).patterns;
+  renderSavedPatterns();
+}
+
+async function refreshOtaInstall() {
+  otaInstall = (await api("/api/operations/ota-install")).install;
+  if (state) renderOta();
+}
+
+async function pollOtaInstallWhile(installPromise) {
+  let finished = false;
+  installPromise.then(
+    () => { finished = true; },
+    () => { finished = true; },
+  );
+  while (!finished) {
+    await delay(750);
+    await refreshOtaInstall();
+  }
+  await refreshOtaInstall();
 }
 
 async function runAction(action) {
@@ -817,6 +1064,25 @@ async function runAction(action) {
       await refresh();
       return;
     }
+    if (action === "save-pattern") {
+      if (!state || !patternDraft) return;
+      const fallback = `${patternDraft.pattern} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      const name = prompt("Pattern name", fallback);
+      if (!name) return;
+      const ack = await api("/api/patterns", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          pattern: patternDraft.pattern,
+          brightness: Number(patternDraft.brightness),
+          params: patternParams(patternDraft),
+        }),
+      });
+      savedPatterns = [...savedPatterns, ack.pattern].sort((a, b) => a.name.localeCompare(b.name));
+      renderSavedPatterns();
+      toast(`saved ${ack.pattern.name}`);
+      return;
+    }
     if (action === "blackout") {
       if (!confirm("Broadcast blackout brightness 0?")) return;
       const ack = await api("/api/show/blackout", { method: "POST" });
@@ -834,6 +1100,47 @@ async function runAction(action) {
       localStorage.setItem(TIMEZONE_STORAGE_KEY, selectedTimezone());
       powerBaseline = powerSnapshotFromForm();
       updateSleepScheduleDirtyState();
+      toast(ack.message);
+      await refresh();
+      return;
+    }
+    if (action === "enter-ota" || action === "exit-ota") {
+      const enabled = action === "enter-ota";
+      if (enabled && !confirm("Enter maintenance mode for a field-wide firmware update?")) return;
+      const ack = await api("/api/operations/ota-mode", {
+        method: "POST",
+        body: JSON.stringify({ enabled }),
+      });
+      toast(ack.message);
+      await refresh();
+      return;
+    }
+    if (action === "stage-ota-artifact") {
+      const file = $("#ota-file")?.files?.[0];
+      if (!file) return;
+      const ack = await apiBinary(`/api/operations/ota-artifact?filename=${encodeURIComponent(file.name)}`, file);
+      otaArtifact = ack.artifact;
+      renderOta();
+      toast(ack.message);
+      return;
+    }
+    if (action === "install-ota") {
+      if (!otaArtifact || !otaReadyForInstall()) return;
+      if (!confirm("Install staged firmware across the field? Boards will reboot.")) return;
+      otaInstall = {
+        running: true,
+        complete: false,
+        error: null,
+        filename: otaArtifact.filename,
+        size: otaArtifact.size,
+        bytes_sent: 0,
+        chunks_sent: 0,
+        chunks_total: otaArtifact.chunks,
+      };
+      renderOta();
+      const installPromise = api("/api/operations/ota-install", { method: "POST" });
+      await pollOtaInstallWhile(installPromise);
+      const ack = await installPromise;
       toast(ack.message);
       await refresh();
       return;
@@ -919,11 +1226,36 @@ document.addEventListener("click", (event) => {
     mapPanY = 0;
     setMapZoom(1);
   }
+  const patternTarget = event.target.closest("[data-pattern-action]");
+  if (!patternTarget) return;
+  const id = patternTarget.dataset.patternId;
+  const action = patternTarget.dataset.patternAction;
+  if (!id || !action) return;
+  if (action === "broadcast-saved") {
+    api(`/api/patterns/${encodeURIComponent(id)}/broadcast`, { method: "POST" })
+      .then(async (ack) => {
+        toast(ack.message);
+        await refresh();
+      })
+      .catch((error) => toast(error.message, true));
+  }
+  if (action === "delete-saved") {
+    const item = savedPatterns.find((pattern) => pattern.id === id);
+    if (!confirm(`Delete ${item?.name || id}?`)) return;
+    api(`/api/patterns/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(async () => {
+        await refreshSavedPatterns();
+        toast("pattern deleted");
+      })
+      .catch((error) => toast(error.message, true));
+  }
 });
 
 $$("[data-action]").forEach((button) => {
   button.addEventListener("click", () => runAction(button.dataset.action));
 });
+
+$("#ota-file")?.addEventListener("change", renderOta);
 
 $("[data-replace-cancel]").addEventListener("click", closeReplacePanel);
 $("#replace-confirm").addEventListener("click", () => {

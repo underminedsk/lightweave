@@ -66,6 +66,50 @@ def test_pattern_command_includes_brightness_and_params() -> None:
     }
 
 
+def test_ota_mode_maps_to_json_command() -> None:
+    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "ota maintenance mode started"})])
+    conductor = JsonLineSerialConductor(transport)
+
+    ack = conductor.set_ota_mode(True)
+
+    assert ack == {"ok": True, "message": "ota maintenance mode started"}
+    assert json.loads(transport.writes[0]) == {
+        "id": 1,
+        "cmd": "ota_mode",
+        "enabled": True,
+    }
+
+
+def test_ota_write_commands_map_to_json() -> None:
+    transport = FakeTransport([
+        json.dumps({"id": 1, "ok": True, "message": "ota write started"}),
+        json.dumps({"id": 2, "ok": True, "message": "ota chunk written"}),
+        json.dumps({"id": 3, "ok": True, "active": True, "size": 4, "written": 4, "crc32": 0x12345678}),
+        json.dumps({"id": 4, "ok": True, "message": "ota install complete; rebooting"}),
+    ])
+    conductor = JsonLineSerialConductor(transport)
+
+    conductor.ota_begin(4, 0x12345678)
+    conductor.ota_chunk(0, b"\xe9\x00\x10\xff")
+    conductor.ota_progress()
+    conductor.ota_end()
+
+    assert json.loads(transport.writes[0]) == {
+        "id": 1,
+        "cmd": "ota_begin",
+        "size": 4,
+        "crc32": 0x12345678,
+    }
+    assert json.loads(transport.writes[1]) == {
+        "id": 2,
+        "cmd": "ota_chunk",
+        "offset": 0,
+        "data": "e90010ff",
+    }
+    assert json.loads(transport.writes[2]) == {"id": 3, "cmd": "ota_progress"}
+    assert json.loads(transport.writes[3]) == {"id": 4, "cmd": "ota_end"}
+
+
 def test_error_ack_returns_adapter_error() -> None:
     transport = FakeTransport([json.dumps({"id": 1, "ok": False, "error": "unknown lantern"})])
     conductor = JsonLineSerialConductor(transport)
