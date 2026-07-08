@@ -83,7 +83,12 @@
   <text x="1012" y="747" class="tiny">+</text>
   <text x="1008" y="851" class="tiny">stripe -</text>
 
-  <path d="M205 275 H330" class="raw"/>
+  <path d="M205 275 H255" class="raw"/>
+  <path d="M295 275 H330" class="raw"/>
+  <line x1="255" y1="275" x2="275" y2="275" class="thin"/>
+  <line x1="295" y1="275" x2="276" y2="262" class="thin"/>
+  <text x="248" y="244" class="small">Master</text>
+  <text x="251" y="263" class="small">ON/OFF</text>
   <text x="232" y="259" class="tiny">RAW_12V</text>
   <path d="M560 344 H670" class="load"/>
   <text x="575" y="327" class="tiny">LOAD_12V_TO_BUCK</text>
