@@ -95,6 +95,10 @@ because it is convenient on the DevKit layout; the pin is centralized in
 
 ![Annotated breadboard photo for the MVP wiring](docs/breadboard_photo_wiring.png)
 
+![Normal lantern schematic without INA228](docs/schematic_basic.svg)
+
+![Normal lantern schematic with optional 74AHCT125 LED data level shifter](docs/schematic_basic_level_shifter.svg)
+
 ![INA228 power monitor schematic for one lantern](docs/schematic_ina228.svg)
 
 ![INA228 schematic with optional 74AHCT125 LED data level shifter](docs/schematic_ina228_level_shifter.svg)

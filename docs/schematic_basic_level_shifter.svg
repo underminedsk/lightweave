@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="840" viewBox="0 0 1360 840" role="img" aria-labelledby="title desc">
+  <title id="title">ESP32 lantern schematic without INA228, with optional 74AHCT125 level shifter</title>
+  <desc id="desc">A normal lantern node with optional LED data buffer: 12 V battery feeds a 5 V buck converter; buck 5 V powers the ESP32, SK6812 ring, and 74AHCT125; ESP32 GPIO13 enters A1 and Y1 drives DIN through a 470 ohm resistor.</desc>
+  <defs>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #202124; }
+      .title { font-size: 30px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; }
+      .tiny { font-size: 13px; }
+      .box { fill: #fff; stroke: #202124; stroke-width: 3; rx: 10; }
+      .optional { fill: #f8fbff; stroke: #1864ab; stroke-width: 3; rx: 10; }
+      .warn { fill: #fff7e6; stroke: #d9822b; stroke-width: 2; rx: 8; }
+      .raw { stroke: #c92a2a; stroke-width: 5; fill: none; }
+      .five { stroke: #e03131; stroke-width: 5; fill: none; }
+      .gnd { stroke: #1c7ed6; stroke-width: 5; fill: none; }
+      .data3 { stroke: #2b8a3e; stroke-width: 4; fill: none; stroke-dasharray: 8 6; }
+      .data5 { stroke: #2f9e44; stroke-width: 5; fill: none; }
+      .thin { stroke: #202124; stroke-width: 2; fill: none; }
+      .node { fill: #202124; }
+    </style>
+  </defs>
+
+  <rect width="1360" height="840" fill="#ffffff"/>
+  <text x="48" y="56" class="title">Do Baskets Dream - normal lantern with optional LED data level shifter</text>
+  <text x="48" y="86" class="small">Use the 74AHCT125 path if long wires or flaky first-pixel behavior make 3.3 V data unreliable.</text>
+
+  <rect x="55" y="225" width="150" height="135" class="box"/>
+  <text x="88" y="270" class="label">12 V</text>
+  <text x="78" y="296" class="label">Battery</text>
+  <text x="214" y="255" class="small">+</text>
+  <text x="214" y="334" class="small">-</text>
+
+  <rect x="345" y="215" width="210" height="150" class="box"/>
+  <text x="393" y="257" class="label">5 V Buck</text>
+  <text x="365" y="297" class="small">IN+</text>
+  <text x="365" y="336" class="small">IN-</text>
+  <text x="487" y="297" class="small">OUT+</text>
+  <text x="487" y="336" class="small">OUT-</text>
+
+  <rect x="810" y="150" width="245" height="180" class="box"/>
+  <text x="878" y="193" class="label">ESP32</text>
+  <text x="830" y="235" class="small">VIN / 5V</text>
+  <text x="830" y="272" class="small">GND</text>
+  <text x="952" y="309" class="small">D13 / GPIO13</text>
+
+  <rect x="575" y="500" width="250" height="155" class="optional"/>
+  <text x="620" y="538" class="label">74AHCT125</text>
+  <text x="595" y="573" class="small">A1 input</text>
+  <text x="595" y="611" class="small">OE to GND</text>
+  <text x="722" y="573" class="small">Y1 output</text>
+  <text x="722" y="611" class="small">VCC = 5V</text>
+  <text x="722" y="639" class="small">GND</text>
+
+  <rect x="960" y="555" width="90" height="38" fill="#f8f1dc" stroke="#7a5a1c" stroke-width="2" rx="8"/>
+  <text x="977" y="580" class="small">470 ohm</text>
+
+  <rect x="980" y="675" width="245" height="130" class="box"/>
+  <text x="1030" y="717" class="label">SK6812 ring</text>
+  <text x="1004" y="755" class="small">5V</text>
+  <text x="1075" y="755" class="small">GND</text>
+  <text x="1150" y="755" class="small">DIN</text>
+
+  <line x1="908" y1="680" x2="908" y2="805" class="thin"/>
+  <line x1="883" y1="680" x2="933" y2="680" class="thin"/>
+  <line x1="883" y1="805" x2="933" y2="805" class="thin"/>
+  <text x="844" y="740" class="small">1000 uF</text>
+  <text x="872" y="697" class="tiny">+</text>
+  <text x="868" y="801" class="tiny">stripe -</text>
+
+  <path d="M205 255 H345" class="raw"/>
+  <text x="240" y="239" class="tiny">RAW_12V</text>
+  <path d="M205 334 H315 V430 H540 V336 H555" class="gnd"/>
+  <path d="M540 430 H780 V272 H810" class="gnd"/>
+  <path d="M780 611 H575" class="gnd"/>
+  <path d="M780 639 H825" class="gnd"/>
+  <path d="M780 750 H1075" class="gnd"/>
+  <path d="M780 805 H908" class="gnd"/>
+  <text x="392" y="451" class="tiny">common GND</text>
+
+  <path d="M555 297 H750 V235 H810" class="five"/>
+  <path d="M750 297 V520 H825" class="five"/>
+  <path d="M750 520 V697 H980" class="five"/>
+  <path d="M908 680 H750" class="five"/>
+  <text x="580" y="280" class="tiny">+5V from buck</text>
+
+  <path d="M1055 309 H1270 V573 H575" class="data3"/>
+  <text x="960" y="530" class="tiny">LED_DATA_3V3</text>
+  <path d="M825 573 H960" class="data5"/>
+  <path d="M1050 574 H1150 V755" class="data5"/>
+  <text x="1058" y="610" class="tiny">LED_DATA_5V</text>
+
+  <circle cx="750" cy="297" r="5" class="node"/>
+  <circle cx="780" cy="430" r="5" class="node"/>
+  <circle cx="750" cy="520" r="5" class="node"/>
+
+  <rect x="55" y="760" width="850" height="50" class="warn"/>
+  <text x="78" y="791" class="small">Raw 12 V only feeds the buck input. ESP32, LEDs, and 74AHCT125 use buck 5 V.</text>
+</svg>
