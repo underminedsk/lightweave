@@ -95,6 +95,10 @@ because it is convenient on the DevKit layout; the pin is centralized in
 
 ![Annotated breadboard photo for the MVP wiring](docs/breadboard_photo_wiring.png)
 
+![INA228 power monitor schematic for one lantern](docs/schematic_ina228.svg)
+
+![INA228 schematic with optional 74AHCT125 LED data level shifter](docs/schematic_ina228_level_shifter.svg)
+
 | Function | Current part | Connection |
 |---|---|---|
 | MCU | ESP32-WROOM-32 bench boards; FireBeetle 2 ESP32-E target for production | one shared firmware image |

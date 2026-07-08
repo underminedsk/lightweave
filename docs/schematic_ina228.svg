@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">ESP32 lantern schematic with INA228 power monitor</title>
+  <desc id="desc">High-side INA228 current monitor feeds a buck converter; buck 5 V powers ESP32 and SK6812 ring; ESP32 drives DIN through a 470 ohm resistor.</desc>
+  <defs>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #202124; }
+      .title { font-size: 30px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; }
+      .tiny { font-size: 13px; }
+      .box { fill: #fff; stroke: #202124; stroke-width: 3; rx: 10; }
+      .warn { fill: #fff7e6; stroke: #d9822b; stroke-width: 2; rx: 8; }
+      .raw { stroke: #c92a2a; stroke-width: 5; fill: none; }
+      .load { stroke: #f08c00; stroke-width: 5; fill: none; }
+      .five { stroke: #e03131; stroke-width: 5; fill: none; }
+      .three { stroke: #8e44ad; stroke-width: 4; fill: none; }
+      .gnd { stroke: #1c7ed6; stroke-width: 5; fill: none; }
+      .data { stroke: #2f9e44; stroke-width: 4; fill: none; }
+      .i2c { stroke: #7950f2; stroke-width: 3; fill: none; }
+      .thin { stroke: #202124; stroke-width: 2; fill: none; }
+      .node { fill: #202124; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="860" fill="#ffffff"/>
+  <text x="48" y="56" class="title">Do Baskets Dream - lantern power and LED schematic</text>
+  <text x="48" y="86" class="small">Direct LED data version: no level shifter. Use the optional level-shifter schematic if long wires or flaky pixels show up.</text>
+
+  <rect x="55" y="225" width="150" height="135" class="box"/>
+  <text x="88" y="270" class="label">12 V</text>
+  <text x="78" y="296" class="label">Battery</text>
+  <text x="214" y="255" class="small">+</text>
+  <text x="214" y="334" class="small">-</text>
+
+  <rect x="330" y="170" width="230" height="210" class="box"/>
+  <text x="398" y="212" class="label">INA228</text>
+  <text x="352" y="247" class="small">VIN+</text>
+  <text x="352" y="324" class="small">VIN-</text>
+  <text x="498" y="247" class="small">VBUS</text>
+  <text x="505" y="286" class="small">VCC</text>
+  <text x="505" y="324" class="small">GND</text>
+  <text x="505" y="362" class="small">SDA/SCL</text>
+
+  <rect x="670" y="205" width="210" height="150" class="box"/>
+  <text x="718" y="247" class="label">5 V Buck</text>
+  <text x="690" y="287" class="small">IN+</text>
+  <text x="690" y="326" class="small">IN-</text>
+  <text x="812" y="287" class="small">OUT+</text>
+  <text x="812" y="326" class="small">OUT-</text>
+
+  <rect x="1020" y="160" width="245" height="255" class="box"/>
+  <text x="1088" y="203" class="label">ESP32</text>
+  <text x="1040" y="245" class="small">VIN / 5V</text>
+  <text x="1040" y="282" class="small">3V3</text>
+  <text x="1040" y="319" class="small">GND</text>
+  <text x="1040" y="356" class="small">GPIO21 SDA</text>
+  <text x="1040" y="393" class="small">GPIO22 SCL</text>
+  <text x="1162" y="393" class="small">D13 / GPIO13</text>
+
+  <rect x="1020" y="590" width="245" height="130" class="box"/>
+  <text x="1070" y="632" class="label">SK6812 ring</text>
+  <text x="1044" y="670" class="small">5V</text>
+  <text x="1115" y="670" class="small">GND</text>
+  <text x="1190" y="670" class="small">DIN</text>
+
+  <rect x="835" y="540" width="90" height="38" fill="#f8f1dc" stroke="#7a5a1c" stroke-width="2" rx="8"/>
+  <text x="852" y="565" class="small">470 ohm</text>
+
+  <line x1="955" y1="590" x2="955" y2="720" class="thin"/>
+  <line x1="930" y1="590" x2="980" y2="590" class="thin"/>
+  <line x1="930" y1="720" x2="980" y2="720" class="thin"/>
+  <text x="890" y="650" class="small">1000 uF</text>
+  <text x="918" y="607" class="tiny">+</text>
+  <text x="914" y="716" class="tiny">stripe -</text>
+
+  <path d="M205 255 H330" class="raw"/>
+  <text x="232" y="239" class="tiny">RAW_12V</text>
+  <path d="M560 324 H670" class="load"/>
+  <text x="575" y="307" class="tiny">LOAD_12V_TO_BUCK</text>
+  <path d="M560 247 V226 H370 V247" class="raw"/>
+  <text x="405" y="222" class="tiny">VBUS tied to VIN+</text>
+
+  <path d="M880 287 H970 V245 H1020" class="five"/>
+  <path d="M970 287 V612 H1020" class="five"/>
+  <path d="M970 612 H955" class="five"/>
+  <text x="902" y="270" class="tiny">+5V from buck</text>
+
+  <path d="M205 334 H300 V455 H640 V326 H670" class="gnd"/>
+  <path d="M640 455 H965 V326 H880" class="gnd"/>
+  <path d="M965 326 H1020" class="gnd"/>
+  <path d="M965 665 H1115" class="gnd"/>
+  <path d="M965 720 H955" class="gnd"/>
+  <path d="M560 324 H590 V455" class="gnd"/>
+  <text x="450" y="476" class="tiny">common GND</text>
+
+  <path d="M1020 282 H590 V286 H560" class="three"/>
+  <text x="660" y="273" class="tiny">INA228 logic VCC = ESP32 3V3</text>
+
+  <path d="M1020 356 H610 V350 H560" class="i2c"/>
+  <path d="M1020 393 H600 V370 H560" class="i2c"/>
+  <text x="650" y="345" class="tiny">I2C SDA/SCL</text>
+
+  <path d="M1265 393 H1315 V520 H835" class="data"/>
+  <path d="M925 559 H1190 V670" class="data"/>
+  <text x="1098" y="522" class="tiny">LED_DATA</text>
+
+  <circle cx="330" cy="255" r="5" class="node"/>
+  <circle cx="560" cy="324" r="5" class="node"/>
+  <circle cx="970" cy="287" r="5" class="node"/>
+  <circle cx="965" cy="455" r="5" class="node"/>
+
+  <rect x="55" y="735" width="740" height="70" class="warn"/>
+  <text x="78" y="765" class="label">Warning</text>
+  <text x="78" y="790" class="small">Raw 12 V only feeds INA228 VIN+ and buck input. ESP32 and LEDs get buck 5 V, never raw 12 V.</text>
+</svg>
