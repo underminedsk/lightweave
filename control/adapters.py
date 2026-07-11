@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from control.serial_transport import SerialTransportError
+
 
 class ConductorAdapter(Protocol):
     def snapshot(self) -> dict[str, Any]: ...
@@ -101,7 +103,10 @@ class JsonLineSerialConductor:
             request_id = self._next_id
             self._next_id += 1
             request = {"id": request_id, "cmd": command, **payload}
-            self.transport.write_line(json.dumps(request, separators=(",", ":")))
+            try:
+                self.transport.write_line(json.dumps(request, separators=(",", ":")))
+            except SerialTransportError as error:
+                raise SerialProtocolError(str(error)) from error
 
             timeout_s = self.timeout_s if _timeout_s is None else _timeout_s
             deadline = time.monotonic() + timeout_s
@@ -109,7 +114,10 @@ class JsonLineSerialConductor:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise SerialProtocolError(f"timeout waiting for {command} ack")
-                line = self.transport.read_line(remaining)
+                try:
+                    line = self.transport.read_line(remaining)
+                except SerialTransportError as error:
+                    raise SerialProtocolError(str(error)) from error
                 if line is None:
                     raise SerialProtocolError(f"timeout waiting for {command} ack")
                 line = line.strip()

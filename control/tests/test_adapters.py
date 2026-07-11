@@ -5,6 +5,7 @@ import json
 import pytest
 
 from control.adapters import JsonLineSerialConductor, SerialProtocolError
+from control.serial_transport import SerialTransportError
 
 
 class FakeTransport:
@@ -121,6 +122,28 @@ def test_timeout_raises_protocol_error() -> None:
     conductor = JsonLineSerialConductor(FakeTransport([]), timeout_s=0.01)
 
     with pytest.raises(SerialProtocolError, match="timeout waiting for state ack"):
+        conductor.snapshot()
+
+
+def test_transport_write_failure_raises_protocol_error() -> None:
+    class FailingTransport(FakeTransport):
+        def write_line(self, line: str) -> None:
+            raise SerialTransportError("serial reconnect failed")
+
+    conductor = JsonLineSerialConductor(FailingTransport())
+
+    with pytest.raises(SerialProtocolError, match="serial reconnect failed"):
+        conductor.snapshot()
+
+
+def test_transport_read_failure_raises_protocol_error() -> None:
+    class FailingTransport(FakeTransport):
+        def read_line(self, timeout_s: float) -> str | None:
+            raise SerialTransportError("serial read failed")
+
+    conductor = JsonLineSerialConductor(FailingTransport())
+
+    with pytest.raises(SerialProtocolError, match="serial read failed"):
         conductor.snapshot()
 
 

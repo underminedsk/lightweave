@@ -7,6 +7,10 @@ import control.serial_transport as serial_transport
 from control.serial_transport import PySerialTransport
 
 
+class FakeSerialException(Exception):
+    pass
+
+
 class FakeSerial:
     def __init__(self, port: str, baud: int, timeout: float, write_timeout: float) -> None:
         self.port = port
@@ -58,7 +62,11 @@ def test_pyserial_transport_writes_lines_and_deasserts_reset(monkeypatch) -> Non
         created.append(serial)
         return serial
 
-    monkeypatch.setitem(sys.modules, "serial", types.SimpleNamespace(Serial=serial_factory))
+    monkeypatch.setitem(
+        sys.modules,
+        "serial",
+        types.SimpleNamespace(Serial=serial_factory, SerialException=FakeSerialException),
+    )
     monkeypatch.setattr(serial_transport.time, "sleep", lambda _seconds: None)
 
     transport = PySerialTransport("/dev/cu.test", baud=57600)
@@ -75,3 +83,68 @@ def test_pyserial_transport_writes_lines_and_deasserts_reset(monkeypatch) -> Non
 
     transport.close()
     assert created[0].closed is True
+
+
+def test_pyserial_transport_reconnects_and_retries_failed_write(monkeypatch) -> None:
+    created: list[FakeSerial] = []
+
+    class FailingWriteSerial(FakeSerial):
+        def write(self, data: bytes) -> None:
+            raise FakeSerialException("device not configured")
+
+    def serial_factory(port: str, baud: int, timeout: float, write_timeout: float) -> FakeSerial:
+        serial = (
+            FailingWriteSerial(port, baud, timeout, write_timeout)
+            if not created
+            else FakeSerial(port, baud, timeout, write_timeout)
+        )
+        created.append(serial)
+        return serial
+
+    monkeypatch.setitem(
+        sys.modules,
+        "serial",
+        types.SimpleNamespace(Serial=serial_factory, SerialException=FakeSerialException),
+    )
+    monkeypatch.setattr(serial_transport.time, "sleep", lambda _seconds: None)
+
+    transport = PySerialTransport("/dev/cu.test")
+    transport.write_line('{"id":1}')
+
+    assert len(created) == 2
+    assert created[0].closed is True
+    assert created[1].dtr is False
+    assert created[1].rts is False
+    assert created[1].writes == [b'{"id":1}\n']
+
+
+def test_pyserial_transport_reconnects_after_read_disconnect(monkeypatch) -> None:
+    created: list[FakeSerial] = []
+
+    class FailingReadSerial(FakeSerial):
+        @property
+        def in_waiting(self) -> int:
+            raise FakeSerialException("device not configured")
+
+    def serial_factory(port: str, baud: int, timeout: float, write_timeout: float) -> FakeSerial:
+        serial = (
+            FailingReadSerial(port, baud, timeout, write_timeout)
+            if not created
+            else FakeSerial(port, baud, timeout, write_timeout)
+        )
+        created.append(serial)
+        return serial
+
+    monkeypatch.setitem(
+        sys.modules,
+        "serial",
+        types.SimpleNamespace(Serial=serial_factory, SerialException=FakeSerialException),
+    )
+    monkeypatch.setattr(serial_transport.time, "sleep", lambda _seconds: None)
+
+    transport = PySerialTransport("/dev/cu.test")
+
+    assert transport.read_line(0.1) is None
+    assert len(created) == 2
+    assert created[0].closed is True
+    assert transport.read_line(0.1) == "diag\n"
