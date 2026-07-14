@@ -10,7 +10,7 @@ gotchas, all captured here.
 export PATH="/opt/homebrew/bin:$PATH"
 
 # 1. Find the port
-pio device list                      # look for the CP2102 / usbserial entry
+pio device list                      # CP2102: usbserial; FireBeetle: wchusbserial
 
 # 2. ONE-TIME full erase (new boards ship with factory firmware — see below)
 ~/.platformio/packages/tool-esptoolpy/esptool.py --port /dev/cu.usbserial-XXXX erase_flash
@@ -90,11 +90,59 @@ removing the meter does. Flash and debug with the board plugged **straight** int
 the Mac; measure power on the **12 V battery side** with a DMM in series instead
 (that reading is authoritative anyway). This cost a session before we spotted it.
 
-### 4. Use a DATA USB cable, install the driver
+### 4. Use a DATA USB cable, install the correct driver
 - Charge-only cables won't enumerate a port — if `pio device list` shows nothing
   new, suspect the cable first.
-- These boards use a **CP2102** USB-UART chip. If no port appears, install the
-  CP2102 (Silicon Labs) driver. (CH340 on some other boards.)
+- The DevKitC boards use a **CP2102** USB-UART chip. If no port appears, install
+  the CP2102 (Silicon Labs) driver.
+- The FireBeetle 2 ESP32-E used here has a **WCH CH340** USB-UART chip
+  (`VID:PID=1A86:7522`) and needs the WCH driver described below.
+
+#### FireBeetle WCH driver setup on macOS 15
+
+The FireBeetle can appear in **System Information → USB** as `USB Serial`
+(`VID:PID=1A86:7522`) while `pio device list` still shows no port. That means the
+Mac sees the USB device, but the WCH serial driver is missing or installed but
+not enabled.
+
+1. Install the WCH driver and complete the macOS package installer, including
+   administrator authentication:
+
+   ```bash
+   brew install --cask wch-ch34x-usb-serial-driver
+   ```
+
+2. Open **System Settings → General → Login Items & Extensions**, scroll to
+   **Extensions**, click the info button next to **Driver Extensions**, and enable
+   **WCH**, **CH34xVCPDriver**, or **QinHeng**. On macOS 15 this toggle is under
+   **General**, not **Privacy & Security**.
+3. Restart if macOS requests it, then unplug and reconnect the FireBeetle.
+4. Verify that the extension is enabled and the serial port now exists:
+
+   ```bash
+   systemextensionsctl list | grep -i CH34
+   pio device list
+   ```
+
+   A working setup reports `[activated enabled]` and exposes a port such as
+   `/dev/cu.wchusbserial2130`. `[activated waiting for user]` means the Driver
+   Extensions toggle still needs to be enabled.
+
+Before erasing or flashing, confirm the new WCH port identifies a different ESP32
+from every connected node:
+
+```bash
+~/.platformio/packages/tool-esptoolpy/esptool.py \
+  --port /dev/cu.wchusbserialXXXX chip_id
+```
+
+Then use the `firebeetle` environment and that exact port for the upload:
+
+```bash
+~/.platformio/packages/tool-esptoolpy/esptool.py \
+  --port /dev/cu.wchusbserialXXXX erase_flash
+pio run -e firebeetle -t upload --upload-port /dev/cu.wchusbserialXXXX
+```
 
 ---
 

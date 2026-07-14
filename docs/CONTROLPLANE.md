@@ -66,7 +66,7 @@ Snapshot shape:
     "sync": "locked",
     "firmware": {
       "version": "0.3.0",
-      "proto": 6,
+      "proto": 7,
       "build_id": 3225866068,
       "build_label": "c046bf54",
       "dirty": false
@@ -101,6 +101,7 @@ Snapshot shape:
     "current_epoch_s": 0,
     "schedule_enabled": false,
     "force_awake": true,
+    "force_sleep": false,
     "leds_on": true
   },
   "lanterns": [
@@ -114,7 +115,7 @@ Snapshot shape:
       "y": 0.47,
       "position": "Set",
       "attention": "None",
-      "firmware": {"version": "0.3.0", "proto": 6, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
+      "firmware": {"version": "0.3.0", "proto": 7, "build_id": 3225866068, "build_label": "c046bf54", "dirty": false},
       "power": {"wh": 0.38, "avg_w": 0.71, "last_report_label": "4s ago"},
       "updated_at": 1720123456.0
     }
@@ -159,6 +160,8 @@ The map renders only positioned lanterns.
 ### Mutations
 
 - `POST /api/lanterns/{mac}/identify`
+  -> make one physical lantern visibly identify itself; the UI labels this
+  action **Locate** in the selected-lantern sheet and Node List rows.
 - `POST /api/lanterns/{mac}/assign` with `{"x":0.25,"y":0.75}`
 - `POST /api/lanterns/{mac}/forget`
 - `POST /api/lanterns/replace` with `{"old_mac":"...","new_mac":"..."}`
@@ -199,6 +202,65 @@ The map renders only positioned lanterns.
 - `GET /api/operations/ota-install` -> current/last install progress.
 - `POST /api/operations/ota-install` -> stream the staged artifact to the
   conductor and field during an OTA maintenance window.
+- `POST /api/operations/calibration-mode` with `{"enabled":true}` or
+  `{"enabled":false}` -> start/stop the live LED calibration blink sequence.
+  This is only light control: it does not upload media or write layout
+  coordinates. Starting stores the previous pattern, switches the field to the
+  firmware `Calibration` pattern, and returns the generated Hamming-spaced
+  code plan. Stopping restores the previous pattern when available.
+- `GET /api/calibration/frames` -> uploaded calibration image frames.
+- `PUT /api/calibration/frames?filename=anchor.png` with raw image bytes
+  (`.jpg`, `.jpeg`, `.png`, or `.webp`) -> store one calibration frame.
+- `POST /api/calibration/frames/{frame_id}/detect` with
+  `{"threshold":180,"min_area":4}` -> run first-pass bright-blob detection on
+  that frame and return normalized candidate `(x,y)` points plus pixel-space
+  centroids/bounds. This is the image-sequence/CV scaffold; it does not push a
+  layout table yet.
+- `POST /api/calibration/decode` with
+  `{"frame_ids":["..."],"threshold":180,"min_area":4,"max_distance":0.035}` ->
+  decode an ordered image sequence by matching bright blobs across frames and
+  turning per-frame presence into a bit string/value per tracked blob. This is
+  the first-pass path for multi-photo identity coding.
+- `POST /api/calibration/code-plan` with
+  `{"first_code":1,"bit_count":null,"min_hamming_distance":3}` -> generate the
+  blink-code plan for the current alive roster (or explicit `roster_macs`). The
+  default synthetic/phone-video path uses codes separated by Hamming distance 3
+  so a missed bit should show up as missing/extra rather than silently assigning
+  the wrong MAC.
+- `POST /api/calibration/propose-layout` with
+  `{"frame_ids":["..."],"code_map":[{"mac":"...","code":1,"bits":"001"}],"threshold":180,"min_area":4,"max_distance":0.035}` ->
+  decode the ordered image sequence, map decoded values through either an
+  explicit `code_map` or sequential `roster_macs`/`first_code`, and return
+  proposed `(mac,x,y)` assignments plus missing, ambiguous, and extra detections.
+  Browser-extracted video frames use code-aware temporal contrast against the
+  planned blink codes, which suppresses constant glare/cables/non-node lights
+  before falling back to the static bright-blob tracker if temporal scoring
+  cannot fully resolve the plan. If both `code_map` and `roster_macs` are
+  omitted, the API uses the current alive lantern roster with sequential values.
+  This endpoint does not write the conductor layout table.
+- `POST /api/calibration/apply-proposal` with
+  `{"assignments":[{"mac":"...","x":0.25,"y":0.75,"code":1,"bits":"001"}],"missing":[],"ambiguous":[]}` ->
+  save reviewed confident proposal assignments through the normal lantern
+  assignment path. Missing and ambiguous rows are skipped and returned in the
+  response summary; failed assignment writes are reported per MAC.
+- `POST /api/calibration/simulate` with
+  `{"width":960,"height":720,"first_code":1,"bit_count":null,"blob_radius":5,"jitter_px":0,"glare_count":0,"missing_frames":[],"perspective":0}` ->
+  render an ordered synthetic calibration image sequence from the current
+  positioned alive roster (or explicit `nodes` with `mac/x/y`), upload those
+  frames into the same calibration store, and run the normal proposal path with
+  the generated code map. This is the synthetic proof harness for the
+  multi-photo identity workflow. The Operations UI labels this workflow
+  **Lantern Locations**. The normal path is intentionally two separate actions:
+  play/stop the lantern locator pattern to make the lights blink,
+  then select a local phone video and click **Analyze video** to extract still
+  frames in the browser and upload them through the same image frame API. The
+  UI shows the proposal over the captured frame and keeps ignored extras as a
+  compact count, not a raw track list. No server-side video codec is required.
+  The proposal step is code-map-aware:
+  video-sized frames get a scaled blob-area floor, all cyclic bit alignments are
+  scored so capture does not have to begin on the first locator slot, tracks
+  matching planned lantern codes become candidate assignments, and other bright
+  lights remain extra tracks instead of being assigned as lanterns.
 - `GET /preview?pattern=Glow&brightness=48&hue=40&t=0` -> PNG preview of the
   simulated field using the current positioned lantern layout. Also accepts
   `params` as a JSON object query string and direct aliases (`hue`,
@@ -336,9 +398,10 @@ position", and table rows not currently registered show as "Not seen".
 - Live power panel: the conductor's `[power]` lines parsed into structured
   V / I / avg-W / Wh-tonight per instrumented node.
 - Operations power schedule: set radio/light-sleep check interval, deep-sleep
-  check interval, LED-on window, and field-wide force-awake override. These are
-  runtime-broadcast in beacons, so changing them does not require another
-  firmware update.
+  check interval, and LED-on window. The Field power controls provide one-click
+  **Sleep field**, **Wake field**, and **Follow schedule** overrides without
+  rewriting the saved schedule. These are runtime-broadcast in beacons, so
+  changing them does not require another firmware update.
 - Nightly history persisted server-side (sqlite or CSV) — trend across the
   event, not just tonight.
 - `power reset` button for the dusk ritual.

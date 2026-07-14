@@ -31,6 +31,7 @@ enum SerialJsonKind {
   SJ_OTA_CHUNK,
   SJ_OTA_END,
   SJ_OTA_PROGRESS,
+  SJ_KEEPALIVE,
 };
 
 struct SerialJsonCommand {
@@ -52,6 +53,7 @@ struct SerialJsonCommand {
   bool has_led_on_end_min = false;
   bool has_schedule_enabled = false;
   bool has_force_awake = false;
+  bool has_force_sleep = false;
   bool has_current_min = false;
   bool has_current_epoch_s = false;
   uint16_t light_sleep_check_s = 4;
@@ -60,6 +62,7 @@ struct SerialJsonCommand {
   uint16_t led_on_end_min = 6 * 60;
   bool schedule_enabled = false;
   bool force_awake = false;
+  bool force_sleep = false;
   uint16_t current_min = 12 * 60;
   uint32_t current_epoch_s = 0;
   bool has_ota_enabled = false;
@@ -68,6 +71,14 @@ struct SerialJsonCommand {
   uint32_t ota_crc32 = 0;
   uint32_t ota_offset = 0;
   char ota_data_hex[OTA_SERIAL_CHUNK_MAX * 2 + 1] = {0};
+  bool has_keepalive_enabled = false;
+  bool keepalive_enabled = false;
+  bool has_keepalive_interval_ms = false;
+  bool has_keepalive_pulse_ms = false;
+  bool has_keepalive_brightness = false;
+  uint16_t keepalive_interval_ms = 10000;
+  uint16_t keepalive_pulse_ms = 100;
+  uint8_t keepalive_brightness = 64;
 };
 
 inline bool serialJsonLooksLike(const char* line) {
@@ -161,6 +172,7 @@ inline bool serialJsonPatternId(const char* value, uint16_t& out) {
   else if (!strcmp(norm, "sweep")) out = patterns::SWEEP;
   else if (!strcmp(norm, "solid")) out = patterns::SOLID;
   else if (!strcmp(norm, "glow")) out = patterns::GLOW;
+  else if (!strcmp(norm, "calibration")) out = patterns::CALIBRATION;
   else {
     char* end = nullptr;
     unsigned long v = strtoul(value, &end, 10);
@@ -305,6 +317,10 @@ inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
       cmd.has_force_awake = true;
       cmd.force_awake = b;
     }
+    if (sjBool(json, "force_sleep", b)) {
+      cmd.has_force_sleep = true;
+      cmd.force_sleep = b;
+    }
   } else if (!strcmp(norm, "otamode")) {
     cmd.kind = SJ_OTA_MODE;
     bool b = false;
@@ -332,6 +348,26 @@ inline bool serialJsonParse(const char* json, SerialJsonCommand& cmd,
     cmd.kind = SJ_OTA_END;
   } else if (!strcmp(norm, "otaprogress")) {
     cmd.kind = SJ_OTA_PROGRESS;
+  } else if (!strcmp(norm, "keepalive")) {
+    cmd.kind = SJ_KEEPALIVE;
+    uint32_t v = 0;
+    bool b = false;
+    if (sjBool(json, "enabled", b)) {
+      cmd.has_keepalive_enabled = true;
+      cmd.keepalive_enabled = b;
+    }
+    if (sjUint(json, "interval_ms", v)) {
+      cmd.has_keepalive_interval_ms = true;
+      cmd.keepalive_interval_ms = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "pulse_ms", v)) {
+      cmd.has_keepalive_pulse_ms = true;
+      cmd.keepalive_pulse_ms = (uint16_t)(v > 65535 ? 65535 : v);
+    }
+    if (sjUint(json, "brightness", v)) {
+      cmd.has_keepalive_brightness = true;
+      cmd.keepalive_brightness = (uint8_t)(v > 255 ? 255 : v);
+    }
   } else {
     error = "unknown cmd";
     return false;

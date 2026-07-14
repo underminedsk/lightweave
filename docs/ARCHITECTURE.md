@@ -408,14 +408,16 @@ The primary calendar-life policy is now conductor-authoritative schedule, not
 photodiode sensing. The conductor persists a `PowerPolicy` and includes it in
 every beacon: light-sleep/radio check interval, deep-sleep check interval,
 LED-on start/end minutes, current minute-of-day, schedule-enabled, and
-force-awake. Performers apply that policy directly. Outside the LED window they
-clear LEDs and deep-sleep for the configured check interval; inside the window
-they render normally. The Operations UI sends the current local minute whenever
-the policy is saved, so the conductor can keep evaluating the wall-clock schedule
-without NTP.
+force-awake/force-sleep overrides. Performers apply that policy directly. Outside
+the LED window, or under forced sleep, they clear LEDs and deep-sleep for the
+configured check interval; inside the window they render normally. The Operations
+UI sends the current local minute whenever the policy is saved, so the conductor
+can keep evaluating the wall-clock schedule without NTP.
 
 The `wake on|off` concept is now the same force-awake bit as the UI override.
 It keeps boards on for debugging/field testing and wins over the schedule. The
+one-click Field power controls preserve the schedule: Sleep field sets the
+force-sleep bit, Wake field sets force-awake, and Follow schedule clears both.
 old photodiode/dusk path remains off by default as a fallback/experiment; it is
 not required for the main installation behavior.
 

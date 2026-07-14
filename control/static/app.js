@@ -13,9 +13,15 @@ let replaceMode = false;
 let replacementMac = null;
 let patternDraft = null;
 let powerBaseline = null;
+let keepaliveBaseline = null;
 let otaArtifact = null;
 let otaInstall = null;
 let savedPatterns = [];
+let calibrationFrames = [];
+let calibrationProposal = null;
+let calibrationCodePlan = null;
+let calibrationSaveStatus = "";
+let wifiStatus = null;
 
 const MAP_PADDING = 0.08;
 const MIN_ZOOM = 1;
@@ -59,6 +65,12 @@ async function apiBinary(path, data) {
 
 function lanterns() {
   return state?.lanterns || [];
+}
+
+function lanternDisplayName(mac) {
+  const lantern = lanterns().find((item) => item.mac === mac);
+  if (lantern?.label && lantern.label !== "Unknown") return lantern.label;
+  return String(mac || "").split(":").slice(-2).join(":") || "node";
 }
 
 function selectedLantern() {
@@ -159,9 +171,12 @@ function render() {
   renderDetail();
   renderFirmware();
   renderRecovery();
+  renderWifi();
   renderPowerMonitor();
   renderOta();
+  renderCalibration();
   renderPowerPolicy();
+  renderKeepalive();
   renderEvents();
   renderDetailVisibility();
 }
@@ -379,11 +394,19 @@ function renderRows() {
       <td class="${isBad ? "bad" : "ok"}">${escapeHtml(lantern.last_seen_label)}</td>
       <td class="${lantern.position === "Missing" ? "warn" : ""}">${escapeHtml(lantern.position)}</td>
       <td class="${attentionClass}">${escapeHtml(lantern.attention)}</td>
+      <td><button type="button" class="table-action" data-locate-mac="${escapeHtml(lantern.mac)}">Locate</button></td>
     </tr>`;
   }).join("");
 
   $$("#lantern-rows tr").forEach((row) => {
     row.addEventListener("click", () => selectLantern(row.dataset.mac));
+  });
+  $$("#lantern-rows [data-locate-mac]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      selectLantern(button.dataset.locateMac);
+      await locateLantern(button.dataset.locateMac);
+    });
   });
 }
 
@@ -465,6 +488,18 @@ function renderRecovery() {
     <span class="mono">${escapeHtml(item.mac || "")}</span>
     <span>${escapeHtml(item.reason || "")}</span>
   </div>`).join("");
+}
+
+function renderWifi() {
+  const wifi = wifiStatus || {};
+  const status = $("#wifi-status");
+  if (!status) return;
+  const available = wifi.available !== false;
+  const connected = wifi.state === "connected";
+  status.textContent = available ? (connected ? "connected" : wifi.state || "idle") : "unavailable";
+  status.className = `chip ${connected ? "sync" : available ? "warn" : ""}`;
+  $("#wifi-connection").textContent = wifi.connection || wifi.error || "--";
+  $("#wifi-address").textContent = (wifi.addresses || []).join(", ") || "--";
 }
 
 function renderPowerMonitor() {
@@ -660,6 +695,407 @@ function renderOtaNodes() {
   }).join("");
 }
 
+function calibrationSettings() {
+  return {
+    threshold: Number($("#calibration-threshold")?.value || 180),
+    min_area: Number($("#calibration-min-area")?.value || 4),
+    max_distance: 0.035,
+    first_code: Number($("#calibration-first-code")?.value || 1),
+  };
+}
+
+function calibrationMissingFrames() {
+  const value = String($("#calibration-missing-frames")?.value || "").trim();
+  if (!value) return [];
+  return value.split(",")
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isInteger(item) && item >= 0);
+}
+
+function syntheticCalibrationSettings() {
+  return {
+    ...calibrationSettings(),
+    led_value: Number($("#calibration-led-value")?.value || 255),
+    jitter_px: Number($("#calibration-jitter")?.value || 0),
+    glare_count: Number($("#calibration-glare-count")?.value || 0),
+    glare_value: 230,
+    missing_frames: calibrationMissingFrames(),
+    perspective: Number($("#calibration-perspective")?.value || 0),
+    min_hamming_distance: 3,
+  };
+}
+
+function selectedCalibrationFrameIds() {
+  return calibrationFrames.map((frame) => frame.frame_id);
+}
+
+function currentCalibrationProposal() {
+  return calibrationProposal?.proposal || calibrationProposal;
+}
+
+function renderCalibration() {
+  const frameCount = calibrationFrames.length;
+  const proposal = currentCalibrationProposal();
+  const assigned = Number(proposal?.metrics?.assigned || 0);
+  const expected = Number(proposal?.metrics?.expected || 0);
+  const problems = Number(proposal?.metrics?.missing || 0)
+    + Number(proposal?.metrics?.ambiguous || 0)
+    + Number(proposal?.metrics?.extra || 0);
+  $("#calibration-status").textContent = problems > 0 ? "review" : assigned > 0 ? "proposal" : "idle";
+  $("#calibration-status").className = `chip ${problems > 0 ? "warn" : assigned > 0 ? "sync" : ""}`;
+  $("#calibration-frame-count").textContent = `${frameCount} uploaded`;
+  $("#calibration-assignment-count").textContent = expected > 0 ? `${assigned} / ${expected}` : "--";
+  $("#calibration-code-plan").textContent = calibrationCodePlan
+    ? `${calibrationCodePlan.codes.length} nodes / ${calibrationCodePlan.bit_count} frames`
+    : "--";
+  const calibrationMode = state?.pattern?.pattern === "Calibration";
+  const toggle = $('[data-action="toggle-calibration-mode"]');
+  if (toggle) {
+    toggle.textContent = calibrationMode ? "Stop lantern locator pattern" : "Play lantern locator pattern";
+    toggle.classList.toggle("danger", calibrationMode);
+  }
+  $('[data-action="analyze-calibration-video"]').disabled = !$("#calibration-video")?.files?.length;
+  $('[data-action="upload-calibration-frames"]').disabled = !$("#calibration-files")?.files?.length;
+  $('[data-action="extract-calibration-video"]').disabled = !$("#calibration-video")?.files?.length;
+  $('[data-action="propose-calibration"]').disabled = frameCount === 0;
+  $$('[data-action="save-calibration-proposal"]').forEach((button) => {
+    button.disabled = assigned === 0;
+  });
+
+  renderCalibrationResults(proposal);
+}
+
+function renderCalibrationResults(proposal) {
+  renderLocationPreview(proposal);
+  renderLocationSummary(proposal);
+  const box = $("#calibration-results");
+  if (!box) return;
+  box.hidden = !proposal;
+  if (!proposal) return;
+  const assignments = proposal.assignments || [];
+  const missing = proposal.missing || [];
+  const ambiguous = proposal.ambiguous || [];
+  const rows = [
+    ...missing.map((item) => ({
+      kind: "missing",
+      label: item.mac,
+      detail: `code ${item.code}`,
+      position: item.reason,
+      mac: item.mac,
+    })),
+    ...ambiguous.map((item) => ({
+      kind: "ambiguous",
+      label: item.mac,
+      detail: `code ${item.code}`,
+      position: item.reason,
+      mac: item.mac,
+    })),
+  ];
+  box.hidden = rows.length === 0;
+  if (box.hidden) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = rows.length
+    ? rows.map((row) => `<div class="calibration-result-row ${escapeHtml(row.kind)}">
+      <span>${escapeHtml(row.kind)}</span>
+      <strong>${escapeHtml(row.label)}</strong>
+      <span>${escapeHtml(row.detail)}</span>
+      <span class="mono">${escapeHtml(row.position)}</span>
+      <button type="button" class="table-action" data-calibration-locate-mac="${escapeHtml(row.mac)}">Locate</button>
+    </div>`).join("")
+    : "";
+  $$("[data-calibration-locate-mac]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      selectLantern(button.dataset.calibrationLocateMac);
+      await locateLantern(button.dataset.calibrationLocateMac);
+    });
+  });
+}
+
+function renderLocationSummary(proposal) {
+  const box = $("#location-summary");
+  if (!box) return;
+  box.hidden = !proposal;
+  if (!proposal) {
+    box.innerHTML = "";
+    return;
+  }
+  const metrics = proposal.metrics || {};
+  const assigned = Number(metrics.assigned || 0);
+  const expected = Number(metrics.expected || 0);
+  const missing = Number(metrics.missing || 0);
+  const ambiguous = Number(metrics.ambiguous || 0);
+  const extra = Number(metrics.extra || 0);
+  box.innerHTML = `
+    <span class="summary-chip ok">${escapeHtml(String(assigned))}${expected ? ` / ${escapeHtml(String(expected))}` : ""} assigned</span>
+    <span class="summary-chip ${missing ? "warn" : ""}">${escapeHtml(String(missing))} missing</span>
+    <span class="summary-chip ${ambiguous ? "warn" : ""}">${escapeHtml(String(ambiguous))} ambiguous</span>
+    <span class="summary-chip">${escapeHtml(String(extra))} ignored</span>
+  `;
+}
+
+function renderLocationPreview(proposal) {
+  const box = $("#location-preview");
+  const saveRow = $("#location-save-row");
+  const saveStatus = $("#location-save-status");
+  if (!box) return;
+  const frame = calibrationFrames[0];
+  box.hidden = !proposal || !frame;
+  if (saveRow) saveRow.hidden = box.hidden;
+  if (saveStatus) saveStatus.textContent = calibrationSaveStatus;
+  if (box.hidden) {
+    box.innerHTML = "";
+    return;
+  }
+  const assignments = proposal.assignments || [];
+  const markers = assignments
+    .map((item) => locationMarker("assign", lanternDisplayName(item.mac), item.x, item.y, item.bits))
+    .join("");
+  const offset = proposal.alignment_offset ? ` · aligned +${proposal.alignment_offset}` : "";
+  const extra = Number(proposal.metrics?.extra || 0);
+  const extraLabel = extra ? ` · ${extra} ignored` : "";
+  box.innerHTML = `
+    <div class="location-preview-head">
+      <strong>Location proposal</strong>
+      <span>${escapeHtml(String(assignments.length))} assigned${escapeHtml(extraLabel)}${escapeHtml(offset)}</span>
+    </div>
+    <div class="location-image-wrap">
+      <img src="/api/calibration/frames/${encodeURIComponent(frame.frame_id)}/image" alt="">
+      <div class="location-overlay">${markers}</div>
+    </div>
+  `;
+}
+
+function locationMarker(kind, label, x, y, detail) {
+  const px = Math.max(0, Math.min(100, Number(x || 0) * 100));
+  const py = Math.max(0, Math.min(100, Number(y || 0) * 100));
+  return `<div class="location-marker ${escapeHtml(kind)}" style="left:${px}%;top:${py}%">
+    <span class="location-pin"></span>
+    <span class="location-label">${escapeHtml(label)}${detail ? ` · ${escapeHtml(detail)}` : ""}</span>
+  </div>`;
+}
+
+async function refreshCalibrationFrames() {
+  calibrationFrames = (await api("/api/calibration/frames")).frames || [];
+  calibrationSaveStatus = "";
+  renderCalibration();
+}
+
+async function uploadCalibrationFrames() {
+  const input = $("#calibration-files");
+  const files = Array.from(input?.files || []);
+  if (!files.length) return;
+  const uploaded = [];
+  for (const file of files) {
+    const ack = await apiBinary(`/api/calibration/frames?filename=${encodeURIComponent(file.name)}`, file);
+    uploaded.push(ack.frame);
+  }
+  input.value = "";
+  calibrationFrames = uploaded;
+  calibrationProposal = null;
+  calibrationSaveStatus = "";
+  renderCalibration();
+  toast(`uploaded ${files.length} calibration frame${files.length === 1 ? "" : "s"}`);
+}
+
+async function proposeCalibrationLayout() {
+  const frameIds = selectedCalibrationFrameIds();
+  if (!frameIds.length) return;
+  if (!calibrationCodePlan) {
+    await planCalibrationCodes();
+  }
+  const ack = await api("/api/calibration/propose-layout", {
+    method: "POST",
+    body: JSON.stringify({
+      frame_ids: frameIds,
+      code_map: calibrationCodePlan?.codes,
+      ...calibrationSettings(),
+    }),
+  });
+  calibrationProposal = ack.proposal;
+  calibrationSaveStatus = "";
+  renderCalibration();
+  const metrics = ack.proposal.metrics || {};
+  toast(`proposal: ${metrics.assigned || 0} assigned, ${metrics.missing || 0} missing`);
+}
+
+async function saveCalibrationProposal() {
+  const proposal = currentCalibrationProposal();
+  const assignments = proposal?.assignments || [];
+  if (!assignments.length) return;
+  const ack = await api("/api/calibration/apply-proposal", {
+    method: "POST",
+    body: JSON.stringify({
+      assignments: assignments.map((item) => ({
+        mac: item.mac,
+        x: item.x,
+        y: item.y,
+        code: item.code,
+        bits: item.bits,
+      })),
+      missing: proposal.missing || [],
+      ambiguous: proposal.ambiguous || [],
+    }),
+  });
+  state = await api("/api/state");
+  calibrationSaveStatus = ack.message;
+  render();
+  toast(ack.message, !ack.ok);
+}
+
+async function planCalibrationCodes() {
+  const ack = await api("/api/calibration/code-plan", {
+    method: "POST",
+    body: JSON.stringify({
+      first_code: calibrationSettings().first_code,
+      min_hamming_distance: 3,
+    }),
+  });
+  calibrationCodePlan = ack.plan;
+  renderCalibration();
+  toast(`code plan: ${calibrationCodePlan.codes.length} nodes, ${calibrationCodePlan.bit_count} frames`);
+  return calibrationCodePlan;
+}
+
+async function simulateCalibrationLayout() {
+  const ack = await api("/api/calibration/simulate", {
+    method: "POST",
+    body: JSON.stringify({
+      width: 960,
+      height: 720,
+      blob_radius: 5,
+      ...syntheticCalibrationSettings(),
+    }),
+  });
+  calibrationFrames = ack.simulation.frames || [];
+  calibrationCodePlan = ack.simulation.plan || null;
+  calibrationProposal = ack.simulation.proposal;
+  calibrationSaveStatus = "";
+  renderCalibration();
+  const metrics = calibrationProposal.metrics || {};
+  toast(`simulation: ${metrics.assigned || 0} assigned, ${metrics.missing || 0} missing`);
+}
+
+async function extractCalibrationVideoFrames() {
+  const file = $("#calibration-video")?.files?.[0];
+  if (!file) return;
+  const plan = calibrationCodePlan || await planCalibrationCodes();
+  const start = Number($("#calibration-video-start")?.value || 0);
+  const interval = Number($("#calibration-video-interval")?.value || 1);
+  const count = Number(plan?.bit_count || 0);
+  if (!count) return;
+  const frames = await extractVideoFrames(file, start, interval, count);
+  const uploaded = [];
+  for (const frame of frames) {
+    const ack = await apiBinary(`/api/calibration/frames?filename=${encodeURIComponent(frame.filename)}`, frame.blob);
+    uploaded.push(ack.frame);
+  }
+  calibrationFrames = uploaded;
+  calibrationProposal = null;
+  calibrationSaveStatus = "";
+  renderCalibration();
+  toast(`extracted ${frames.length} video frame${frames.length === 1 ? "" : "s"}`);
+}
+
+async function analyzeCalibrationVideo() {
+  if (!$("#calibration-video")?.files?.length) return;
+  await planCalibrationCodes();
+  await extractCalibrationVideoFrames();
+  await proposeCalibrationLayout();
+}
+
+async function toggleCalibrationMode() {
+  const enabled = state?.pattern?.pattern !== "Calibration";
+  const ack = await api("/api/operations/calibration-mode", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+  calibrationCodePlan = ack.plan || calibrationCodePlan;
+  toast(ack.message || (enabled ? "location mode started" : "location mode stopped"));
+  await refresh();
+}
+
+function seekVideo(video, time) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("video frame could not be decoded"));
+    };
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    video.currentTime = time;
+  });
+}
+
+function loadVideoMetadata(video) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", onLoaded);
+      video.removeEventListener("error", onError);
+    };
+    const onLoaded = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("video metadata could not be read"));
+    };
+    video.addEventListener("loadedmetadata", onLoaded, { once: true });
+    video.addEventListener("error", onError, { once: true });
+  });
+}
+
+function canvasBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("video frame could not be encoded"));
+    }, "image/png");
+  });
+}
+
+async function extractVideoFrames(file, start, interval, count) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.muted = true;
+  video.preload = "metadata";
+  video.src = url;
+  try {
+    await loadVideoMetadata(video);
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) throw new Error("video has no usable dimensions");
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    const frames = [];
+    for (let index = 0; index < count; index += 1) {
+      const at = Math.min(Math.max(0, start + index * interval), Math.max(0, video.duration - 0.05));
+      await seekVideo(video, at);
+      context.drawImage(video, 0, 0, width, height);
+      frames.push({
+        filename: `video-calibration-${String(index + 1).padStart(2, "0")}.png`,
+        blob: await canvasBlob(canvas),
+      });
+    }
+    return frames;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+
 function minutesToTime(minutes) {
   const value = Number(minutes || 0) % 1440;
   const hh = String(Math.floor(value / 60)).padStart(2, "0");
@@ -736,10 +1172,65 @@ function renderPowerPolicy() {
     $("#schedule-enabled").checked = nextBaseline.schedule_enabled;
     $("#schedule-timezone").value = nextBaseline.timezone;
   }
-  $("#power-state").textContent = Boolean(power.schedule_enabled)
-    ? (power.leds_on ? "LEDs on" : "asleep")
-    : "boards on";
+  const fieldMode = power.force_awake ? "wake" : (power.force_sleep ? "sleep" : "schedule");
+  $("#field-power-state").textContent = fieldMode === "sleep"
+    ? "sleep override"
+    : (fieldMode === "wake" ? "awake override" : "following schedule");
+  $('[data-action="sleep-field"]').disabled = fieldMode === "sleep";
+  $('[data-action="wake-field"]').disabled = fieldMode === "wake";
+  $('[data-action="follow-schedule"]').disabled = fieldMode === "schedule";
+  $("#power-state").textContent = power.force_sleep
+    ? "forced asleep"
+    : (Boolean(power.schedule_enabled) ? (power.leds_on ? "LEDs on" : "asleep") : "boards on");
   updateSleepScheduleDirtyState();
+}
+
+function keepaliveSnapshotFromState(keepalive = state?.keepalive || {}) {
+  return {
+    enabled: Boolean(keepalive.enabled),
+    interval_ms: Number(keepalive.interval_ms ?? 10000),
+    pulse_ms: Number(keepalive.pulse_ms ?? 100),
+    brightness: Number(keepalive.brightness ?? 64),
+  };
+}
+
+function keepaliveSnapshotFromForm() {
+  return {
+    enabled: $("#keepalive-enabled").checked,
+    interval_ms: Number($("#keepalive-interval").value || 10000),
+    pulse_ms: Number($("#keepalive-pulse").value || 100),
+    brightness: Number($("#keepalive-brightness").value || 64),
+  };
+}
+
+function keepaliveSnapshotKey(snapshot) {
+  return JSON.stringify(snapshot);
+}
+
+function isKeepaliveDirty() {
+  if (!keepaliveBaseline) return false;
+  return keepaliveSnapshotKey(keepaliveSnapshotFromForm()) !== keepaliveSnapshotKey(keepaliveBaseline);
+}
+
+function updateKeepaliveDirtyState() {
+  const saveButton = $('[data-action="save-keepalive"]');
+  if (saveButton) saveButton.disabled = !isKeepaliveDirty();
+}
+
+function renderKeepalive() {
+  const keepalive = state.keepalive || {};
+  const nextBaseline = keepaliveSnapshotFromState(keepalive);
+  if (!keepaliveBaseline || !isKeepaliveDirty()) {
+    keepaliveBaseline = nextBaseline;
+    $("#keepalive-enabled").checked = nextBaseline.enabled;
+    $("#keepalive-interval").value = nextBaseline.interval_ms;
+    $("#keepalive-pulse").value = nextBaseline.pulse_ms;
+    $("#keepalive-brightness").value = nextBaseline.brightness;
+  }
+  $("#keepalive-state").textContent = nextBaseline.enabled
+    ? `${nextBaseline.pulse_ms}ms / ${nextBaseline.interval_ms}ms`
+    : "off";
+  updateKeepaliveDirtyState();
 }
 
 function powerWindowActive(power) {
@@ -752,7 +1243,8 @@ function powerWindowActive(power) {
 }
 
 function powerLedsOn(power) {
-  return Boolean(power.force_awake) || !Boolean(power.schedule_enabled) || powerWindowActive(power);
+  return Boolean(power.force_awake)
+    || (!Boolean(power.force_sleep) && (!Boolean(power.schedule_enabled) || powerWindowActive(power)));
 }
 
 function powerPolicyFromForm() {
@@ -764,6 +1256,7 @@ function powerPolicyFromForm() {
     led_on_end_min: timeToMinutes($("#led-on-end").value),
     schedule_enabled: $("#schedule-enabled").checked,
     force_awake: false,
+    force_sleep: false,
     current_min: currentMinuteInTimezone(),
     current_epoch_s: Math.floor(Date.now() / 1000),
   };
@@ -1059,6 +1552,8 @@ async function refresh() {
   savedPatterns = (await api("/api/patterns")).patterns;
   otaArtifact = (await api("/api/operations/ota-artifact")).artifact;
   otaInstall = (await api("/api/operations/ota-install")).install;
+  calibrationFrames = (await api("/api/calibration/frames")).frames || [];
+  await refreshWifiStatus({ quiet: true });
   render();
 }
 
@@ -1070,6 +1565,17 @@ async function refreshSavedPatterns() {
 async function refreshOtaInstall() {
   otaInstall = (await api("/api/operations/ota-install")).install;
   if (state) renderOta();
+}
+
+async function refreshWifiStatus({ quiet = false } = {}) {
+  try {
+    wifiStatus = (await api("/api/network/wifi")).wifi;
+  } catch (error) {
+    wifiStatus = { available: false, error: error.message, state: "unavailable", addresses: [] };
+    if (!quiet) toast(error.message, true);
+  }
+  if (state) renderWifi();
+  return wifiStatus;
 }
 
 async function pollOtaInstallWhile(installPromise) {
@@ -1085,6 +1591,12 @@ async function pollOtaInstallWhile(installPromise) {
   await refreshOtaInstall();
 }
 
+async function locateLantern(mac) {
+  if (!mac) return;
+  const ack = await api(`/api/lanterns/${encodeURIComponent(mac)}/identify`, { method: "POST" });
+  toast(ack.message || "locator sent");
+}
+
 async function runAction(action) {
   const lantern = selectedLantern();
   if (!lantern && ["identify", "move", "replace", "forget"].includes(action)) return;
@@ -1098,8 +1610,7 @@ async function runAction(action) {
       return;
     }
     if (action === "identify") {
-      const ack = await api(`/api/lanterns/${encodeURIComponent(lantern.mac)}/identify`, { method: "POST" });
-      toast(ack.message);
+      await locateLantern(lantern.mac);
       return;
     }
     if (action === "move") {
@@ -1180,6 +1691,20 @@ async function runAction(action) {
       await refresh();
       return;
     }
+    if (["sleep-field", "wake-field", "follow-schedule"].includes(action)) {
+      const mode = {
+        "sleep-field": "sleep",
+        "wake-field": "wake",
+        "follow-schedule": "schedule",
+      }[action];
+      const ack = await api("/api/operations/field-power", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      });
+      toast(ack.message || `${mode} command sent`);
+      await refresh();
+      return;
+    }
     if (action === "save-power-monitor") {
       const ack = await api("/api/operations/power-monitor", {
         method: "POST",
@@ -1190,6 +1715,45 @@ async function runAction(action) {
       });
       toast(ack.message);
       await refresh();
+      return;
+    }
+    if (action === "save-keepalive") {
+      if (!isKeepaliveDirty()) return;
+      const config = keepaliveSnapshotFromForm();
+      const ack = await api("/api/operations/keepalive", {
+        method: "POST",
+        body: JSON.stringify(config),
+      });
+      keepaliveBaseline = config;
+      updateKeepaliveDirtyState();
+      toast(ack.message);
+      await refresh();
+      return;
+    }
+    if (action === "refresh-wifi") {
+      await refreshWifiStatus();
+      toast("Wi-Fi refreshed");
+      return;
+    }
+    if (action === "join-wifi") {
+      const ssid = $("#wifi-ssid")?.value.trim();
+      const password = $("#wifi-password")?.value || "";
+      if (!ssid) {
+        toast("network name is required", true);
+        return;
+      }
+      if (!confirm(`Join Wi-Fi network "${ssid}"? The Pi may leave this network and the browser may disconnect.`)) return;
+      const ack = await api("/api/network/wifi", {
+        method: "POST",
+        body: JSON.stringify({ ssid, password }),
+      });
+      toast(ack.message);
+      return;
+    }
+    if (action === "start-hotspot") {
+      if (!confirm("Start Basketnet? The Pi will leave its current Wi-Fi and the browser may disconnect.")) return;
+      const ack = await api("/api/network/hotspot", { method: "POST" });
+      toast(ack.message);
       return;
     }
     if (action === "enter-ota" || action === "exit-ota") {
@@ -1231,6 +1795,43 @@ async function runAction(action) {
       const ack = await installPromise;
       toast(ack.message);
       await refresh();
+      return;
+    }
+    if (action === "upload-calibration-frames") {
+      await uploadCalibrationFrames();
+      return;
+    }
+    if (action === "refresh-calibration") {
+      await refreshCalibrationFrames();
+      toast("calibration frames refreshed");
+      return;
+    }
+    if (action === "plan-calibration") {
+      await planCalibrationCodes();
+      return;
+    }
+    if (action === "propose-calibration") {
+      await proposeCalibrationLayout();
+      return;
+    }
+    if (action === "simulate-calibration") {
+      await simulateCalibrationLayout();
+      return;
+    }
+    if (action === "extract-calibration-video") {
+      await extractCalibrationVideoFrames();
+      return;
+    }
+    if (action === "analyze-calibration-video") {
+      await analyzeCalibrationVideo();
+      return;
+    }
+    if (action === "save-calibration-proposal") {
+      await saveCalibrationProposal();
+      return;
+    }
+    if (action === "toggle-calibration-mode") {
+      await toggleCalibrationMode();
       return;
     }
   } catch (error) {
@@ -1344,6 +1945,36 @@ $$("[data-action]").forEach((button) => {
 });
 
 $("#ota-file")?.addEventListener("change", renderOta);
+$("#calibration-files")?.addEventListener("change", () => {
+  calibrationProposal = null;
+  calibrationSaveStatus = "";
+  renderCalibration();
+});
+$("#calibration-video")?.addEventListener("change", () => {
+  calibrationProposal = null;
+  calibrationSaveStatus = "";
+  renderCalibration();
+});
+[
+  "#calibration-threshold",
+  "#calibration-min-area",
+  "#calibration-first-code",
+  "#calibration-video-start",
+  "#calibration-video-interval",
+  "#calibration-jitter",
+  "#calibration-led-value",
+  "#calibration-glare-count",
+  "#calibration-perspective",
+  "#calibration-missing-frames",
+].forEach((selector) => {
+  const input = $(selector);
+  input?.addEventListener("input", () => {
+    if (selector === "#calibration-first-code") calibrationCodePlan = null;
+    calibrationProposal = null;
+    calibrationSaveStatus = "";
+    renderCalibration();
+  });
+});
 
 $("[data-replace-cancel]").addEventListener("click", closeReplacePanel);
 $("#replace-confirm").addEventListener("click", () => {
@@ -1405,6 +2036,12 @@ $("#pattern-spatial").addEventListener("input", (event) => {
   const input = $(selector);
   input.addEventListener("input", updateSleepScheduleDirtyState);
   input.addEventListener("change", updateSleepScheduleDirtyState);
+});
+
+["#keepalive-enabled", "#keepalive-interval", "#keepalive-pulse", "#keepalive-brightness"].forEach((selector) => {
+  const input = $(selector);
+  input.addEventListener("input", updateKeepaliveDirtyState);
+  input.addEventListener("change", updateKeepaliveDirtyState);
 });
 
 $("#map").addEventListener("wheel", (event) => {

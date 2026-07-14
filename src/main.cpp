@@ -33,6 +33,7 @@
 #include "dusk.h"
 #include "firmware_version.h"
 #include "identity.h"
+#include "keepalive.h"
 #include "macaddr.h"
 #include "napsched.h"
 #include "patterns.h"
@@ -97,6 +98,9 @@ static int64_t  g_last_wake_flag_us = INT64_MIN / 2;  // "never" (avoids overflo
 static bool     g_wake_flag = false;       // conductor: field-awake override
 static uint16_t g_light_mv = 0;            // last light sample, for diag/info
 RTC_DATA_ATTR static bool g_rtc_was_day = false;
+RTC_DATA_ATTR static bool g_rtc_have_power_policy = false;
+RTC_DATA_ATTR static PowerPolicy g_rtc_power_policy = {4, 15, 20 * 60, 6 * 60,
+                                                       12 * 60, 0, 0};
 
 // Runtime field power policy. The conductor persists these knobs and includes
 // them in every beacon; performers apply the latest received policy directly, so
@@ -105,9 +109,12 @@ static PowerPolicy g_power_policy = {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0};
 static uint16_t    g_policy_base_min = 12 * 60;
 static uint32_t    g_policy_base_epoch_s = 0;
 static int64_t     g_policy_clock_set_us = 0;
+static KeepAliveConfig g_keepalive = keepAliveDefault();
 static bool        g_ota_maintenance = false;
 static int64_t     g_ota_maintenance_until_us = 0;
 static constexpr int64_t OTA_WINDOW_US = 15LL * 60LL * 1000000LL;
+static constexpr uint32_t OTA_FINALIZE_WAIT_MS = 30000;
+static constexpr int64_t OTA_STATUS_FRESH_US = 30000000LL;
 static bool        g_ota_write_active = false;
 static uint32_t    g_ota_write_size = 0;
 static uint32_t    g_ota_write_written = 0;
@@ -120,6 +127,10 @@ static portMUX_TYPE   g_ota_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static OtaStatusMsg   g_ota_status_pending = {{BEACON_MAGIC, PROTO_VERSION, MSG_OTA_STATUS},
                                                {0}, OTA_PHASE_IDLE, OTA_ERR_NONE, 0, 0};
 static bool           g_ota_status_pending_dirty = false;
+// Keep large JSON snapshots off loopTask's stack. The machine-state response
+// copies 64-entry tables before printing so radio callbacks can keep updating.
+static Roster         g_state_roster_snapshot;
+static OtaStatusTable g_state_ota_status_snapshot;
 
 static bool otaMaintenanceActive(int64_t t);
 static void otaWriteAbort();
@@ -133,6 +144,9 @@ static void otaFinalizePending();
 static void otaBroadcastBegin(uint32_t size, uint32_t crc32);
 static void otaBroadcastChunk(uint32_t offset, const uint8_t* data, uint8_t len);
 static void otaBroadcastEnd();
+static bool otaExpectedPerformersComplete(uint32_t size, uint32_t crc32);
+static bool otaWaitForExpectedPerformers(uint32_t size, uint32_t crc32,
+                                         uint32_t wait_ms);
 
 // INA228 power telemetry (powermon.h logic, host-tested; ARCHITECTURE §4.2).
 // Probed over I2C at boot: 1–2 reference nodes carry the breakout in series
@@ -177,13 +191,21 @@ static void configLoad() {
   g_powersave = g_prefs.getBool("ps", POWERSAVE_DEFAULT != 0);
   g_dusk_on = g_prefs.getBool("dusk", DUSK_DEFAULT != 0);
   g_wake_flag = g_prefs.getBool("wake", false);
+  g_keepalive = keepAliveDefault();
+  if (g_prefs.getBool("ka_en", false)) g_keepalive.flags |= KEEPALIVE_FLAG_ENABLED;
+  g_keepalive.interval_ms = g_prefs.getUShort("ka_int", g_keepalive.interval_ms);
+  g_keepalive.pulse_ms = g_prefs.getUShort("ka_pulse", g_keepalive.pulse_ms);
+  g_keepalive.brightness = g_prefs.getUChar("ka_bri", g_keepalive.brightness);
+  keepAliveSanitize(g_keepalive);
   g_power_policy = powerPolicyDefault();
   g_power_policy.light_sleep_check_s = g_prefs.getUShort("p_lchk", g_power_policy.light_sleep_check_s);
   g_power_policy.deep_sleep_check_min = g_prefs.getUShort("p_dchk", g_power_policy.deep_sleep_check_min);
   g_power_policy.led_on_start_min = g_prefs.getUShort("p_on", g_power_policy.led_on_start_min);
   g_power_policy.led_on_end_min = g_prefs.getUShort("p_off", g_power_policy.led_on_end_min);
+  g_power_policy.current_min = g_prefs.getUShort("p_min", g_power_policy.current_min);
   g_power_policy.current_epoch_s = g_prefs.getUInt("p_epoch", g_power_policy.current_epoch_s);
   if (g_prefs.getBool("p_sched", false)) g_power_policy.flags |= POWER_FLAG_SCHEDULE_ENABLED;
+  if (g_prefs.getBool("p_sleep", false)) g_power_policy.flags |= POWER_FLAG_FORCE_SLEEP;
   if (g_wake_flag) g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
   powerPolicySanitize(g_power_policy);
   g_policy_base_min = g_power_policy.current_min;
@@ -209,14 +231,25 @@ static void wakeFlagSave() {
   g_prefs.end();
 }
 
+static void keepAliveSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBool("ka_en", keepAliveEnabled(g_keepalive));
+  g_prefs.putUShort("ka_int", g_keepalive.interval_ms);
+  g_prefs.putUShort("ka_pulse", g_keepalive.pulse_ms);
+  g_prefs.putUChar("ka_bri", g_keepalive.brightness);
+  g_prefs.end();
+}
+
 static void powerPolicySave() {
   g_prefs.begin("node", /*readonly*/ false);
   g_prefs.putUShort("p_lchk", g_power_policy.light_sleep_check_s);
   g_prefs.putUShort("p_dchk", g_power_policy.deep_sleep_check_min);
   g_prefs.putUShort("p_on", g_power_policy.led_on_start_min);
   g_prefs.putUShort("p_off", g_power_policy.led_on_end_min);
+  g_prefs.putUShort("p_min", g_power_policy.current_min);
   g_prefs.putUInt("p_epoch", g_power_policy.current_epoch_s);
   g_prefs.putBool("p_sched", powerPolicyScheduleEnabled(g_power_policy));
+  g_prefs.putBool("p_sleep", powerPolicyForceSleep(g_power_policy));
   g_prefs.putBool("wake", g_wake_flag);
   g_prefs.end();
 }
@@ -258,7 +291,8 @@ static SyncState g_sync;
 static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
                              /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, /*flags*/ 0, {0, 0, 0, 0},
-                             {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0}, 0};
+                             {4, 15, 20 * 60, 6 * 60, 12 * 60, 0, 0},
+                             {0, 10000, 100, 64}, 0};
 static uint32_t g_tx_seq = 0;
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -291,6 +325,12 @@ static volatile uint8_t g_rowreq_n = 0;
 // the `role` command can zero it: a re-promoted conductor must advertise the
 // table immediately, not resume a stale schedule up to 60 s in the future.
 static int64_t      g_next_table_us = 0;
+static int64_t      g_next_cal_roster_us = 0;
+
+// Dense rank in the conductor's sorted MAC roster, learned from MSG_ROSTER while
+// calibration mode is active. 0 means "not learned yet" and renders off for
+// calibration until the next roster chunk arrives.
+static uint16_t     g_calibration_rank = 0;
 
 // Performer position adopted from a MSG_TABLE row. The recv callback can't write
 // flash, so it stashes the new (x,y) here (under g_sync_mux) and loop() applies +
@@ -319,6 +359,7 @@ static void patternConfigLoad() {
   g_beacon.params[2] = g_prefs.getUShort("p2", 0);
   g_beacon.params[3] = g_prefs.getUShort("p3", 0);
   g_beacon.power = g_power_policy;
+  g_beacon.keepalive = g_keepalive;
   g_prefs.end();
 }
 
@@ -399,8 +440,21 @@ static void powerPolicyApplyCommand(const SerialJsonCommand& cmd) {
   }
   if (cmd.has_force_awake) {
     g_wake_flag = cmd.force_awake;
-    if (g_wake_flag) g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
-    else g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+    if (g_wake_flag) {
+      g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_SLEEP;
+    } else {
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+    }
+  }
+  if (cmd.has_force_sleep) {
+    if (cmd.force_sleep) {
+      g_wake_flag = false;
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+      g_power_policy.flags |= POWER_FLAG_FORCE_SLEEP;
+    } else {
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_SLEEP;
+    }
   }
   if (cmd.has_current_min) {
     g_policy_base_min = cmd.current_min % POWER_DAY_MINUTES;
@@ -414,6 +468,21 @@ static void powerPolicyApplyCommand(const SerialJsonCommand& cmd) {
     g_policy_clock_set_us = now_us();
   powerPolicySanitize(g_power_policy);
   powerPolicySave();
+}
+
+static void keepAliveApplyCommand(const SerialJsonCommand& cmd) {
+  if (cmd.has_keepalive_enabled) {
+    if (cmd.keepalive_enabled) g_keepalive.flags |= KEEPALIVE_FLAG_ENABLED;
+    else g_keepalive.flags &= ~KEEPALIVE_FLAG_ENABLED;
+  }
+  if (cmd.has_keepalive_interval_ms)
+    g_keepalive.interval_ms = cmd.keepalive_interval_ms;
+  if (cmd.has_keepalive_pulse_ms)
+    g_keepalive.pulse_ms = cmd.keepalive_pulse_ms;
+  if (cmd.has_keepalive_brightness)
+    g_keepalive.brightness = cmd.keepalive_brightness;
+  keepAliveSanitize(g_keepalive);
+  keepAliveSave();
 }
 
 // ---- ESP-NOW receive ---------------------------------------------------------
@@ -438,6 +507,7 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
       if (len != (int)sizeof(BeaconMsg)) return;
       BeaconMsg b;
       memcpy(&b, data, sizeof(b));
+      keepAliveSanitize(b.keepalive);
       int64_t local = now_us();
       portENTER_CRITICAL(&g_sync_mux);
       syncOnBeacon(g_sync, b.epoch_us, b.seq, local);
@@ -470,6 +540,20 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
         g_rowreq_n = g_rowreq_n + 1;
       }
       portEXIT_CRITICAL(&g_roster_mux);
+      break;
+    }
+    case MSG_ROSTER: {
+      if (isConductor()) return;
+      if (len != (int)sizeof(RosterMsg)) return;
+      RosterMsg m;
+      memcpy(&m, data, sizeof(m));
+      if (m.n > ROSTER_MACS_PER_MSG || m.chunk >= m.chunks) return;
+      uint16_t rank = rosterMsgFindRank(m, g_mac);
+      if (rank) {
+        portENTER_CRITICAL(&g_sync_mux);
+        g_calibration_rank = rank;
+        portEXIT_CRITICAL(&g_sync_mux);
+      }
       break;
     }
     case MSG_TABLE: {
@@ -612,6 +696,8 @@ static void broadcastBeacon() {
   b.epoch_us = now_us();
   b.seq = g_tx_seq++;
   b.power = powerPolicySnapshot(b.epoch_us);
+  b.keepalive = g_keepalive;
+  keepAliveSanitize(b.keepalive);
   b.flags = powerPolicyForceAwake(b.power) ? BEACON_FLAG_FIELD_AWAKE : 0;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
@@ -742,6 +828,55 @@ static void broadcastTable() {
   }
 }
 
+static int macCompare(const uint8_t a[6], const uint8_t b[6]) {
+  for (uint8_t i = 0; i < 6; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+// Conductor: while calibration is active, broadcast the alive MAC roster sorted
+// by MAC. Performers use their rank in this sorted list as the calibration
+// identity, so no serial-provisioned `id` is needed and collisions are impossible
+// within the current roster.
+static void broadcastCalibrationRoster() {
+  uint8_t macs[ROSTER_MAX][6];
+  uint8_t count;
+  portENTER_CRITICAL(&g_roster_mux);
+  count = g_roster.count;
+  for (uint8_t i = 0; i < count; i++) memcpy(macs[i], g_roster.entries[i].mac, 6);
+  portEXIT_CRITICAL(&g_roster_mux);
+  if (count == 0) return;
+
+  for (uint8_t i = 1; i < count; i++) {
+    uint8_t key[6];
+    memcpy(key, macs[i], 6);
+    int j = i - 1;
+    while (j >= 0 && macCompare(macs[j], key) > 0) {
+      memcpy(macs[j + 1], macs[j], 6);
+      j--;
+    }
+    memcpy(macs[j + 1], key, 6);
+  }
+
+  uint8_t chunks = (uint8_t)((count + ROSTER_MACS_PER_MSG - 1) / ROSTER_MACS_PER_MSG);
+  for (uint8_t c = 0; c < chunks; c++) {
+    RosterMsg m = {};
+    m.hdr.magic = BEACON_MAGIC;
+    m.hdr.version = PROTO_VERSION;
+    m.hdr.type = MSG_ROSTER;
+    m.chunk = c;
+    m.chunks = chunks;
+    m.base_rank = (uint16_t)(c * ROSTER_MACS_PER_MSG);
+    uint8_t start = (uint8_t)m.base_rank;
+    uint8_t remaining = count - start;
+    m.n = remaining > ROSTER_MACS_PER_MSG ? ROSTER_MACS_PER_MSG : remaining;
+    for (uint8_t i = 0; i < m.n; i++) memcpy(m.macs[i], macs[start + i], 6);
+    esp_now_send(BROADCAST_ADDR, (const uint8_t*)&m, sizeof(m));
+  }
+}
+
 // Performer: apply a position handed down by the conductor's table (stashed in the
 // recv callback). Saves to NVS so the node keeps its spot across a reboot without
 // hearing the table again — the "field runs with no laptop" guarantee.
@@ -768,7 +903,7 @@ static void maybeAdoptPosition() {
 // would otherwise latch the last frame all day); the RTC-memory flag makes the
 // next timer wake boot straight into "day" for a quick re-sleep if it's still
 // bright. Never returns.
-static void duskEnterDeepSleep(uint64_t sleep_us) {
+static void duskEnterDeepSleep(uint64_t sleep_us, const PowerPolicy& sleep_policy) {
   Serial.printf(
       "[sleep] off-window confirmed (light=%u mV) — deep sleeping %llu min; "
       "power-cycle wakes it immediately\n",
@@ -781,6 +916,11 @@ static void duskEnterDeepSleep(uint64_t sleep_us) {
   digitalWrite(HEARTBEAT_LED_PIN, HEARTBEAT_ACTIVE_LOW ? HIGH : LOW);
 #endif
   g_rtc_was_day = true;
+  g_rtc_power_policy = sleep_policy;
+  powerPolicySanitize(g_rtc_power_policy);
+  powerPolicyAdvanceBySeconds(g_rtc_power_policy,
+                              (uint32_t)(sleep_us / 1000000ULL));
+  g_rtc_have_power_policy = true;
   esp_deep_sleep(sleep_us);
 }
 
@@ -845,6 +985,9 @@ static void printDiag() {
 //                        summons dusk-sleeping nodes at their next resample
 //                        (<= 15 min) and holds the field awake for daytime
 //                        tests. Sticky in NVS ("wake").
+//   keepalive <on|off> [interval_ms] [pulse_ms] [brightness]
+//                        conductor broadcasts a brief scheduled-off LED pulse
+//                        to keep USB power banks awake; saved to NVS.
 //   power                (INA228 nodes) print the local energy/charge totals
 //   power reset          (INA228 nodes) zero the accumulators — run at the
 //                        start of a night for a clean "Wh consumed" figure
@@ -886,6 +1029,11 @@ static void printInfo() {
                 p.current_min / 60, p.current_min % 60,
                 (unsigned long)p.current_epoch_s,
                 powerPolicyLedsOn(p) ? "on" : "off");
+  KeepAliveConfig ka = isConductor() ? g_keepalive : b.keepalive;
+  keepAliveSanitize(ka);
+  Serial.printf("  keepalive=%s  interval=%ums  pulse=%ums  bri=%u\n",
+                keepAliveEnabled(ka) ? "on" : "off", ka.interval_ms,
+                ka.pulse_ms, ka.brightness);
   if (isConductor())
     Serial.printf("  wake-override=%s (FIELD_AWAKE flag in beacons)\n",
                   g_wake_flag ? "ON" : "off");
@@ -943,6 +1091,7 @@ static const char* patternName(uint16_t id) {
     case patterns::SWEEP: return "Sweep";
     case patterns::SOLID: return "Solid";
     case patterns::GLOW: return "Glow";
+    case patterns::CALIBRATION: return "Calibration";
     default: return "Unknown";
   }
 }
@@ -985,23 +1134,33 @@ static void printPowerPolicyJson(const PowerPolicy& p) {
                 "\"led_on_start_min\":%u,\"led_on_end_min\":%u,"
                 "\"current_min\":%u,\"current_epoch_s\":%lu,"
                 "\"schedule_enabled\":%s,\"force_awake\":%s,"
+                "\"force_sleep\":%s,"
                 "\"leds_on\":%s}",
                 p.light_sleep_check_s, p.deep_sleep_check_min,
                 p.led_on_start_min, p.led_on_end_min, p.current_min,
                 (unsigned long)p.current_epoch_s,
                 powerPolicyScheduleEnabled(p) ? "true" : "false",
                 powerPolicyForceAwake(p) ? "true" : "false",
+                powerPolicyForceSleep(p) ? "true" : "false",
                 powerPolicyLedsOn(p) ? "true" : "false");
 }
 
+static void printKeepAliveJson(const KeepAliveConfig& k) {
+  KeepAliveConfig clean = k;
+  keepAliveSanitize(clean);
+  Serial.printf("\"keepalive\":{\"enabled\":%s,\"interval_ms\":%u,"
+                "\"pulse_ms\":%u,\"brightness\":%u}",
+                keepAliveEnabled(clean) ? "true" : "false",
+                clean.interval_ms, clean.pulse_ms, clean.brightness);
+}
+
 static void printOtaStatusNodesJson(int64_t t) {
-  OtaStatusTable status;
   portENTER_CRITICAL(&g_ota_status_mux);
-  status = g_ota_status;
+  g_state_ota_status_snapshot = g_ota_status;
   portEXIT_CRITICAL(&g_ota_status_mux);
   Serial.print("[");
-  for (uint8_t i = 0; i < status.count; i++) {
-    const OtaNodeStatusEntry& e = status.entries[i];
+  for (uint8_t i = 0; i < g_state_ota_status_snapshot.count; i++) {
+    const OtaNodeStatusEntry& e = g_state_ota_status_snapshot.entries[i];
     char mac[18];
     int64_t age_s = e.last_us > 0 ? (t - e.last_us) / 1000000 : -1;
     if (i) Serial.print(",");
@@ -1210,6 +1369,34 @@ static void otaBroadcastEnd() {
   otaSendRepeated((const uint8_t*)&msg, sizeof(msg));
 }
 
+static bool otaExpectedPerformersComplete(uint32_t size, uint32_t crc32) {
+  OtaStatusTable status;
+  portENTER_CRITICAL(&g_ota_status_mux);
+  status = g_ota_status;
+  portEXIT_CRITICAL(&g_ota_status_mux);
+
+  int64_t t = now_us();
+  for (uint8_t i = 0; i < g_table.count; i++) {
+    const uint8_t* mac = g_table.entries[i].mac;
+    if (memcmp(mac, g_mac, 6) == 0) continue;
+    if (!otaStatusCompleteForMac(status, mac, size, crc32, t,
+                                 OTA_STATUS_FRESH_US)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool otaWaitForExpectedPerformers(uint32_t size, uint32_t crc32,
+                                         uint32_t wait_ms) {
+  uint32_t start_ms = millis();
+  while ((uint32_t)(millis() - start_ms) < wait_ms) {
+    if (otaExpectedPerformersComplete(size, crc32)) return true;
+    delay(100);
+  }
+  return otaExpectedPerformersComplete(size, crc32);
+}
+
 static void handleOtaBegin(const SerialJsonCommand& cmd) {
   if (!otaMaintenanceActive(now_us())) {
     jsonError(cmd.id, "ota maintenance mode is not active");
@@ -1288,14 +1475,22 @@ static void handleOtaEnd(const SerialJsonCommand& cmd) {
     jsonError(cmd.id, "ota crc mismatch");
     return;
   }
+  otaBroadcastEnd();
+  if (!otaWaitForExpectedPerformers(g_ota_write_size, g_ota_write_crc,
+                                    OTA_FINALIZE_WAIT_MS)) {
+    Serial.printf("{\"id\":%lu,\"ok\":false,"
+                  "\"error\":\"ota performers did not complete\","
+                  "\"nodes\":", (unsigned long)cmd.id);
+    printOtaStatusNodesJson(now_us());
+    Serial.print("}\n");
+    return;
+  }
   if (!Update.end(true)) {
     otaWriteAbort();
     jsonError(cmd.id, "ota finalize failed");
     return;
   }
   g_ota_write_active = false;
-  otaBroadcastEnd();
-  delay(10000);
   Serial.printf("{\"id\":%lu,\"ok\":true,\"message\":\"ota install complete; rebooting\","
                 "\"nodes\":", (unsigned long)cmd.id);
   printOtaStatusNodesJson(now_us());
@@ -1318,13 +1513,14 @@ static void handleOtaProgress(const SerialJsonCommand& cmd) {
 }
 
 static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
+                             uint16_t node_id,
                              const char* status, int64_t last_seen_s, float x,
                              float y, bool has_position, const char* attention,
                              const FirmwareVersion* firmware,
                              const PowerEntry* power, int64_t t) {
   char mac[18];
-  Serial.printf("{\"mac\":\"%s\",\"label\":\"%s\",\"status\":\"%s\",",
-                macStr(mac_bytes, mac), label, status);
+  Serial.printf("{\"mac\":\"%s\",\"label\":\"%s\",\"node_id\":%u,\"status\":\"%s\",",
+                macStr(mac_bytes, mac), label, node_id, status);
   if (last_seen_s >= 0) {
     Serial.printf("\"last_seen_s\":%lld,\"last_seen_label\":\"%llds ago\",",
                   (long long)last_seen_s, (long long)last_seen_s);
@@ -1370,11 +1566,10 @@ static void printLanternJson(const uint8_t mac_bytes[6], const char* label,
 }
 
 static void printMachineState(uint32_t id) {
-  Roster roster;
   BeaconMsg b;
   bool locked = false;
   portENTER_CRITICAL(&g_roster_mux);
-  roster = g_roster;
+  g_state_roster_snapshot = g_roster;
   portEXIT_CRITICAL(&g_roster_mux);
   portENTER_CRITICAL(&g_sync_mux);
   b = g_beacon;
@@ -1389,12 +1584,12 @@ static void printMachineState(uint32_t id) {
   uint8_t firmware_matching = 0;
   bool firmware_mixed = false;
   for (uint8_t i = 0; i < g_table.count; i++) {
-    int r = rosterFind(roster, g_table.entries[i].mac);
+    int r = rosterFind(g_state_roster_snapshot, g_table.entries[i].mac);
     if (r < 0) {
       attention++;
     } else {
       placed_alive++;
-      FirmwareVersion fw = rosterEntryFirmware(roster.entries[r]);
+      FirmwareVersion fw = rosterEntryFirmware(g_state_roster_snapshot.entries[r]);
       firmware_seen++;
       if (firmwareSame(conductor_fw, fw)) firmware_matching++;
       else {
@@ -1403,9 +1598,9 @@ static void printMachineState(uint32_t id) {
       }
     }
   }
-  for (uint8_t i = 0; i < roster.count; i++) {
-    FirmwareVersion fw = rosterEntryFirmware(roster.entries[i]);
-    if (tableFind(g_table, roster.entries[i].mac) < 0) attention++;
+  for (uint8_t i = 0; i < g_state_roster_snapshot.count; i++) {
+    FirmwareVersion fw = rosterEntryFirmware(g_state_roster_snapshot.entries[i]);
+    if (tableFind(g_table, g_state_roster_snapshot.entries[i].mac) < 0) attention++;
     if (!firmwareSame(conductor_fw, fw)) firmware_mixed = true;
   }
 
@@ -1435,33 +1630,38 @@ static void printMachineState(uint32_t id) {
   Serial.print(",");
   printPowerPolicyJson(policy);
   Serial.print(",");
+  printKeepAliveJson(isConductor() ? g_keepalive : b.keepalive);
+  Serial.print(",");
   printOtaJson(g_table.count, placed_alive, firmware_matching, firmware_mixed, t);
   Serial.print(",\"lanterns\":[");
   bool first = true;
   for (uint8_t i = 0; i < g_table.count; i++) {
     const TableEntry& row = g_table.entries[i];
-    int r = rosterFind(roster, row.mac);
+    int r = rosterFind(g_state_roster_snapshot, row.mac);
     char label[16];
-    if (r >= 0 && roster.entries[r].id) snprintf(label, sizeof(label), "#%u", roster.entries[r].id);
+    if (r >= 0 && g_state_roster_snapshot.entries[r].id) {
+      snprintf(label, sizeof(label), "#%u", g_state_roster_snapshot.entries[r].id);
+    }
     else snprintf(label, sizeof(label), "#?");
     if (!first) Serial.print(",");
     first = false;
-    int64_t age_s = r >= 0 ? (t - roster.entries[r].last_us) / 1000000 : -1;
+    int64_t age_s = r >= 0 ? (t - g_state_roster_snapshot.entries[r].last_us) / 1000000 : -1;
     FirmwareVersion fw;
     FirmwareVersion* fw_ptr = nullptr;
     const char* attention_text = r >= 0 ? "None" : "Not seen";
     if (r >= 0) {
-      fw = rosterEntryFirmware(roster.entries[r]);
+      fw = rosterEntryFirmware(g_state_roster_snapshot.entries[r]);
       fw_ptr = &fw;
       if (!firmwareSame(conductor_fw, fw)) attention_text = "Firmware mismatch";
     }
     int p = powerTableFind(g_power_table, row.mac);
-    printLanternJson(row.mac, label, r >= 0 ? "alive" : "missing", age_s, row.x,
+    printLanternJson(row.mac, label, r >= 0 ? g_state_roster_snapshot.entries[r].id : 0,
+                     r >= 0 ? "alive" : "missing", age_s, row.x,
                      row.y, true, attention_text, fw_ptr,
                      p >= 0 ? &g_power_table.entries[p] : nullptr, t);
   }
-  for (uint8_t i = 0; i < roster.count; i++) {
-    const RosterEntry& row = roster.entries[i];
+  for (uint8_t i = 0; i < g_state_roster_snapshot.count; i++) {
+    const RosterEntry& row = g_state_roster_snapshot.entries[i];
     if (tableFind(g_table, row.mac) >= 0) continue;
     char label[16];
     if (row.id) snprintf(label, sizeof(label), "#%u", row.id);
@@ -1473,7 +1673,7 @@ static void printMachineState(uint32_t id) {
     const char* attention_text = firmwareSame(conductor_fw, fw) ? "Needs position"
                                                                 : "Firmware mismatch";
     int p = powerTableFind(g_power_table, row.mac);
-    printLanternJson(row.mac, label, "alive", age_s, 0.0f, 0.0f, false,
+    printLanternJson(row.mac, label, row.id, "alive", age_s, 0.0f, 0.0f, false,
                      attention_text, &fw,
                      p >= 0 ? &g_power_table.entries[p] : nullptr, t);
   }
@@ -1546,6 +1746,13 @@ static void handleMachineCommand(const SerialJsonCommand& cmd) {
     } else {
       powerPolicyApplyCommand(cmd);
       jsonOk(cmd.id, "power policy changed");
+    }
+  } else if (cmd.kind == SJ_KEEPALIVE) {
+    if (!isConductor()) {
+      jsonError(cmd.id, "keepalive is conductor-only");
+    } else {
+      keepAliveApplyCommand(cmd);
+      jsonOk(cmd.id, "keepalive changed");
     }
   } else if (cmd.kind == SJ_OTA_MODE) {
     if (!isConductor()) {
@@ -1709,6 +1916,7 @@ static void handleCommand(char* line) {
     } else if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
       g_wake_flag = true;
       g_power_policy.flags |= POWER_FLAG_FORCE_AWAKE;
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_SLEEP;
       powerPolicySave();
       Serial.println("[wake] FIELD_AWAKE on — dusk-sleeping nodes join at their "
                      "next resample (<= 15 min)");
@@ -1721,6 +1929,25 @@ static void handleCommand(char* line) {
       printInfo();
     } else {
       Serial.println("? wake on|off");
+    }
+  } else if (!strcmp(cmd, "sleep")) {
+    char* a = strtok(nullptr, " \t");
+    if (!isConductor()) {
+      Serial.println("? sleep is conductor-only (forces field deep-sleep)");
+    } else if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
+      g_wake_flag = false;
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_AWAKE;
+      g_power_policy.flags |= POWER_FLAG_FORCE_SLEEP;
+      powerPolicySave();
+      Serial.println("[sleep] field sleep override on");
+      printInfo();
+    } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
+      g_power_policy.flags &= ~POWER_FLAG_FORCE_SLEEP;
+      powerPolicySave();
+      Serial.println("[sleep] field sleep override off — schedule resumes");
+      printInfo();
+    } else {
+      Serial.println("? sleep on|off");
     }
   } else if (!strcmp(cmd, "power")) {
     char* a = strtok(nullptr, " \t");
@@ -1735,6 +1962,29 @@ static void handleCommand(char* line) {
     } else {
       PowerSample s = readPowerSample(now_us());
       printPowerSample(g_mac, s);
+    }
+  } else if (!strcmp(cmd, "keepalive")) {
+    char* a = strtok(nullptr, " \t");
+    if (!isConductor()) {
+      Serial.println("? keepalive is conductor-only");
+    } else if (a && (!strcmp(a, "on") || !strcmp(a, "1") ||
+                     !strcmp(a, "off") || !strcmp(a, "0"))) {
+      if (!strcmp(a, "on") || !strcmp(a, "1")) g_keepalive.flags |= KEEPALIVE_FLAG_ENABLED;
+      else g_keepalive.flags &= ~KEEPALIVE_FLAG_ENABLED;
+      char* interval = strtok(nullptr, " \t");
+      char* pulse = strtok(nullptr, " \t");
+      char* brightness = strtok(nullptr, " \t");
+      if (interval) g_keepalive.interval_ms = (uint16_t)atoi(interval);
+      if (pulse) g_keepalive.pulse_ms = (uint16_t)atoi(pulse);
+      if (brightness) g_keepalive.brightness = (uint8_t)atoi(brightness);
+      keepAliveSanitize(g_keepalive);
+      keepAliveSave();
+      portENTER_CRITICAL(&g_sync_mux);
+      g_beacon.keepalive = g_keepalive;
+      portEXIT_CRITICAL(&g_sync_mux);
+      printInfo();
+    } else {
+      Serial.println("? keepalive on|off [interval_ms] [pulse_ms] [brightness]");
     }
   } else if (!strcmp(cmd, "powersave") || !strcmp(cmd, "ps")) {
     char* a = strtok(nullptr, " \t");
@@ -1783,10 +2033,21 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.printf("\nDo Baskets Dream — channel %u\n", WIFI_CHANNEL);
+  bool timer_wake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
 
   configLoad();
   g_policy_clock_set_us = now_us();
   patternConfigLoad();
+  if (timer_wake && g_rtc_have_power_policy) {
+    g_power_policy = g_rtc_power_policy;
+    powerPolicySanitize(g_power_policy);
+    g_policy_base_min = g_power_policy.current_min;
+    g_policy_base_epoch_s = g_power_policy.current_epoch_s;
+    g_policy_clock_set_us = now_us();
+    g_beacon.power = g_power_policy;
+  } else if (!timer_wake) {
+    g_rtc_have_power_policy = false;
+  }
   esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
   rosterInit(g_roster);
   powerTableInit(g_power_table);
@@ -1820,7 +2081,6 @@ void setup() {
   // hold-off, full provisioning grace — the power-cycle-always-wakes
   // guarantee). This is pure glue; the reasoning lives in the header.
   int64_t boot = now_us();
-  bool timer_wake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
   static const BootPlanConfig BOOT_CFG = {DUSK_MIN_AWAKE_TIMER_US,
                                           DUSK_MIN_AWAKE_COLD_US,
                                           DUSK_SERIAL_GRACE_US,
@@ -1882,6 +2142,8 @@ void loop() {
   s = g_sync;
   b = g_beacon;
   portEXIT_CRITICAL(&g_sync_mux);
+  if (isConductor()) b.keepalive = g_keepalive;
+  keepAliveSanitize(b.keepalive);
   static uint32_t last_rx = 0;
   if (s.beacons_rx != last_rx) { dutyNoteBeacon(g_duty); last_rx = s.beacons_rx; }
 
@@ -1896,6 +2158,10 @@ void loop() {
     if (t >= g_next_table_us) {
       broadcastTable();
       g_next_table_us = t + TABLE_INTERVAL_US;
+    }
+    if (b.pattern_id == patterns::CALIBRATION && t >= g_next_cal_roster_us) {
+      broadcastCalibrationRoster();
+      g_next_cal_roster_us = t + CAL_ROSTER_INTERVAL_US;
     }
     // Row replies: answer each queued first-join/unprovisioned REGISTER with
     // just that node's row, while its radio is still up (it transmitted
@@ -1949,9 +2215,9 @@ void loop() {
     // Primary field sleep policy: when the broadcast schedule says LEDs are off,
     // clear the pixels and deep-sleep until the next check interval. A recent
     // serial session still wins, so a board on the bench stays reachable.
-    if (powerPolicyScheduleEnabled(policy) && !powerPolicyLedsOn(policy) &&
+    if (powerPolicyShouldDeepSleep(policy, keepAliveEnabled(b.keepalive)) &&
         t - g_last_serial_us >= DUSK_SERIAL_GRACE_US) {
-      duskEnterDeepSleep(powerPolicyDeepSleepUs(policy));
+      duskEnterDeepSleep(powerPolicyDeepSleepUs(policy), policy);
     }
 
     // Lever 2: sample the light sensor at 1 Hz and deep-sleep through daylight.
@@ -1971,7 +2237,7 @@ void loop() {
         portEXIT_CRITICAL(&g_sync_mux);
         if (duskShouldSleep(g_dusk, DUSK_CFG, t, g_dusk_earliest_us,
                             g_last_serial_us, last_flag)) {
-          duskEnterDeepSleep(powerPolicyDeepSleepUs(policy));  // never returns
+          duskEnterDeepSleep(powerPolicyDeepSleepUs(policy), policy);  // never returns
         }
       }
     }
@@ -1986,6 +2252,15 @@ void loop() {
   // Conductor renders against its own clock; a performer against synced time
   // (which free-runs on the last offset when no beacon arrives).
   int64_t render_us = isConductor() ? t : syncedTime(s, t);
+  uint16_t calibration_rank;
+  portENTER_CRITICAL(&g_sync_mux);
+  calibration_rank = g_calibration_rank;
+  portEXIT_CRITICAL(&g_sync_mux);
+  uint16_t render_node_id = (b.pattern_id == patterns::CALIBRATION && calibration_rank)
+                                ? calibration_rank
+                                : g_id.id;
+  bool keepalive_pulse = powerPolicyKeepaliveWindow(b.power) &&
+                         keepAlivePulseOn(b.keepalive, render_us);
 
   // Static patterns (GLOW/SOLID) latch: pushing the identical frame at 60 Hz is
   // pure RMT + CPU waste, and it delays every Stage-B nap behind the CanShow()
@@ -1997,10 +2272,19 @@ void loop() {
   static int64_t next_static_refresh = 0;
   bool pattern_changed = !shown_once || last_shown.pattern_id != b.pattern_id ||
                         last_shown.brightness != b.brightness ||
-                        memcmp(last_shown.params, b.params, sizeof(b.params)) != 0;
-  if (!patterns::patternIsStatic(b.pattern_id) || pattern_changed ||
+                        memcmp(last_shown.params, b.params, sizeof(b.params)) != 0 ||
+                        memcmp(&last_shown.keepalive, &b.keepalive,
+                               sizeof(b.keepalive)) != 0;
+  bool keepalive_active_window = powerPolicyKeepaliveWindow(b.power) &&
+                                 keepAliveEnabled(b.keepalive);
+  if (keepalive_active_window || !patterns::patternIsStatic(b.pattern_id) || pattern_changed ||
       t >= next_static_refresh) {
-    patterns::render(strip, b, render_us, g_id.x, g_id.y);
+    if (keepalive_pulse) {
+      RgbwColor c(0, 0, 0, b.keepalive.brightness);
+      for (uint16_t i = 0; i < strip.PixelCount(); i++) strip.SetPixelColor(i, c);
+    } else {
+      patterns::render(strip, b, render_us, g_id.x, g_id.y, render_node_id);
+    }
     strip.Show();
     last_shown = b;
     shown_once = true;
@@ -2027,7 +2311,7 @@ void loop() {
   // biggest constant draw after Stage A. napPlan (host-tested) picks the length;
   // 0 means "stay awake" (radio on, serial grace, or nothing worth sleeping for).
   int64_t nap = 0;
-  if (!isConductor() && g_powersave) {
+  if (!isConductor() && g_powersave && !keepalive_active_window) {
     NapInputs in;
     in.now_us = now_us();
     in.synced_us = syncedTime(s, in.now_us);

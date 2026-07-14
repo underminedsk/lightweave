@@ -15,7 +15,7 @@ def _now() -> float:
 
 FIELD_FIRMWARE = {
     "version": "0.3.0",
-    "proto": 6,
+    "proto": 7,
     "build_id": 0x44D028FD,
     "build_label": "44d028fd",
     "dirty": False,
@@ -30,7 +30,15 @@ DEFAULT_POWER_POLICY = {
     "current_epoch_s": 0,
     "schedule_enabled": False,
     "force_awake": True,
+    "force_sleep": False,
     "leds_on": True,
+}
+
+DEFAULT_KEEPALIVE = {
+    "enabled": False,
+    "interval_ms": 10000,
+    "pulse_ms": 100,
+    "brightness": 64,
 }
 
 OTA_WINDOW_S = 15 * 60
@@ -63,10 +71,12 @@ class Lantern:
     power_elapsed_s: int | None = None
     power_plausible: bool | None = None
     power_last_report_s: float | None = None
+    node_id: int | None = None
     firmware: dict[str, Any] = field(default_factory=lambda: deepcopy(FIELD_FIRMWARE))
 
     def as_dict(self, now: float) -> dict[str, Any]:
         has_position = self.x is not None and self.y is not None
+        node_id = self.node_id if self.node_id is not None else self._node_id_from_label()
         attention = "None"
         if self.status == "missing":
             attention = "Not seen"
@@ -80,6 +90,7 @@ class Lantern:
         return {
             "mac": self.mac,
             "label": self.label,
+            "node_id": node_id,
             "status": self.status,
             "last_seen_s": round(self.last_seen_s, 1),
             "last_seen_label": self._age_label(),
@@ -102,6 +113,11 @@ class Lantern:
             "updated_at": now,
         }
 
+    def _node_id_from_label(self) -> int:
+        if self.label.startswith("#") and self.label[1:].isdigit():
+            return int(self.label[1:])
+        return 0
+
     def _age_label(self, age: float | None = None) -> str:
         age_s = self.last_seen_s if age is None else age
         if age_s < 60:
@@ -117,6 +133,7 @@ class MockConductor:
     wake: bool = True
     connected: bool = True
     power: dict[str, Any] = field(default_factory=lambda: deepcopy(DEFAULT_POWER_POLICY))
+    keepalive: dict[str, Any] = field(default_factory=lambda: deepcopy(DEFAULT_KEEPALIVE))
     pattern: dict[str, Any] = field(
         default_factory=lambda: {
             "pattern": "Glow",
@@ -133,14 +150,14 @@ class MockConductor:
     events: list[dict[str, Any]] = field(default_factory=list)
     _lanterns: list[Lantern] = field(
         default_factory=lambda: [
-            Lantern("8C:94:DF:8F:71:50", "#0", "alive", 4, 0.54, 0.47, 0.38, 0.71, 102.0, 13.28, 53.0, 1920, True, 4),
+            Lantern("8C:94:DF:8F:71:50", "#1", "alive", 4, 0.54, 0.47, 0.38, 0.71, 102.0, 13.28, 53.0, 1920, True, 4),
             Lantern("30:76:F5:93:67:3C", "#2", "alive", 8, 0.43, 0.36, 0.41, 0.76, 110.0, 13.21, 56.0, 1940, True, 8),
             Lantern("A0:B7:65:11:40:77", "#7", "alive", 9, 0.61, 0.35, None, None),
             Lantern("A0:B7:65:11:42:09", "#9", "alive", 13, 0.34, 0.52, None, None),
             Lantern("A0:B7:65:11:42:14", "#14", "alive", 17, 0.72, 0.55, None, None),
             Lantern("A0:B7:65:11:42:15", "#15", "alive", 20, 0.48, 0.64, None, None),
             Lantern("A0:B7:65:11:44:91", "#18", "missing", 42, 0.66, 0.69, None, None),
-            Lantern("8C:94:DF:57:7F:14", "Unknown", "alive", 12, None, None, None, None),
+            Lantern("8C:94:DF:57:7F:14", "#57", "alive", 12, None, None, None, None),
             Lantern("A0:B7:65:11:42:21", "#21", "alive", 10, 0.76, 0.30, None, None),
             Lantern("A0:B7:65:11:42:24", "#24", "alive", 18, 0.22, 0.31, None, None),
         ]
@@ -177,6 +194,7 @@ class MockConductor:
             },
             "pattern": deepcopy(self.pattern),
             "power": deepcopy(self.power),
+            "keepalive": deepcopy(self.keepalive),
             "ota": ota,
             "recovery": self._recovery_summary(lanterns, ota, firmware),
             "lanterns": lanterns,
@@ -258,8 +276,14 @@ class MockConductor:
     def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
         updated = deepcopy(self.power)
         updated.update(policy)
-        updated["leds_on"] = bool(updated["force_awake"]) or not bool(updated["schedule_enabled"]) or self._minute_in_window(
-            int(updated["current_min"]), int(updated["led_on_start_min"]), int(updated["led_on_end_min"])
+        updated["leds_on"] = bool(updated["force_awake"]) or (
+            not bool(updated.get("force_sleep"))
+            and (
+                not bool(updated["schedule_enabled"])
+                or self._minute_in_window(
+                    int(updated["current_min"]), int(updated["led_on_start_min"]), int(updated["led_on_end_min"])
+                )
+            )
         )
         self.power = updated
         self.wake = bool(updated["force_awake"])
@@ -267,6 +291,21 @@ class MockConductor:
             f"power policy light={updated['light_sleep_check_s']}s deep={updated['deep_sleep_check_min']}m"
         )
         return {"ok": True, "message": "power policy changed", "power": deepcopy(self.power)}
+
+    def update_keepalive(self, config: dict[str, Any]) -> dict[str, Any]:
+        updated = deepcopy(self.keepalive)
+        updated.update(config)
+        updated["enabled"] = bool(updated.get("enabled"))
+        updated["interval_ms"] = max(1000, min(60000, int(updated.get("interval_ms") or 10000)))
+        updated["pulse_ms"] = max(10, min(5000, int(updated.get("pulse_ms") or 100)))
+        updated["pulse_ms"] = min(updated["pulse_ms"], updated["interval_ms"])
+        updated["brightness"] = max(0, min(192, int(updated.get("brightness") or 0)))
+        self.keepalive = updated
+        self._event(
+            f"keepalive={'on' if updated['enabled'] else 'off'} "
+            f"interval={updated['interval_ms']}ms pulse={updated['pulse_ms']}ms bri={updated['brightness']}"
+        )
+        return {"ok": True, "message": "keepalive changed", "keepalive": deepcopy(self.keepalive)}
 
     def set_ota_mode(self, enabled: bool) -> dict[str, Any]:
         self.ota_started_at = _now() if enabled else None

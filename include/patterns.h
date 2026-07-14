@@ -80,11 +80,24 @@ inline RgbwColor glow(uint8_t brightness, const uint16_t params[4]) {
   return hsvColor(brightness, /*intensity*/ 1.0f, params);
 }
 
+inline RgbwColor calibrationId(int64_t synced_us, uint8_t brightness,
+                               uint16_t node_id, const uint16_t params[4]) {
+  bool on = pmath::calibrationBitOn(
+      synced_us,
+      node_id,
+      params[0] ? params[0] : 1000,
+      params[1] ? params[1] : 4,
+      params[2] ? params[2] : 1,
+      params[3] ? params[3] : 1);
+  if (!on) return RgbwColor(0, 0, 0, 0);
+  return RgbwColor(brightness, (uint8_t)lroundf(brightness * 0.72f), 0, 0);
+}
+
 // Render one pattern into a NeoPixelBus strip (all pixels share one color for
 // these 16-pixel rings; per-pixel spatial effects can come later).
 template <typename StripT>
 inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x,
-                   float y) {
+                   float y, uint16_t node_id = 0) {
   RgbwColor c;
   switch (b.pattern_id) {
     case SWEEP:
@@ -98,6 +111,9 @@ inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x
       break;
     case GLOW:
       c = glow(b.brightness, b.params);
+      break;
+    case CALIBRATION:
+      c = calibrationId(synced_us, b.brightness, node_id, b.params);
       break;
     case PULSE:
     default:

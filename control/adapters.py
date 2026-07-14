@@ -20,6 +20,7 @@ class ConductorAdapter(Protocol):
     def update_pattern(self, pattern: str, brightness: int, params: dict[str, int | float | str]) -> dict[str, Any]: ...
     def blackout(self) -> dict[str, Any]: ...
     def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]: ...
+    def update_keepalive(self, config: dict[str, Any]) -> dict[str, Any]: ...
     def set_ota_mode(self, enabled: bool) -> dict[str, Any]: ...
     def ota_begin(self, size: int, crc32: int) -> dict[str, Any]: ...
     def ota_chunk(self, offset: int, data: bytes) -> dict[str, Any]: ...
@@ -83,6 +84,9 @@ class JsonLineSerialConductor:
     def update_power_policy(self, policy: dict[str, Any]) -> dict[str, Any]:
         return self._request("power_policy", **policy)
 
+    def update_keepalive(self, config: dict[str, Any]) -> dict[str, Any]:
+        return self._request("keepalive", **config)
+
     def set_ota_mode(self, enabled: bool) -> dict[str, Any]:
         return self._request("ota_mode", enabled=enabled)
 
@@ -130,7 +134,11 @@ class JsonLineSerialConductor:
                 if response.get("id") != request_id:
                     continue
                 if response.get("ok") is not True:
-                    return {"ok": False, "error": str(response.get("error") or "serial command failed")}
+                    return {
+                        "ok": False,
+                        "error": str(response.get("error") or "serial command failed"),
+                        **{key: value for key, value in response.items() if key not in {"id", "ok", "error"}},
+                    }
                 return {"ok": True, **{key: value for key, value in response.items() if key not in {"id", "ok"}}}
 
 
