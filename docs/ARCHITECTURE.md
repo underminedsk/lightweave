@@ -364,6 +364,15 @@ window and rerun the same staged firmware after nodes check back in.
 ## 8. Resilience model
 
 - Missed beacon → free-run on last offset; re-lock on next. **[done]**
+- Late/bogus beacon → **the offset is disciplined, not set.** A beacon whose implied
+  offset jumps more than `SYNC_DEFAULT.gate_us` (100 ms) past the coasting clock is
+  gated out (it's a congestion-delayed or stray packet, not real drift — which is
+  sub-ms between beacons); trusted corrections *slew* at ≤2 ms/beacon so animations
+  never step. A genuine conductor jump (reboot / master change) trips every node's
+  gate together and force-re-locks after `relock_after` (8) rejects, so the field
+  moves to the new timeline in lockstep rather than one node lurching at a time. This
+  is what keeps a single delayed packet from yanking a node off the shared clock.
+  Diagnostics: the performer status line's `rej=` counter. **[done]** (`sync.h`)
 - Cold boot → read role/identity/position from NVS + MAC from efuse, lock within
   ~1–2 s, resume. **[done — role/pos/MAC; table-assigned position is cached to the
   same NVS pos keys, so it survives a reboot without re-hearing the table]**

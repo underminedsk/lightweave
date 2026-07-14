@@ -46,12 +46,89 @@ void test_offset_reproduces_conductor_clock() {
   TEST_ASSERT_EQUAL_INT64(6'000'000, syncedTime(s, 5'000'000));
 }
 
-void test_relock_updates_offset() {
+void test_first_fix_snaps_exactly() {
+  // The very first beacon has no coasting clock to protect, so it is adopted
+  // exactly regardless of how large the implied offset is.
   SyncState s;
   syncInit(s);
   syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // offset +1_000_000
-  syncOnBeacon(s, 9'500'000, 1, 9'000'000);      // offset +500_000
-  TEST_ASSERT_EQUAL_INT64(500'000, s.offset_us);
+  TEST_ASSERT_EQUAL_INT64(1'000'000, s.offset_us);
+}
+
+void test_small_correction_applies_in_full() {
+  // A correction smaller than the slew cap is invisible already, so it is applied
+  // whole — the clock tracks the conductor tightly under normal jitter/drift.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Next beacon implies +1_000_500 (a 500us nudge, < the 2ms cap): applied in full.
+  syncOnBeacon(s, 9'000'500, 1, 8'000'000);
+  TEST_ASSERT_EQUAL_INT64(1'000'500, s.offset_us);
+}
+
+void test_large_correction_slews_not_steps() {
+  // A correction bigger than the cap but inside the gate glides over several
+  // beacons instead of stepping — no visible jump in the animation.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Implied offset +1_010_000 (+10ms), gate is 100ms so it's trusted, but the cap
+  // is 2ms/beacon, so we move exactly +2ms this beacon.
+  syncOnBeacon(s, 9'010'000, 1, 8'000'000);
+  TEST_ASSERT_EQUAL_INT64(1'002'000, s.offset_us);
+  TEST_ASSERT_FALSE(s.reject_streak);
+}
+
+void test_delayed_beacon_is_gated_out() {
+  // A beacon delayed by hundreds of ms reads a wildly wrong offset. The gate keeps
+  // the coasting clock untouched so the whole field stays on the shared timeline.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // This beacon arrived 800ms late: local is inflated, implied offset craters.
+  BeaconOutcome o = syncOnBeacon(s, 9'000'000, 1, 8'800'000);  // implies +200_000
+  TEST_ASSERT_TRUE(o.rejected);
+  TEST_ASSERT_FALSE(o.relocked);
+  TEST_ASSERT_EQUAL_INT64(1'000'000, s.offset_us);             // unchanged
+  TEST_ASSERT_EQUAL_UINT32(1, s.offset_rejects);
+  // A following on-time beacon is trusted again and clears the streak.
+  BeaconOutcome ok = syncOnBeacon(s, 10'000'050, 2, 9'000'000);  // implies +1_000_050
+  TEST_ASSERT_FALSE(ok.rejected);
+  TEST_ASSERT_EQUAL_INT64(1'000'050, s.offset_us);
+  TEST_ASSERT_EQUAL_UINT32(0, s.reject_streak);
+}
+
+void test_gated_beacon_still_counts_as_delivered() {
+  // Delivery accounting (beacons_rx, seq/gap, last_beacon_us) tracks the radio and
+  // must advance even when a beacon's timestamp is distrusted.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);
+  syncOnBeacon(s, 9'000'000, 1, 8'800'000);      // gated timestamp
+  TEST_ASSERT_EQUAL_UINT32(2, s.beacons_rx);
+  TEST_ASSERT_EQUAL_UINT32(0, s.seq_gaps);       // seq 0->1 is in order
+  // last_beacon_us advanced to the gated beacon's arrival, so age is measured from it.
+  TEST_ASSERT_EQUAL_INT64(200'000, beaconAge(s, 9'000'000));
+  TEST_ASSERT_FALSE(syncIsStale(s, 9'000'000, 2'000'000));
+}
+
+void test_persistent_offset_shift_forces_relock() {
+  // A real conductor jump (reboot / master change) makes EVERY beacon exceed the
+  // gate. After relock_after (8) consecutive rejects the node adopts the new clock,
+  // so a rebooted conductor doesn't strand the field on a dead timeline forever.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Conductor rebooted: its epoch is now ~0, implying a huge negative offset.
+  BeaconOutcome o{false, false, false};
+  for (uint32_t i = 1; i <= 8; i++) {
+    o = syncOnBeacon(s, /*epoch*/ 1'000 * i, /*seq*/ i, /*local*/ 9'000'000 + i);
+  }
+  TEST_ASSERT_TRUE(o.relocked);                  // the 8th reject snaps
+  TEST_ASSERT_EQUAL_UINT32(0, s.reject_streak);  // streak cleared on re-lock
+  // Offset now reflects the new (rebooted) conductor, not the stale +1_000_000.
+  TEST_ASSERT_TRUE(s.offset_us < 0);
+  TEST_ASSERT_EQUAL_UINT32(8, s.offset_rejects);
 }
 
 // ---- Sync: free-run on missed beacons (must never blank) ---------------------
@@ -1457,7 +1534,12 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_starts_unlocked);
   RUN_TEST(test_offset_reproduces_conductor_clock);
-  RUN_TEST(test_relock_updates_offset);
+  RUN_TEST(test_first_fix_snaps_exactly);
+  RUN_TEST(test_small_correction_applies_in_full);
+  RUN_TEST(test_large_correction_slews_not_steps);
+  RUN_TEST(test_delayed_beacon_is_gated_out);
+  RUN_TEST(test_gated_beacon_still_counts_as_delivered);
+  RUN_TEST(test_persistent_offset_shift_forces_relock);
   RUN_TEST(test_free_run_keeps_advancing_without_beacons);
   RUN_TEST(test_staleness_boundary);
   RUN_TEST(test_beacon_age);

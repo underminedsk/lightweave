@@ -803,10 +803,11 @@ static void printDiag() {
   bool stale = syncIsStale(s, t, BEACON_STALE_US);
   int64_t age = beaconAge(s, t);
   Serial.printf(
-      "[performer] %s  offset=%lld us  last_beacon=%lld ms ago  rx=%lu  gaps=%lu  seq=%lu\n",
+      "[performer] %s  offset=%lld us  last_beacon=%lld ms ago  rx=%lu  gaps=%lu  rej=%lu  seq=%lu\n",
       stale ? "FREE-RUN" : "LOCKED  ", (long long)s.offset_us,
       (long long)(age < 0 ? -1 : age / 1000), (unsigned long)s.beacons_rx,
-      (unsigned long)s.seq_gaps, (unsigned long)s.last_seq);
+      (unsigned long)s.seq_gaps, (unsigned long)s.offset_rejects,
+      (unsigned long)s.last_seq);
   if (g_powersave) {
     // windows/missed_windows tell whether the listen window is reliably catching a
     // beacon — the main risk of the duty-cycle (HANDOFF gotcha #1). naps/slept are

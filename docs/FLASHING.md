@@ -153,15 +153,16 @@ s.write(b'info\n'); s.flush()   # verify the command actually persisted
 
 **Performer:**
 ```
-[performer] LOCKED  offset=6803499 us  last_beacon=83 ms ago  rx=16  gaps=0  seq=42
+[performer] LOCKED  offset=6803499 us  last_beacon=83 ms ago  rx=16  gaps=0  rej=0  seq=42
 ```
 | Field | Healthy | Trouble |
 |---|---|---|
 | state | `LOCKED` within ~1 s | never locks → no conductor / wrong channel / needs erase |
-| `offset` | stable to ~±100 µs | jumping between two values → two conductors |
+| `offset` | stable, glides on correction | jumping between two values → two conductors |
 | `last_beacon` | < 250 ms | climbing → not receiving |
 | `rx` | climbing ~4/sec | `0` → no beacons heard |
 | `gaps` | `0` (or rare) | `≈ rx` → two conductors |
+| `rej` | `0` (or rare) | climbing → late/bogus beacons gated out (congestion, or a rebooting conductor before it re-locks) |
 
 `FREE-RUN` with `offset=0, rx=0` just means no conductor is in range — the node
 keeps rendering off its local clock (this is the intended no-blackout behavior),
