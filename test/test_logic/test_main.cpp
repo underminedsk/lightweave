@@ -8,9 +8,11 @@
 
 #include <unity.h>
 
+#include "beacon.h"
 #include "sync.h"
 #include "bootplan.h"
 #include "dusk.h"
+#include "keepalive.h"
 #include "macaddr.h"
 #include "napsched.h"
 #include "pattern_ids.h"
@@ -46,12 +48,89 @@ void test_offset_reproduces_conductor_clock() {
   TEST_ASSERT_EQUAL_INT64(6'000'000, syncedTime(s, 5'000'000));
 }
 
-void test_relock_updates_offset() {
+void test_first_fix_snaps_exactly() {
+  // The very first beacon has no coasting clock to protect, so it is adopted
+  // exactly regardless of how large the implied offset is.
   SyncState s;
   syncInit(s);
   syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // offset +1_000_000
-  syncOnBeacon(s, 9'500'000, 1, 9'000'000);      // offset +500_000
-  TEST_ASSERT_EQUAL_INT64(500'000, s.offset_us);
+  TEST_ASSERT_EQUAL_INT64(1'000'000, s.offset_us);
+}
+
+void test_small_correction_applies_in_full() {
+  // A correction smaller than the slew cap is invisible already, so it is applied
+  // whole — the clock tracks the conductor tightly under normal jitter/drift.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Next beacon implies +1_000_500 (a 500us nudge, < the 2ms cap): applied in full.
+  syncOnBeacon(s, 9'000'500, 1, 8'000'000);
+  TEST_ASSERT_EQUAL_INT64(1'000'500, s.offset_us);
+}
+
+void test_large_correction_slews_not_steps() {
+  // A correction bigger than the cap but inside the gate glides over several
+  // beacons instead of stepping — no visible jump in the animation.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Implied offset +1_010_000 (+10ms), gate is 100ms so it's trusted, but the cap
+  // is 2ms/beacon, so we move exactly +2ms this beacon.
+  syncOnBeacon(s, 9'010'000, 1, 8'000'000);
+  TEST_ASSERT_EQUAL_INT64(1'002'000, s.offset_us);
+  TEST_ASSERT_FALSE(s.reject_streak);
+}
+
+void test_delayed_beacon_is_gated_out() {
+  // A beacon delayed by hundreds of ms reads a wildly wrong offset. The gate keeps
+  // the coasting clock untouched so the whole field stays on the shared timeline.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // This beacon arrived 800ms late: local is inflated, implied offset craters.
+  BeaconOutcome o = syncOnBeacon(s, 9'000'000, 1, 8'800'000);  // implies +200_000
+  TEST_ASSERT_TRUE(o.rejected);
+  TEST_ASSERT_FALSE(o.relocked);
+  TEST_ASSERT_EQUAL_INT64(1'000'000, s.offset_us);             // unchanged
+  TEST_ASSERT_EQUAL_UINT32(1, s.offset_rejects);
+  // A following on-time beacon is trusted again and clears the streak.
+  BeaconOutcome ok = syncOnBeacon(s, 10'000'050, 2, 9'000'000);  // implies +1_000_050
+  TEST_ASSERT_FALSE(ok.rejected);
+  TEST_ASSERT_EQUAL_INT64(1'000'050, s.offset_us);
+  TEST_ASSERT_EQUAL_UINT32(0, s.reject_streak);
+}
+
+void test_gated_beacon_still_counts_as_delivered() {
+  // Delivery accounting (beacons_rx, seq/gap, last_beacon_us) tracks the radio and
+  // must advance even when a beacon's timestamp is distrusted.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);
+  syncOnBeacon(s, 9'000'000, 1, 8'800'000);      // gated timestamp
+  TEST_ASSERT_EQUAL_UINT32(2, s.beacons_rx);
+  TEST_ASSERT_EQUAL_UINT32(0, s.seq_gaps);       // seq 0->1 is in order
+  // last_beacon_us advanced to the gated beacon's arrival, so age is measured from it.
+  TEST_ASSERT_EQUAL_INT64(200'000, beaconAge(s, 9'000'000));
+  TEST_ASSERT_FALSE(syncIsStale(s, 9'000'000, 2'000'000));
+}
+
+void test_persistent_offset_shift_forces_relock() {
+  // A real conductor jump (reboot / master change) makes EVERY beacon exceed the
+  // gate. After relock_after (8) consecutive rejects the node adopts the new clock,
+  // so a rebooted conductor doesn't strand the field on a dead timeline forever.
+  SyncState s;
+  syncInit(s);
+  syncOnBeacon(s, 5'000'000, 0, 4'000'000);      // lock, offset +1_000_000
+  // Conductor rebooted: its epoch is now ~0, implying a huge negative offset.
+  BeaconOutcome o{false, false, false};
+  for (uint32_t i = 1; i <= 8; i++) {
+    o = syncOnBeacon(s, /*epoch*/ 1'000 * i, /*seq*/ i, /*local*/ 9'000'000 + i);
+  }
+  TEST_ASSERT_TRUE(o.relocked);                  // the 8th reject snaps
+  TEST_ASSERT_EQUAL_UINT32(0, s.reject_streak);  // streak cleared on re-lock
+  // Offset now reflects the new (rebooted) conductor, not the stale +1_000_000.
+  TEST_ASSERT_TRUE(s.offset_us < 0);
+  TEST_ASSERT_EQUAL_UINT32(8, s.offset_rejects);
 }
 
 // ---- Sync: free-run on missed beacons (must never blank) ---------------------
@@ -373,6 +452,32 @@ void test_power_policy_force_awake_overrides_schedule() {
   TEST_ASSERT_TRUE(powerPolicyLedsOn(p));
 }
 
+void test_power_policy_force_sleep_overrides_disabled_schedule() {
+  PowerPolicy p = powerPolicyDefault();
+
+  TEST_ASSERT_TRUE(powerPolicyLedsOn(p));
+  p.flags |= POWER_FLAG_FORCE_SLEEP;
+  TEST_ASSERT_FALSE(powerPolicyLedsOn(p));
+
+  p.flags |= POWER_FLAG_FORCE_AWAKE;
+  TEST_ASSERT_TRUE(powerPolicyLedsOn(p));
+}
+
+void test_power_policy_force_sleep_overrides_keepalive() {
+  PowerPolicy p = powerPolicyDefault();
+  p.flags = POWER_FLAG_SCHEDULE_ENABLED;
+  p.current_min = 12 * 60;
+  p.led_on_start_min = 20 * 60;
+  p.led_on_end_min = 6 * 60;
+
+  TEST_ASSERT_FALSE(powerPolicyShouldDeepSleep(p, true));
+  TEST_ASSERT_TRUE(powerPolicyKeepaliveWindow(p));
+
+  p.flags |= POWER_FLAG_FORCE_SLEEP;
+  TEST_ASSERT_TRUE(powerPolicyShouldDeepSleep(p, true));
+  TEST_ASSERT_FALSE(powerPolicyKeepaliveWindow(p));
+}
+
 void test_power_policy_sanitize_clamps_runtime_intervals() {
   PowerPolicy p = {0, 2000, 2000, 1440, 1441, 123456, 0xff};
 
@@ -384,7 +489,8 @@ void test_power_policy_sanitize_clamps_runtime_intervals() {
   TEST_ASSERT_EQUAL_UINT16(0, p.led_on_end_min);
   TEST_ASSERT_EQUAL_UINT16(1, p.current_min);
   TEST_ASSERT_EQUAL_UINT32(123456, p.current_epoch_s);
-  TEST_ASSERT_EQUAL_UINT8(POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE, p.flags);
+  TEST_ASSERT_EQUAL_UINT8(POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE |
+                          POWER_FLAG_FORCE_SLEEP, p.flags);
 }
 
 void test_power_policy_sleep_check_aligns_to_utc_interval() {
@@ -403,6 +509,42 @@ void test_power_policy_sleep_check_aligns_to_utc_interval() {
 
   p.current_epoch_s = 0;
   TEST_ASSERT_EQUAL_UINT32(900, powerPolicyAlignedSleepSeconds(p));
+}
+
+void test_power_policy_advance_by_seconds_preserves_off_window() {
+  PowerPolicy p = powerPolicyDefault();
+  p.flags = POWER_FLAG_SCHEDULE_ENABLED;
+  p.current_min = 12 * 60;
+  p.current_epoch_s = 3600;
+  p.led_on_start_min = 20 * 60;
+  p.led_on_end_min = 6 * 60;
+
+  TEST_ASSERT_FALSE(powerPolicyLedsOn(p));
+  powerPolicyAdvanceBySeconds(p, 60);
+
+  TEST_ASSERT_EQUAL_UINT16(12 * 60 + 1, p.current_min);
+  TEST_ASSERT_EQUAL_UINT32(3660, p.current_epoch_s);
+  TEST_ASSERT_FALSE(powerPolicyLedsOn(p));
+}
+
+void test_keepalive_sanitizes_and_pulses() {
+  KeepAliveConfig c = {KEEPALIVE_FLAG_ENABLED, 0, 0, 255};
+  keepAliveSanitize(c);
+  TEST_ASSERT_EQUAL_UINT16(KEEPALIVE_INTERVAL_MIN_MS, c.interval_ms);
+  TEST_ASSERT_EQUAL_UINT16(KEEPALIVE_PULSE_MIN_MS, c.pulse_ms);
+  TEST_ASSERT_EQUAL_UINT8(KEEPALIVE_BRIGHTNESS_MAX, c.brightness);
+
+  c = {KEEPALIVE_FLAG_ENABLED, 10000, 100, 64};
+  TEST_ASSERT_TRUE(keepAlivePulseOn(c, 0));
+  TEST_ASSERT_TRUE(keepAlivePulseOn(c, 99'000));
+  TEST_ASSERT_FALSE(keepAlivePulseOn(c, 100'000));
+  TEST_ASSERT_TRUE(keepAlivePulseOn(c, 10'000'000));
+}
+
+void test_keepalive_disabled_never_pulses() {
+  KeepAliveConfig c = {0, 10000, 100, 64};
+  TEST_ASSERT_FALSE(keepAlivePulseOn(c, 0));
+  TEST_ASSERT_FALSE(keepAlivePulseOn(c, 10'000'000));
 }
 
 void test_ota_crc32_matches_standard_vector() {
@@ -467,6 +609,21 @@ void test_ota_status_table_upserts_by_mac() {
   TEST_ASSERT_EQUAL_UINT8(OTA_PHASE_WRITING, t.entries[bi].phase);
   TEST_ASSERT_EQUAL_STRING("complete", otaPhaseName(OTA_PHASE_COMPLETE));
   TEST_ASSERT_EQUAL_STRING("chunk offset mismatch", otaErrorName(OTA_ERR_OFFSET_MISMATCH));
+}
+
+void test_ota_status_complete_requires_matching_fresh_complete() {
+  OtaStatusTable t;
+  otaStatusInit(t);
+  const uint8_t a[6] = {1, 2, 3, 4, 5, 6};
+  const uint8_t b[6] = {1, 2, 3, 4, 5, 7};
+
+  TEST_ASSERT_TRUE(otaStatusUpsert(t, a, OTA_PHASE_COMPLETE, OTA_ERR_NONE, 1000, 42, 900));
+  TEST_ASSERT_TRUE(otaStatusUpsert(t, b, OTA_PHASE_COMPLETE, OTA_ERR_NONE, 999, 42, 900));
+
+  TEST_ASSERT_TRUE(otaStatusCompleteForMac(t, a, 1000, 42, 1000, 200));
+  TEST_ASSERT_FALSE(otaStatusCompleteForMac(t, a, 1000, 43, 1000, 200));
+  TEST_ASSERT_FALSE(otaStatusCompleteForMac(t, b, 1000, 42, 1000, 200));
+  TEST_ASSERT_FALSE(otaStatusCompleteForMac(t, a, 1000, 42, 1200, 200));
 }
 
 // ---- Layout table: authoritative MAC -> (x,y) -------------------------------
@@ -766,7 +923,46 @@ void test_pattern_static_ids() {
   TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::PULSE));
   TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::PALETTE_DRIFT));
   TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::SWEEP));
+  TEST_ASSERT_FALSE(patterns::patternIsStatic(patterns::CALIBRATION));
   TEST_ASSERT_FALSE(patterns::patternIsStatic(999));  // unknown => animated
+}
+
+void test_calibration_code_plan_matches_hamming_sequence() {
+  TEST_ASSERT_EQUAL_UINT16(1, pmath::calibrationCodeValue(1, 1, 3, 3));
+  TEST_ASSERT_EQUAL_UINT16(6, pmath::calibrationCodeValue(2, 1, 3, 3));
+  TEST_ASSERT_EQUAL_UINT16(0, pmath::calibrationCodeValue(3, 1, 3, 3));
+}
+
+void test_calibration_bit_sequence_is_msb_first() {
+  TEST_ASSERT_FALSE(pmath::calibrationBitOn(0, 1, 1000, 3, 1, 3));
+  TEST_ASSERT_FALSE(pmath::calibrationBitOn(1'000'000, 1, 1000, 3, 1, 3));
+  TEST_ASSERT_TRUE(pmath::calibrationBitOn(2'000'000, 1, 1000, 3, 1, 3));
+  TEST_ASSERT_TRUE(pmath::calibrationBitOn(0, 2, 1000, 3, 1, 3));
+  TEST_ASSERT_TRUE(pmath::calibrationBitOn(1'000'000, 2, 1000, 3, 1, 3));
+  TEST_ASSERT_FALSE(pmath::calibrationBitOn(2'000'000, 2, 1000, 3, 1, 3));
+}
+
+void test_calibration_roster_msg_fits_espnow() {
+  TEST_ASSERT_LESS_OR_EQUAL_UINT16(250, sizeof(RosterMsg));
+  TEST_ASSERT_EQUAL_UINT8(39, ROSTER_MACS_PER_MSG);
+}
+
+void test_calibration_roster_msg_rank_lookup() {
+  RosterMsg msg = {};
+  msg.n = 3;
+  msg.base_rank = 39;
+  const uint8_t a[6] = {0x10, 0, 0, 0, 0, 1};
+  const uint8_t b[6] = {0x10, 0, 0, 0, 0, 2};
+  const uint8_t c[6] = {0x10, 0, 0, 0, 0, 3};
+  const uint8_t missing[6] = {0x10, 0, 0, 0, 0, 4};
+  memcpy(msg.macs[0], a, 6);
+  memcpy(msg.macs[1], b, 6);
+  memcpy(msg.macs[2], c, 6);
+
+  TEST_ASSERT_EQUAL_UINT16(40, rosterMsgFindRank(msg, a));
+  TEST_ASSERT_EQUAL_UINT16(41, rosterMsgFindRank(msg, b));
+  TEST_ASSERT_EQUAL_UINT16(42, rosterMsgFindRank(msg, c));
+  TEST_ASSERT_EQUAL_UINT16(0, rosterMsgFindRank(msg, missing));
 }
 
 // ---- Daytime deep-sleep detector (Lever 2) -------------------------------------
@@ -1158,6 +1354,22 @@ void test_serial_json_glow_maps_hue_and_saturation_params() {
   TEST_ASSERT_EQUAL_UINT16(90, cmd.params[1]);
 }
 
+void test_serial_json_calibration_maps_params() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":11,\"cmd\":\"pattern\",\"pattern\":\"Calibration\",\"brightness\":96,"
+      "\"params\":{\"p0\":1000,\"p1\":3,\"p2\":1,\"p3\":3}}",
+      cmd, error));
+
+  TEST_ASSERT_EQUAL_UINT16(patterns::CALIBRATION, cmd.pattern_id);
+  TEST_ASSERT_EQUAL_UINT16(1000, cmd.params[0]);
+  TEST_ASSERT_EQUAL_UINT16(3, cmd.params[1]);
+  TEST_ASSERT_EQUAL_UINT16(1, cmd.params[2]);
+  TEST_ASSERT_EQUAL_UINT16(3, cmd.params[3]);
+}
+
 void test_serial_json_power_policy_parses_runtime_sleep_controls() {
   SerialJsonCommand cmd;
   const char* error = nullptr;
@@ -1166,7 +1378,7 @@ void test_serial_json_power_policy_parses_runtime_sleep_controls() {
       "{\"id\":11,\"cmd\":\"power_policy\",\"light_sleep_check_s\":30,"
       "\"deep_sleep_check_min\":60,\"led_on_start_min\":1140,"
       "\"led_on_end_min\":300,\"schedule_enabled\":true,"
-      "\"force_awake\":false,\"current_min\":720,"
+      "\"force_awake\":false,\"force_sleep\":true,\"current_min\":720,"
       "\"current_epoch_s\":1720123456}",
       cmd, error));
 
@@ -1184,6 +1396,8 @@ void test_serial_json_power_policy_parses_runtime_sleep_controls() {
   TEST_ASSERT_TRUE(cmd.schedule_enabled);
   TEST_ASSERT_TRUE(cmd.has_force_awake);
   TEST_ASSERT_FALSE(cmd.force_awake);
+  TEST_ASSERT_TRUE(cmd.has_force_sleep);
+  TEST_ASSERT_TRUE(cmd.force_sleep);
   TEST_ASSERT_TRUE(cmd.has_current_min);
   TEST_ASSERT_EQUAL_UINT16(720, cmd.current_min);
   TEST_ASSERT_TRUE(cmd.has_current_epoch_s);
@@ -1227,6 +1441,27 @@ void test_serial_json_ota_begin_chunk_and_end_parse() {
 
   TEST_ASSERT_TRUE(serialJsonParse("{\"id\":16,\"cmd\":\"ota_progress\"}", cmd, error));
   TEST_ASSERT_EQUAL_INT(SJ_OTA_PROGRESS, cmd.kind);
+}
+
+void test_serial_json_keepalive_parses_settings() {
+  SerialJsonCommand cmd;
+  const char* error = nullptr;
+
+  TEST_ASSERT_TRUE(serialJsonParse(
+      "{\"id\":17,\"cmd\":\"keepalive\",\"enabled\":true,"
+      "\"interval_ms\":10000,\"pulse_ms\":250,\"brightness\":96}",
+      cmd, error));
+
+  TEST_ASSERT_NULL(error);
+  TEST_ASSERT_EQUAL_INT(SJ_KEEPALIVE, cmd.kind);
+  TEST_ASSERT_TRUE(cmd.has_keepalive_enabled);
+  TEST_ASSERT_TRUE(cmd.keepalive_enabled);
+  TEST_ASSERT_TRUE(cmd.has_keepalive_interval_ms);
+  TEST_ASSERT_EQUAL_UINT16(10000, cmd.keepalive_interval_ms);
+  TEST_ASSERT_TRUE(cmd.has_keepalive_pulse_ms);
+  TEST_ASSERT_EQUAL_UINT16(250, cmd.keepalive_pulse_ms);
+  TEST_ASSERT_TRUE(cmd.has_keepalive_brightness);
+  TEST_ASSERT_EQUAL_UINT8(96, cmd.keepalive_brightness);
 }
 
 void test_serial_json_rejects_bad_command() {
@@ -1457,7 +1692,12 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_starts_unlocked);
   RUN_TEST(test_offset_reproduces_conductor_clock);
-  RUN_TEST(test_relock_updates_offset);
+  RUN_TEST(test_first_fix_snaps_exactly);
+  RUN_TEST(test_small_correction_applies_in_full);
+  RUN_TEST(test_large_correction_slews_not_steps);
+  RUN_TEST(test_delayed_beacon_is_gated_out);
+  RUN_TEST(test_gated_beacon_still_counts_as_delivered);
+  RUN_TEST(test_persistent_offset_shift_forces_relock);
   RUN_TEST(test_free_run_keeps_advancing_without_beacons);
   RUN_TEST(test_staleness_boundary);
   RUN_TEST(test_beacon_age);
@@ -1485,13 +1725,19 @@ int main(int, char**) {
   RUN_TEST(test_firmware_fleet_consistency_requires_every_seen_node_to_match);
   RUN_TEST(test_power_policy_window_handles_daytime_and_overnight_ranges);
   RUN_TEST(test_power_policy_force_awake_overrides_schedule);
+  RUN_TEST(test_power_policy_force_sleep_overrides_disabled_schedule);
+  RUN_TEST(test_power_policy_force_sleep_overrides_keepalive);
   RUN_TEST(test_power_policy_sanitize_clamps_runtime_intervals);
   RUN_TEST(test_power_policy_sleep_check_aligns_to_utc_interval);
+  RUN_TEST(test_power_policy_advance_by_seconds_preserves_off_window);
+  RUN_TEST(test_keepalive_sanitizes_and_pulses);
+  RUN_TEST(test_keepalive_disabled_never_pulses);
   RUN_TEST(test_ota_crc32_matches_standard_vector);
   RUN_TEST(test_ota_hex_decode_rejects_bad_or_oversized_input);
   RUN_TEST(test_ota_chunk_decision_accepts_repeated_written_chunks);
   RUN_TEST(test_ota_expected_chunk_len_uses_full_chunks_until_tail);
   RUN_TEST(test_ota_status_table_upserts_by_mac);
+  RUN_TEST(test_ota_status_complete_requires_matching_fresh_complete);
   RUN_TEST(test_table_set_and_lookup);
   RUN_TEST(test_table_set_updates_in_place);
   RUN_TEST(test_table_remove);
@@ -1514,6 +1760,10 @@ int main(int, char**) {
   RUN_TEST(test_nap_heartbeat_edge_on_negative_synced_time);
   RUN_TEST(test_nap_skips_tiny_naps);
   RUN_TEST(test_pattern_static_ids);
+  RUN_TEST(test_calibration_code_plan_matches_hamming_sequence);
+  RUN_TEST(test_calibration_bit_sequence_is_msb_first);
+  RUN_TEST(test_calibration_roster_msg_fits_espnow);
+  RUN_TEST(test_calibration_roster_msg_rank_lookup);
   RUN_TEST(test_dusk_cold_boot_starts_night);
   RUN_TEST(test_dusk_flips_to_day_only_after_debounce);
   RUN_TEST(test_dusk_flicker_resets_debounce);
@@ -1541,9 +1791,11 @@ int main(int, char**) {
   RUN_TEST(test_serial_json_assign_parses_mac_and_position);
   RUN_TEST(test_serial_json_pattern_maps_name_brightness_and_params);
   RUN_TEST(test_serial_json_glow_maps_hue_and_saturation_params);
+  RUN_TEST(test_serial_json_calibration_maps_params);
   RUN_TEST(test_serial_json_power_policy_parses_runtime_sleep_controls);
   RUN_TEST(test_serial_json_ota_mode_parses_enabled_flag);
   RUN_TEST(test_serial_json_ota_begin_chunk_and_end_parse);
+  RUN_TEST(test_serial_json_keepalive_parses_settings);
   RUN_TEST(test_serial_json_rejects_bad_command);
   RUN_TEST(test_table_wire_len_fits_espnow);
   RUN_TEST(test_table_chunk_count);

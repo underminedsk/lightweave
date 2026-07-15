@@ -93,7 +93,7 @@ def test_recovery_summary_reports_failed_ota_node() -> None:
     assert recovery["failed_ota"] == [
         {
             "mac": "8C:94:DF:8F:71:50",
-            "label": "#0",
+            "label": "#1",
             "reason": "chunk offset mismatch",
             "phase": "failed",
         }
@@ -110,6 +110,7 @@ def test_power_policy_force_awake_overrides_off_window() -> None:
         "led_on_end_min": 6 * 60,
         "schedule_enabled": True,
         "force_awake": False,
+        "force_sleep": False,
         "current_min": 12 * 60,
         "current_epoch_s": 1_720_123_400,
     })
@@ -122,6 +123,7 @@ def test_power_policy_force_awake_overrides_off_window() -> None:
         "led_on_end_min": 6 * 60,
         "schedule_enabled": True,
         "force_awake": True,
+        "force_sleep": False,
         "current_min": 12 * 60,
         "current_epoch_s": 1_720_123_400,
     })
@@ -129,6 +131,21 @@ def test_power_policy_force_awake_overrides_off_window() -> None:
     assert snapshot["power"]["force_awake"] is True
     assert snapshot["power"]["leds_on"] is True
     assert snapshot["conductor"]["wake"] is True
+
+
+def test_power_policy_force_sleep_overrides_disabled_schedule() -> None:
+    conductor = MockConductor()
+
+    conductor.update_power_policy({
+        "schedule_enabled": False,
+        "force_awake": False,
+        "force_sleep": True,
+    })
+    snapshot = conductor.snapshot()
+
+    assert snapshot["power"]["force_sleep"] is True
+    assert snapshot["power"]["leds_on"] is False
+    assert snapshot["conductor"]["wake"] is False
 
 
 def test_assign_sets_position_and_clears_attention() -> None:

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1607" height="2095" viewBox="0 0 1607 2095" role="img" aria-labelledby="title desc">
+  <title id="title">FireBeetle perfboard solder overlay</title>
+  <desc id="desc">Photo overlay showing where to solder the lantern node wiring on the FireBeetle perfboard.</desc>
+  <defs>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; paint-order: stroke; stroke: #fff; stroke-width: 5px; stroke-linejoin: round; fill: #111; }
+      .title { font-size: 42px; font-weight: 700; }
+      .label { font-size: 28px; font-weight: 700; }
+      .small { font-size: 22px; font-weight: 700; }
+      .tiny { font-size: 18px; font-weight: 700; }
+      .box { fill: rgba(255,255,255,0.88); stroke: #111; stroke-width: 4; rx: 14; }
+      .warn { fill: rgba(255,247,230,0.94); stroke: #d9822b; stroke-width: 4; rx: 14; }
+      .red { stroke: #e03131; stroke-width: 9; fill: none; }
+      .blue { stroke: #1c7ed6; stroke-width: 9; fill: none; }
+      .green { stroke: #2f9e44; stroke-width: 8; fill: none; }
+      .purple { stroke: #7950f2; stroke-width: 7; fill: none; }
+      .orange { stroke: #f08c00; stroke-width: 9; fill: none; }
+      .pin-red { fill: #e03131; stroke: #fff; stroke-width: 5; }
+      .pin-blue { fill: #1c7ed6; stroke: #fff; stroke-width: 5; }
+      .pin-green { fill: #2f9e44; stroke: #fff; stroke-width: 5; }
+      .pin-purple { fill: #7950f2; stroke: #fff; stroke-width: 5; }
+      .pin-orange { fill: #f08c00; stroke: #fff; stroke-width: 5; }
+      .pin-white { fill: #fff; stroke: #111; stroke-width: 4; }
+      .ghost { fill: rgba(255,255,255,0.28); stroke: #111; stroke-width: 3; stroke-dasharray: 10 8; rx: 12; }
+    </style>
+  </defs>
+
+  <image href="firebeetle.jpg" x="0" y="0" width="1607" height="2095"/>
+
+  <rect x="38" y="28" width="990" height="122" class="box"/>
+  <text x="70" y="78" class="title">Solder overlay: FireBeetle lantern node</text>
+  <text x="70" y="118" class="small">Use the empty perfboard area on the left for connectors. Do not add dusk or battery-divider parts.</text>
+
+  <rect x="40" y="175" width="540" height="345" class="ghost"/>
+  <text x="78" y="220" class="label">A. Off-board connectors</text>
+  <text x="78" y="260" class="small">Solder headers or wire pigtails here.</text>
+  <text x="104" y="315" class="small">LED ring: 5V / DIN / GND</text>
+  <text x="104" y="370" class="small">INA228: 3V3 / GND / SCL / SDA</text>
+  <text x="104" y="425" class="small">Buck 5V out: 5V / GND</text>
+  <text x="104" y="480" class="small">Raw 12V stays off this ESP32 board</text>
+
+  <!-- Suggested connector holes in the empty perfboard area. -->
+  <circle cx="255" cy="575" r="16" class="pin-red"/><text x="285" y="584" class="small">LED 5V</text>
+  <circle cx="255" cy="635" r="16" class="pin-green"/><text x="285" y="644" class="small">LED DIN</text>
+  <circle cx="255" cy="695" r="16" class="pin-blue"/><text x="285" y="704" class="small">LED GND</text>
+
+  <circle cx="255" cy="825" r="16" class="pin-red"/><text x="285" y="834" class="small">BUCK 5V OUT+</text>
+  <circle cx="255" cy="885" r="16" class="pin-blue"/><text x="285" y="894" class="small">BUCK OUT- / GND</text>
+
+  <circle cx="255" cy="1045" r="16" class="pin-purple"/><text x="285" y="1054" class="small">INA228 VCC</text>
+  <circle cx="255" cy="1105" r="16" class="pin-blue"/><text x="285" y="1114" class="small">INA228 GND</text>
+  <circle cx="255" cy="1165" r="16" class="pin-purple"/><text x="285" y="1174" class="small">INA228 SCL</text>
+  <circle cx="255" cy="1225" r="16" class="pin-purple"/><text x="285" y="1234" class="small">INA228 SDA</text>
+
+  <!-- FireBeetle solder pads used. Coordinates are on the visible board pins. -->
+  <circle cx="645" cy="864" r="18" class="pin-red"/>
+  <text x="690" y="873" class="label">VCC: buck 5V</text>
+  <circle cx="645" cy="968" r="18" class="pin-purple"/>
+  <text x="690" y="977" class="label">3V3: INA228 VCC only</text>
+  <circle cx="645" cy="1070" r="18" class="pin-blue"/>
+  <text x="690" y="1079" class="label">GND: common ground</text>
+  <circle cx="645" cy="1170" r="18" class="pin-purple"/>
+  <text x="690" y="1179" class="label">SCL: INA228 SCL</text>
+  <circle cx="645" cy="1265" r="18" class="pin-purple"/>
+  <text x="690" y="1274" class="label">SDA: INA228 SDA</text>
+
+  <circle cx="1367" cy="1516" r="18" class="pin-green"/>
+  <text x="1050" y="1514" class="label">13/D7: LED data</text>
+  <text x="1050" y="1550" class="small">Run through 470 ohm resistor to LED DIN.</text>
+
+  <!-- Jumper guidance, drawn as direct runs to the proposed connector holes. -->
+  <path d="M255 825 C360 825 470 850 645 864" class="red"/>
+  <path d="M255 575 C390 575 520 710 645 864" class="red"/>
+  <path d="M255 885 C390 885 505 1015 645 1070" class="blue"/>
+  <path d="M255 695 C395 695 515 1010 645 1070" class="blue"/>
+  <path d="M255 1045 C395 1045 505 1005 645 968" class="purple"/>
+  <path d="M255 1105 C395 1105 510 1085 645 1070" class="blue"/>
+  <path d="M255 1165 C395 1165 505 1168 645 1170" class="purple"/>
+  <path d="M255 1225 C395 1225 505 1245 645 1265" class="purple"/>
+
+  <rect x="1045" y="1602" width="360" height="68" fill="rgba(248,241,220,0.95)" stroke="#7a5a1c" stroke-width="4" rx="12"/>
+  <text x="1080" y="1647" class="label">470 ohm resistor</text>
+  <path d="M1367 1516 C1320 1580 1225 1584 1225 1602" class="green"/>
+  <path d="M1225 1670 C1050 1765 665 1030 255 635" class="green"/>
+
+  <rect x="820" y="1712" width="610" height="125" class="warn"/>
+  <text x="852" y="1755" class="label">SK6812 capacitor</text>
+  <text x="852" y="1792" class="small">Solder 1000 uF across LED ring 5V and GND, at the ring if possible.</text>
+  <text x="852" y="1825" class="small">Capacitor + to LED 5V; striped - leg to LED GND.</text>
+
+  <rect x="44" y="1870" width="880" height="170" class="warn"/>
+  <text x="76" y="1916" class="label">Power rule</text>
+  <text x="76" y="1956" class="small">Battery + goes to INA228 VIN+, INA228 VIN- goes to buck IN+.</text>
+  <text x="76" y="1992" class="small">Buck OUT+ goes to FireBeetle VCC and LED 5V.</text>
+  <text x="76" y="2028" class="small">Battery -, buck -, FireBeetle GND, INA228 GND, and LED GND are common.</text>
+
+  <rect x="1020" y="42" width="540" height="118" class="warn"/>
+  <text x="1052" y="84" class="label">Leave unwired</text>
+  <text x="1052" y="121" class="small">GPIO34/A2: no dusk sensor. GPIO35/A3: no battery divider.</text>
+</svg>

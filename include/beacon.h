@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "firmware_version.h"
+#include "keepalive.h"
 #include "ota_update.h"
 #include "power_policy.h"
 #include "powermon.h"  // PowerSample — MSG_POWER's payload IS the logic struct
@@ -27,7 +28,10 @@
 // v4: RegisterMsg also reports the human firmware version string.
 // v5: BeaconMsg carries runtime power policy (sleep intervals + LED schedule).
 // v6: PowerPolicy carries UTC epoch seconds for aligned sleep/update rendezvous.
-static constexpr uint8_t PROTO_VERSION = 6;
+// v7: BeaconMsg carries USB power-bank keepalive pulse settings.
+// MSG_ROSTER was added without a protocol bump: it is a new optional message
+// type, and older receivers safely ignore unknown types.
+static constexpr uint8_t PROTO_VERSION = 7;
 
 // BeaconMsg.flags bits.
 // FIELD_AWAKE: conductor-commanded override — "the field should be awake now,
@@ -69,8 +73,39 @@ typedef struct __attribute__((packed)) {
   uint8_t   flags;       // BEACON_FLAG_* bits (field-awake override, …)
   uint16_t  params[4];   // pattern-specific knobs for live tweaking
   PowerPolicy power;      // runtime sleep/schedule config, broadcast not reflashed
+  KeepAliveConfig keepalive;  // scheduled-off LED pulse to keep USB banks awake
   uint32_t  seq;         // monotonic; for drop detection / logging
 } BeaconMsg;
+
+// type = MSG_ROSTER. During camera calibration the conductor broadcasts the
+// sorted alive MAC roster in chunks. Each performer finds its own MAC and uses
+// `base_rank + row_index + 1` as the dense, collision-free calibration identity.
+// This lets brand-new id=0 nodes blink unique locator codes without serial
+// provisioning. ESP-NOW caps payloads at 250 B; 39 MACs gives a 245 B packet.
+static constexpr uint8_t ROSTER_MACS_PER_MSG = 39;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader hdr;
+  uint8_t   chunk;
+  uint8_t   chunks;
+  uint8_t   n;
+  uint16_t  base_rank;  // zero-based rank of macs[0] in the full sorted roster
+  uint8_t   macs[ROSTER_MACS_PER_MSG][6];
+} RosterMsg;
+
+inline uint16_t rosterMsgFindRank(const RosterMsg& msg, const uint8_t mac[6]) {
+  for (uint8_t i = 0; i < msg.n && i < ROSTER_MACS_PER_MSG; i++) {
+    bool match = true;
+    for (uint8_t j = 0; j < 6; j++) {
+      if (msg.macs[i][j] != mac[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return (uint16_t)(msg.base_rank + i + 1);
+  }
+  return 0;
+}
 
 // type = MSG_REGISTER. A performer unicasts this to the conductor when it hears a
 // beacon, so the conductor can build a roster keyed on the node's MAC (its stable

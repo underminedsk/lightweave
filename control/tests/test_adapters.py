@@ -67,6 +67,28 @@ def test_pattern_command_includes_brightness_and_params() -> None:
     }
 
 
+def test_keepalive_command_maps_to_json() -> None:
+    transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "keepalive changed"})])
+    conductor = JsonLineSerialConductor(transport)
+
+    ack = conductor.update_keepalive({
+        "enabled": True,
+        "interval_ms": 8000,
+        "pulse_ms": 250,
+        "brightness": 96,
+    })
+
+    assert ack == {"ok": True, "message": "keepalive changed"}
+    assert json.loads(transport.writes[0]) == {
+        "id": 1,
+        "cmd": "keepalive",
+        "enabled": True,
+        "interval_ms": 8000,
+        "pulse_ms": 250,
+        "brightness": 96,
+    }
+
+
 def test_ota_mode_maps_to_json_command() -> None:
     transport = FakeTransport([json.dumps({"id": 1, "ok": True, "message": "ota maintenance mode started"})])
     conductor = JsonLineSerialConductor(transport)
@@ -112,10 +134,21 @@ def test_ota_write_commands_map_to_json() -> None:
 
 
 def test_error_ack_returns_adapter_error() -> None:
-    transport = FakeTransport([json.dumps({"id": 1, "ok": False, "error": "unknown lantern"})])
+    transport = FakeTransport([
+        json.dumps({
+            "id": 1,
+            "ok": False,
+            "error": "ota performers did not complete",
+            "nodes": [{"mac": "AA", "phase": "writing"}],
+        })
+    ])
     conductor = JsonLineSerialConductor(transport)
 
-    assert conductor.identify("00:00:00:00:00:00") == {"ok": False, "error": "unknown lantern"}
+    assert conductor.identify("00:00:00:00:00:00") == {
+        "ok": False,
+        "error": "ota performers did not complete",
+        "nodes": [{"mac": "AA", "phase": "writing"}],
+    }
 
 
 def test_timeout_raises_protocol_error() -> None:

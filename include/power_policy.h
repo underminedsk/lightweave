@@ -4,6 +4,7 @@
 
 static constexpr uint8_t POWER_FLAG_SCHEDULE_ENABLED = 0x01;
 static constexpr uint8_t POWER_FLAG_FORCE_AWAKE      = 0x02;
+static constexpr uint8_t POWER_FLAG_FORCE_SLEEP      = 0x04;
 
 static constexpr uint16_t POWER_LIGHT_CHECK_MIN_S = 1;
 static constexpr uint16_t POWER_LIGHT_CHECK_MAX_S = 300;
@@ -38,7 +39,8 @@ inline void powerPolicySanitize(PowerPolicy& p) {
   p.led_on_start_min %= POWER_DAY_MINUTES;
   p.led_on_end_min %= POWER_DAY_MINUTES;
   p.current_min %= POWER_DAY_MINUTES;
-  p.flags &= (POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE);
+  p.flags &= (POWER_FLAG_SCHEDULE_ENABLED | POWER_FLAG_FORCE_AWAKE |
+              POWER_FLAG_FORCE_SLEEP);
 }
 
 inline PowerPolicy powerPolicyDefault() {
@@ -54,6 +56,10 @@ inline bool powerPolicyForceAwake(const PowerPolicy& p) {
   return (p.flags & POWER_FLAG_FORCE_AWAKE) != 0;
 }
 
+inline bool powerPolicyForceSleep(const PowerPolicy& p) {
+  return (p.flags & POWER_FLAG_FORCE_SLEEP) != 0;
+}
+
 inline bool powerPolicyInLedWindow(uint16_t minute, uint16_t start,
                                    uint16_t end) {
   minute %= POWER_DAY_MINUTES;
@@ -66,9 +72,27 @@ inline bool powerPolicyInLedWindow(uint16_t minute, uint16_t start,
 
 inline bool powerPolicyLedsOn(const PowerPolicy& p) {
   if (powerPolicyForceAwake(p)) return true;
+  if (powerPolicyForceSleep(p)) return false;
   if (!powerPolicyScheduleEnabled(p)) return true;
   return powerPolicyInLedWindow(p.current_min, p.led_on_start_min,
                                 p.led_on_end_min);
+}
+
+inline bool powerPolicyShouldDeepSleep(const PowerPolicy& p,
+                                       bool keepalive_enabled) {
+  if (powerPolicyLedsOn(p)) return false;
+  return powerPolicyForceSleep(p) || !keepalive_enabled;
+}
+
+inline bool powerPolicyKeepaliveWindow(const PowerPolicy& p) {
+  return !powerPolicyForceSleep(p) && !powerPolicyLedsOn(p);
+}
+
+inline void powerPolicyAdvanceBySeconds(PowerPolicy& p, uint32_t elapsed_s) {
+  if (p.current_epoch_s != 0) p.current_epoch_s += elapsed_s;
+  p.current_min =
+      (uint16_t)((p.current_min + elapsed_s / POWER_SECONDS_PER_MINUTE) %
+                 POWER_DAY_MINUTES);
 }
 
 inline uint32_t powerPolicyAlignedSleepSeconds(const PowerPolicy& p) {

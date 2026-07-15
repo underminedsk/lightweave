@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import control.app as app_module
 from control.adapters import SerialProtocolError
 from control.app import create_app
 from control.mock_conductor import Lantern, MockConductor
@@ -121,6 +122,20 @@ class FinalAckTimeoutConductor(MockConductor):
         raise SerialProtocolError("timeout waiting for ota_end ack")
 
 
+class EndIncompleteOtaConductor(MockConductor):
+    def ota_end(self) -> dict:
+        progress = self.ota_progress()
+        nodes = progress.get("nodes", [])
+        if nodes:
+            nodes[0] = dict(nodes[0])
+            nodes[0].update({"phase": "complete", "offset": self._ota_expected_size, "crc32": self._ota_expected_crc32})
+        return {
+            "ok": False,
+            "error": "ota performers did not complete",
+            "nodes": nodes,
+        }
+
+
 class ProgressTimeoutConductor(MockConductor):
     def __init__(self) -> None:
         super().__init__()
@@ -210,14 +225,102 @@ def test_state_endpoint_returns_mock_state() -> None:
     assert body["summary"]["total"] == 9
     assert body["conductor"]["sync"] == "locked"
     assert body["conductor"]["firmware"]["version"] == "0.3.0"
-    assert body["conductor"]["firmware"]["proto"] == 6
+    assert body["conductor"]["firmware"]["proto"] == 7
     assert body["summary"]["firmware"]["consistent"] is True
     assert body["power"]["light_sleep_check_s"] == 4
+    assert body["keepalive"] == {"enabled": False, "interval_ms": 10000, "pulse_ms": 100, "brightness": 64}
     assert body["power_monitor"]["battery_capacity_wh"] == 153.6
     assert body["power_monitor"]["sample_count"] == 2
     assert body["power_monitor"]["usable_sample_count"] == 2
     assert body["power_monitor"]["estimated_node_soc_percent"] > 99
     assert body["recovery"]["status"] == "missing_nodes"
+
+
+def test_wifi_status_reports_current_connection(monkeypatch) -> None:
+    def fake_which(command: str) -> str | None:
+      return "/usr/bin/nmcli" if command == "nmcli" else None
+
+    def fake_run(command: list[str], **_kwargs):
+        if command[:4] == ["/usr/bin/nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION"]:
+            return app_module.subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="wlan0:wifi:connected:Basketnet\neth0:ethernet:unavailable:\n",
+                stderr="",
+            )
+        if command[:5] == ["ip", "-4", "-o", "addr", "show"]:
+            return app_module.subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="3: wlan0    inet 10.42.0.1/24 brd 10.42.0.255 scope global wlan0\n",
+                stderr="",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(app_module.shutil, "which", fake_which)
+    monkeypatch.setattr(app_module.subprocess, "run", fake_run)
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.get("/api/network/wifi")
+
+    assert response.status_code == 200
+    assert response.json()["wifi"] == {
+        "available": True,
+        "error": None,
+        "device": "wlan0",
+        "state": "connected",
+        "connection": "Basketnet",
+        "addresses": ["10.42.0.1/24"],
+    }
+
+
+def test_wifi_join_runs_join_command_in_background(monkeypatch) -> None:
+    commands = []
+
+    monkeypatch.setenv("CONTROL_WIFI_JOIN_DELAY_S", "0")
+    monkeypatch.setenv("CONTROL_WIFI_JOIN_COMMAND", "/missing/lightweave-wifi-home")
+    monkeypatch.setattr(
+        app_module.shutil,
+        "which",
+        lambda command: {"nmcli": "/usr/bin/nmcli", "sudo": "/usr/bin/sudo"}.get(command),
+    )
+
+    def fake_run(command: list[str], **_kwargs):
+        commands.append(command)
+        return app_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(app_module.subprocess, "run", fake_run)
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post("/api/network/wifi", json={"ssid": "New House", "password": "secret"})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert commands == [["/usr/bin/sudo", "-n", "/usr/bin/nmcli", "dev", "wifi", "connect", "New House", "password", "secret"]]
+
+
+def test_hotspot_start_runs_nmcli_connection(monkeypatch) -> None:
+    commands = []
+
+    monkeypatch.setenv("CONTROL_WIFI_JOIN_DELAY_S", "0")
+    monkeypatch.setattr(
+        app_module.shutil,
+        "which",
+        lambda command: {"nmcli": "/usr/bin/nmcli", "sudo": "/usr/bin/sudo"}.get(command),
+    )
+
+    def fake_run(command: list[str], **_kwargs):
+        commands.append(command)
+        return app_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(app_module.subprocess, "run", fake_run)
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post("/api/network/hotspot")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert commands == [["/usr/bin/sudo", "-n", "/usr/bin/nmcli", "con", "up", "BasketsSetup"]]
 
 
 def test_state_endpoint_enriches_legacy_snapshot_with_recovery() -> None:
@@ -289,6 +392,78 @@ def test_pattern_update_rejected_by_conductor_is_400() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "bad pattern"
+
+
+def test_calibration_mode_toggle_restores_previous_pattern() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    started = client.post("/api/operations/calibration-mode", json={"enabled": True})
+    running = client.get("/api/state").json()
+    stopped = client.post("/api/operations/calibration-mode", json={"enabled": False})
+    restored = client.get("/api/state").json()
+
+    assert started.status_code == 200
+    assert started.json()["plan"]["min_hamming_distance"] == 3
+    assert running["pattern"]["pattern"] == "Calibration"
+    assert running["pattern"]["params"]["p0"] == 1000
+    assert running["pattern"]["params"]["p1"] == started.json()["plan"]["bit_count"]
+    assert stopped.status_code == 200
+    assert restored["pattern"]["pattern"] == "Glow"
+    assert restored["pattern"]["brightness"] == 48
+    assert restored["pattern"]["params"] == {"hue": 40, "saturation": 100}
+
+
+def test_keepalive_update_round_trips_to_state() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post(
+        "/api/operations/keepalive",
+        json={"enabled": True, "interval_ms": 8000, "pulse_ms": 250, "brightness": 96},
+    )
+    state = client.get("/api/state").json()
+
+    assert response.status_code == 200
+    assert state["keepalive"] == {
+        "enabled": True,
+        "interval_ms": 8000,
+        "pulse_ms": 250,
+        "brightness": 96,
+    }
+
+
+def test_keepalive_rejects_pulse_longer_than_interval() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post(
+        "/api/operations/keepalive",
+        json={"enabled": True, "interval_ms": 1000, "pulse_ms": 1500, "brightness": 96},
+    )
+
+    assert response.status_code == 400
+
+
+def test_calibration_mode_rejected_by_conductor_is_400() -> None:
+    client = TestClient(create_app(RejectingPatternConductor()))
+
+    response = client.post("/api/operations/calibration-mode", json={"enabled": True})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "bad pattern"
+
+
+def test_calibration_mode_includes_unprovisioned_nodes_by_mac_rank() -> None:
+    conductor = MockConductor()
+    conductor._lanterns.append(
+        Lantern("AA:BB:CC:00:00:01", "Unknown", "alive", 2, None, None)
+    )
+    client = TestClient(create_app(conductor))
+
+    response = client.post("/api/operations/calibration-mode", json={"enabled": True})
+    state = client.get("/api/state").json()
+
+    assert response.status_code == 200
+    assert "AA:BB:CC:00:00:01" in [item["mac"] for item in response.json()["plan"]["codes"]]
+    assert state["pattern"]["pattern"] == "Calibration"
 
 
 def test_preview_endpoint_returns_png_for_positioned_lanterns() -> None:
@@ -639,6 +814,7 @@ def test_power_policy_update_round_trips_to_state() -> None:
             "led_on_end_min": 5 * 60,
             "schedule_enabled": True,
             "force_awake": False,
+            "force_sleep": False,
             "current_min": 12 * 60,
             "current_epoch_s": 1_720_123_456,
         },
@@ -650,8 +826,37 @@ def test_power_policy_update_round_trips_to_state() -> None:
     assert state["power"]["deep_sleep_check_min"] == 60
     assert state["power"]["schedule_enabled"] is True
     assert state["power"]["force_awake"] is False
+    assert state["power"]["force_sleep"] is False
     assert state["power"]["current_epoch_s"] == 1_720_123_456
     assert state["power"]["leds_on"] is False
+
+
+def test_field_power_actions_preserve_schedule_and_toggle_overrides() -> None:
+    client = TestClient(create_app(MockConductor()))
+    original = client.get("/api/state").json()["power"]
+
+    sleeping = client.post("/api/operations/field-power", json={"mode": "sleep"})
+    sleep_state = client.get("/api/state").json()["power"]
+    assert sleeping.status_code == 200
+    assert sleeping.json()["mode"] == "sleep"
+    assert sleep_state["force_sleep"] is True
+    assert sleep_state["force_awake"] is False
+    assert sleep_state["leds_on"] is False
+
+    waking = client.post("/api/operations/field-power", json={"mode": "wake"})
+    wake_state = client.get("/api/state").json()["power"]
+    assert waking.status_code == 200
+    assert wake_state["force_sleep"] is False
+    assert wake_state["force_awake"] is True
+    assert wake_state["leds_on"] is True
+
+    following = client.post("/api/operations/field-power", json={"mode": "schedule"})
+    schedule_state = client.get("/api/state").json()["power"]
+    assert following.status_code == 200
+    assert schedule_state["force_sleep"] is False
+    assert schedule_state["force_awake"] is False
+    assert schedule_state["led_on_start_min"] == original["led_on_start_min"]
+    assert schedule_state["led_on_end_min"] == original["led_on_end_min"]
 
 
 def test_power_monitor_settings_and_manual_full_sync() -> None:
@@ -1073,6 +1278,33 @@ def test_ota_install_treats_final_ack_timeout_as_verify_after_reboot(tmp_path) -
     assert {node["offset"] for node in install["nodes"]} == {stage["artifact"]["size"]}
 
 
+def test_ota_install_retains_nodes_when_performers_do_not_complete_end(tmp_path) -> None:
+    conductor = EndIncompleteOtaConductor()
+    missing = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
+    missing.status = "alive"
+    conductor.set_ota_mode(True)
+    client = TestClient(create_app(conductor, ota_store=OtaArtifactStore(tmp_path)))
+    firmware = b"\xe9" + bytes(range(255)) * 3
+    client.put(
+        "/api/operations/ota-artifact?filename=firmware.bin",
+        content=firmware,
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    response = client.post("/api/operations/ota-install")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "ota performers did not complete"
+    install = client.get("/api/operations/ota-install").json()["install"]
+    assert install["complete"] is False
+    assert install["error"] == "ota performers did not complete"
+    assert install["nodes"]
+    assert {node["phase"] for node in install["nodes"]} == {"complete", "failed"}
+    failed = [node for node in install["nodes"] if node["phase"] == "failed"]
+    assert {node["error"] for node in failed} == {"performer did not complete"}
+    assert {node["source"] for node in failed} == {"ota_end_verification"}
+
+
 def test_ota_install_fails_when_not_all_expected_nodes_verify(tmp_path) -> None:
     conductor = OneNodeOnlyOtaStatusConductor()
     missing = next(item for item in conductor._lanterns if item.mac == "A0:B7:65:11:44:91")
@@ -1150,6 +1382,56 @@ def test_assign_endpoint_updates_lantern_position() -> None:
     assert response.status_code == 200
     assert lantern["position"] == "Set"
     assert lantern["attention"] == "None"
+
+
+def test_calibration_apply_proposal_saves_assignments_and_skips_uncertain() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post(
+        "/api/calibration/apply-proposal",
+        json={
+            "assignments": [
+                {"mac": "8C:94:DF:57:7F:14", "x": 0.21, "y": 0.31, "code": 1, "bits": "001"},
+                {"mac": "8C:94:DF:8F:71:50", "x": 0.62, "y": 0.44, "code": 6, "bits": "110"},
+            ],
+            "missing": [{"mac": "A0:B7:65:11:42:09", "code": 4, "reason": "not detected"}],
+            "ambiguous": [],
+        },
+    )
+    lanterns = client.get("/api/lanterns").json()
+    placed = {item["mac"]: item for item in lanterns}
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["message"] == "saved 2 lantern locations; 1 skipped"
+    assert len(body["saved"]) == 2
+    assert len(body["skipped"]) == 1
+    assert placed["8C:94:DF:57:7F:14"]["x"] == 0.21
+    assert placed["8C:94:DF:57:7F:14"]["y"] == 0.31
+    assert placed["8C:94:DF:8F:71:50"]["x"] == 0.62
+    assert placed["8C:94:DF:8F:71:50"]["y"] == 0.44
+
+
+def test_calibration_apply_proposal_reports_unknown_lantern_without_blocking_valid_saves() -> None:
+    client = TestClient(create_app(MockConductor()))
+
+    response = client.post(
+        "/api/calibration/apply-proposal",
+        json={
+            "assignments": [
+                {"mac": "8C:94:DF:57:7F:14", "x": 0.21, "y": 0.31},
+                {"mac": "AA:AA:AA:AA:AA:AA", "x": 0.62, "y": 0.44},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["message"] == "saved 1 lantern location; 1 failed"
+    assert body["saved"][0]["mac"] == "8C:94:DF:57:7F:14"
+    assert body["failed"] == [{"mac": "AA:AA:AA:AA:AA:AA", "error": "unknown lantern"}]
 
 
 def test_replace_endpoint_moves_position_to_spare() -> None:

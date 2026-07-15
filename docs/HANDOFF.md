@@ -8,9 +8,84 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/lightweave · `pio test -e native`
-(**102 pass**) is green; all four device envs (`devkitc` / `firebeetle` /
-`field-devkitc` / `field-firebeetle`) build clean. Latest on `main`
-(2026-07-06):
+(**106 pass**) is green; control tests (**90 pass**) are green; all four device
+envs (`devkitc` / `firebeetle` / `field-devkitc` / `field-firebeetle`) build
+clean. Latest locally (2026-07-08):
+**computer-vision calibration has a first usable API/UI scaffold, a synthetic
+proof harness, and a live calibration-mode toggle** while hardware power testing
+waits on more boards/INA228 modules.
+The control plane can upload calibration still images (`.jpg`, `.jpeg`, `.png`,
+`.webp`), detect bright LED blobs, decode an ordered multi-photo on/off identity
+sequence into bit values/tracks, and propose reviewable `(mac,x,y)` assignments
+by mapping decoded codes onto the current alive roster or an explicit roster. It
+can also render a synthetic ordered PNG sequence from a known layout and run that
+sequence through the exact same upload/detect/decode/propose path. Synthetic and
+video workflows use an explicit blink-code plan with default Hamming distance 3,
+so a missed bit should surface as missing/extra instead of silently assigning the
+wrong MAC. Firmware now has a `Calibration` pattern that generates the same
+Hamming-spaced code sequence from node IDs (`params`: slot ms, bit count, first
+code, min Hamming distance), and the control plane exposes it as a simple
+Operations → Lantern Locations **Play/Stop lantern locator pattern** toggle. Video/photo
+analysis is a separate action: the normal visible path is select a video and
+click **Analyze video**; developer controls (Plan codes, Upload frames, Extract
+video, Refresh frames, Simulate, Propose layout, threshold/min-area/timing) live
+inside Advanced. The review UI shows proposed lantern locations directly over
+the captured frame; the normal path does not show the raw PNG manifest or dump
+every ignored extra track. The analyzer now scales the minimum blob area for
+browser-extracted video frames and uses code-aware temporal contrast for those
+video frames, so constant glare, cables, and non-node bright objects do not win
+just because they are bright. It still tries every cyclic bit alignment for the
+planned code map so the video does not have to start exactly on slot 0, accepts
+only tracks whose blink signature matches the planned lantern codes, and reports
+non-matching lights as extras. Duplicate matching codes are accepted only when
+one track is clearly stronger; comparable duplicates remain ambiguous. Synthetic
+simulation supports deterministic jitter, dim LEDs, glare blobs, missing frames,
+and perspective warp. This is intentionally non-destructive: it does **not**
+write the conductor layout table yet. Live bench
+OTA on 2026-07-08 staged `.pio/build/devkitc/firmware.bin` (`862992` bytes /
+`6743` chunks / sha256
+`98daf0fb6e42435bfa577d81b6642d61fa8f3a9986bba4b39780d493f42b83c4` / crc32
+`4291516488`), streamed in `378 s`, returned `ota install complete; rebooting`,
+and post-reboot `/api/state` showed both performers alive and firmware-consistent
+on build `6fb35676`, `dirty=true`. The live calibration toggle then started
+successfully with a 2-node plan (`001` and `110`) and stopped back to the prior
+pattern. The existing per-node identify command is now exposed as **Locate** in
+both the selected-lantern sheet and each Node List row, so an operator can make
+one physical lantern visibly identify itself from either view. Regression test
+`test_real_two_node_video_auto_aligns_and_ignores_extra_lights` extracts the
+fixture `control/tests/fixtures/2_nodes_calibration.mov`, recovers both bench
+nodes from the first three 1 Hz frames with `alignment_offset=2`, and leaves
+unplanned bright objects as extra tracks. Regression test
+`test_real_two_node_video_with_extra_lights_uses_temporal_code_signal` covers
+`control/tests/fixtures/2_nodes_calibration_extra_lights.mov`, the phone clip
+that previously assigned glare/cable locations; it now resolves the upper/right
+`001` node around `(0.69,0.34)` and the lower `110` node around `(0.48,0.65)`.
+
+Previous latest (2026-07-07):
+**OTA finalization is now status-gated before conductor reboot and
+hardware-verified on the 3-board bench** — after
+`ota_end`, the conductor broadcasts the finalize command, then waits up to 30 s
+for every placed performer (excluding the conductor's own MAC if it is in the
+layout table) to report a fresh `complete` status with the exact staged image
+size and CRC. If any performer does not verify, the conductor returns
+`ota performers did not complete` with the current per-node OTA status table and
+does **not** finalize/reboot itself, leaving the API/UI with concrete failed
+node rows and a retryable maintenance state instead of silently declaring
+success. The Python serial adapter now preserves structured fields on failed
+acks, and the API stores failed-finalize node details in
+`/api/operations/ota-install`. Live drill: all three DevKitC boards were first
+USB-flashed to local dirty build `b00f872b`, then the real serial-backed API
+staged `.pio/build/devkitc/firmware.bin` (`862432` bytes / `6738` chunks /
+sha256 `295bbeb997e19ecb411c789351df5c8cdb6d6620d4d413bfa6985449f78d0d42` /
+crc32 `3357813144`), entered maintenance with `2 / 2` ready, streamed the image
+in `369.7 s`, returned `ota install complete; rebooting`, and
+`/api/operations/ota-install` recorded both performers at terminal `complete`
+with `offset=862432` and matching crc32. Final post-reboot `/api/state` showed
+`summary.alive=2`, `summary.total=2`, `attention=0`,
+`summary.firmware.consistent=true`, `build_label=b00f872b`, `dirty=true`, and
+OTA back to idle with both complete status rows retained.
+
+Previous latest on `main` (2026-07-06):
 **manual field-wide OTA is end-to-end hardware-verified and retry-hardened on the 3-board bench** —
 Operations can enter a maintenance window, stage a `.bin`, stream it over USB
 serial to the conductor, fan it out over ESP-NOW to performers, show chunk
@@ -106,30 +181,36 @@ full-repo adversarial self-review with all 5 correctness findings fixed, the
 production BOM, and the **pilot-batch order placed 2026-07-03** (most parts
 arrive Mon Jul 6, batteries Jul 10 — see "Pilot batch: ORDERED" below).
 
-## ▶ Next session: pick up here (updated 2026-07-06)
+## ▶ Next session: pick up here (updated 2026-07-08)
 
 Priority order:
-1. **Scale-harden OTA before 60 nodes:** manual maintenance OTA and
+1. **CV calibration apply workflow:** the phone-video proof is now good enough
+   on two real clips, including one with large glare/cable false positives.
+   Add a guarded "apply proposal" endpoint/UI that writes assignments through
+   the existing `/api/lanterns/{mac}/assign` path only after the operator
+   reviews the image overlay and any missing/ambiguous rows.
+2. **Synthetic hardening follow-up only when needed:** run Simulate with jitter,
+   dim LEDs, glare, missing frames, and perspective values that approximate the
+   phone capture. Tests already cover clean recovery, noisy recovery, and
+   missing-frame alias prevention; add cases only when real media exposes a new
+   failure mode.
+3. **Drone/field media validation:** when a drone clip exists, run it through
+   the same Lantern Locations flow and add a fixture if it exposes a new failure
+   mode. Temporal code scoring should ignore constant extra lights; only extra
+   lights blinking with the same planned code should remain ambiguous.
+4. **Scale-harden OTA when more boards exist:** manual maintenance OTA and
    same-protocol mixed-firmware recovery are hardware-verified on the 3-board
    bench. The updater retries serial chunk timeouts/NACKs, rejects unsafe resume
    offsets and wrong-length chunks, waits for maintenance readiness, and verifies
-   every expected placed performer after reboot before declaring success. Missing
-   placed lanterns now block installs with a concrete Recovery row, and failed
-   post-reboot verification synthesizes per-node failed OTA rows for operators.
-   The current scale-hardening choice is **status-driven early abort, not
-   per-node chunk ACK/retry yet**: the conductor's `ota_progress` response now
-   includes performer status rows, and the API samples it every 64 chunks during
-   transfer. Any performer that reports `failed` stops the install before
-   `ota_end`, leaving a concrete Recovery row. Defer explicit per-node chunk
-   ACK/retry until a larger bench/field test shows repeated ESP-NOW chunk loss
-   that the current 3x broadcast repetition cannot cover. Host API coverage now
-   includes 60 placed performers, including partial OTA status followed by
-   post-reboot verification of all 60 expected nodes.
-2. **Optional negative OTA-safety check:** if useful, intentionally flash one
+   every expected placed performer after reboot before declaring success. Defer
+   explicit per-node chunk ACK/retry until a larger bench/field test shows
+   repeated ESP-NOW chunk loss that the current 3x broadcast repetition cannot
+   cover.
+5. **Optional negative OTA-safety check:** if useful, intentionally flash one
    performer with a same-v6 but different build and confirm it appears as
    `Firmware mismatch`; restore all boards to one build afterward. Protocol-v2
    or older boards simply vanish from the roster due to the version gate.
-3. **Monday (parts in hand):** phototransistors are no longer required for the
+6. **When parts are in hand:** phototransistors are no longer required for the
    main sleep strategy. Treat them as optional/fallback only. Wire INA228 on one
    reference node (SDA→21, SCL→22, chip in series between
    battery+ and buck input) → run the INA228 bench checklist below → first
@@ -139,7 +220,7 @@ Priority order:
    re-adopts its position within ~10 s of registering (the new single-row
    `[table]` reply; code-reviewed + host-tested but the radio path itself
    isn't hardware-verified yet).
-4. **User task, anytime (needs hands + DMM):** re-measure the 12 V
+7. **User task, anytime (needs hands + DMM):** re-measure the 12 V
    battery-side draw with naps running, **USB disconnected** (USB backfeeds the
    5 V rail and corrupts the reading) — quantifies the Stage-B win vs the old
    51 mA rest / 55 mA avg numbers. Same scene for apples-to-apples: amber GLOW
@@ -226,19 +307,22 @@ power measurement):
   `pattern <n>`, `bri <n>`, `param <i> <v>`, `powersave on|off`,
   `dusk on|off` (performer; daytime deep-sleep, default off),
   `wake on|off` (conductor; FIELD_AWAKE beacon flag, summons dusk-sleeping
-  nodes; same force-awake bit as the Operations override), `power` / `power reset` (INA228 nodes; print / zero the energy
+  nodes; same force-awake bit as the Operations override),
+  `keepalive on|off [interval_ms] [pulse_ms] [brightness]` (conductor;
+  USB power-bank LED pulse test broadcast in beacons), `power` / `power reset` (INA228 nodes; print / zero the energy
   accumulators). Note diag output is gated: it prints only within **5 min of
   serial input** — hit Enter in a monitor to revive a quiet node (see
   FLASHING.md). Exception: the conductor's `[power]` telemetry log is
   deliberately ungated (it's the overnight audit trail).
-- **Wire protocol is v6** (`PROTO_VERSION 6`; BEACON now includes runtime
-  `PowerPolicy` with UTC epoch seconds, and REGISTER includes release version, protocol, build id, and
+- **Wire protocol is v7** (`PROTO_VERSION 7`; BEACON now includes runtime
+  `PowerPolicy` with UTC epoch seconds plus USB power-bank `KeepAliveConfig`,
+  and REGISTER includes release version, protocol, build id, and
   dirty flag for OTA version consistency; OTA begin/chunk/end messages carry
   the staged firmware image during manual maintenance updates).
   Protocol-mismatched nodes silently reject each other — **flash every board
   together**. A same-protocol stale version/build is reported as
   `Firmware mismatch`.
-- **Host unit tests** (`test/test_logic/`, 99) and control tests (40): sync
+- **Host unit tests** (`test/test_logic/`, 110) and control tests (96): sync
   core, pattern math, roster, layout table, radio duty-cycle, nap scheduler (Stage B), dusk detector +
   fail-awake gates (Lever 2), pattern static-ids + boot-guard, glow warm-hue
   color, power telemetry (conversions / plausibility gate / report scheduler),
@@ -609,6 +693,12 @@ Performers clear LEDs and deep-sleep outside the window, then wake on the
 configured check cadence to hear whether the schedule/override changed. This
 makes the photodiodes redundant for the main installation path.
 
+Operations now has one-click **Sleep field**, **Wake field**, and **Follow
+schedule** controls. Forced sleep wins over the USB power-bank keepalive and
+preserves the saved LED window; forced wake summons sleeping performers on their
+next configured check; Follow schedule clears both overrides. Serial equivalents
+on the conductor are `sleep on|off` and `wake on|off`.
+
 The photodiode dusk detector below remains off by default as an optional
 fallback/experiment, not the plan of record.
 
@@ -627,7 +717,7 @@ field. Four independent layers guarantee daytime testability:
    and listens for a beacon before it may re-sleep — a flagged beacon pins it
    awake (60 s TTL, continuously refreshed). Summon latency for the whole field:
    ≤ one resample interval. Historical note: this originally grew the wire format
-   to `PROTO_VERSION 2`; the current protocol is **v6**, and every protocol bump
+   to `PROTO_VERSION 2`; the current protocol is **v7**, and every protocol bump
    still means reflashing every board together.
 2. **Any power-cycle boots awake** (cold boot starts in "night", won't dusk-sleep
    for 10 min, 60 s light debounce on top). Per-lantern physical override via the

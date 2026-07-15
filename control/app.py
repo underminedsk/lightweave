@@ -3,18 +3,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi import Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .adapters import ConductorAdapter, JsonLineSerialConductor, SerialProtocolError
+from .calibration import CalibrationError, CalibrationStore, calibration_code_plan
 from .mock_conductor import MockConductor
 from .ota_store import OtaArtifactError, OtaArtifactStore
 from .pattern_store import PatternStore, PatternStoreError
@@ -67,8 +70,13 @@ class PowerPolicyUpdate(BaseModel):
     led_on_end_min: int = Field(ge=0, le=1439)
     schedule_enabled: bool
     force_awake: bool
+    force_sleep: bool = False
     current_min: int = Field(ge=0, le=1439)
     current_epoch_s: int = Field(ge=0, le=4_294_967_295)
+
+
+class FieldPowerUpdate(BaseModel):
+    mode: Literal["sleep", "wake", "schedule"]
 
 
 class PowerMonitorUpdate(BaseModel):
@@ -76,8 +84,98 @@ class PowerMonitorUpdate(BaseModel):
     full_voltage: float = Field(gt=0, le=100)
 
 
+class KeepAliveUpdate(BaseModel):
+    enabled: bool
+    interval_ms: int = Field(ge=1000, le=60000)
+    pulse_ms: int = Field(ge=10, le=5000)
+    brightness: int = Field(ge=0, le=192)
+
+
 class OtaModeUpdate(BaseModel):
     enabled: bool
+
+
+class CalibrationModeUpdate(BaseModel):
+    enabled: bool
+
+
+class CalibrationDetectRequest(BaseModel):
+    threshold: int = Field(default=180, ge=0, le=255)
+    min_area: int = Field(default=4, ge=1, le=100_000)
+
+
+class CalibrationDecodeRequest(BaseModel):
+    frame_ids: list[str] = Field(min_length=1, max_length=64)
+    threshold: int = Field(default=180, ge=0, le=255)
+    min_area: int = Field(default=4, ge=1, le=100_000)
+    max_distance: float = Field(default=0.035, gt=0.0, le=1.0)
+
+
+class CalibrationCodeMapEntry(BaseModel):
+    mac: str = Field(min_length=1)
+    code: int = Field(ge=1)
+    bits: str = Field(min_length=1, max_length=32)
+
+
+class CalibrationCodePlanRequest(BaseModel):
+    roster_macs: list[str] | None = Field(default=None, max_length=128)
+    first_code: int = Field(default=1, ge=1)
+    bit_count: int | None = Field(default=None, ge=1, le=32)
+    min_hamming_distance: int = Field(default=3, ge=1, le=12)
+
+
+class CalibrationProposeRequest(BaseModel):
+    frame_ids: list[str] = Field(min_length=1, max_length=64)
+    roster_macs: list[str] | None = Field(default=None, max_length=128)
+    code_map: list[CalibrationCodeMapEntry] | None = Field(default=None, max_length=128)
+    threshold: int = Field(default=180, ge=0, le=255)
+    min_area: int = Field(default=4, ge=1, le=100_000)
+    max_distance: float = Field(default=0.035, gt=0.0, le=1.0)
+    first_code: int = Field(default=1, ge=1)
+
+
+class CalibrationApplyAssignment(BaseModel):
+    mac: str = Field(min_length=1)
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    code: int | None = Field(default=None, ge=1)
+    bits: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class CalibrationApplyRequest(BaseModel):
+    assignments: list[CalibrationApplyAssignment] = Field(min_length=1, max_length=256)
+    missing: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+    ambiguous: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+
+
+class CalibrationSyntheticNode(BaseModel):
+    mac: str = Field(min_length=1)
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
+class CalibrationSyntheticRequest(BaseModel):
+    nodes: list[CalibrationSyntheticNode] | None = Field(default=None, max_length=128)
+    width: int = Field(default=960, ge=40, le=4000)
+    height: int = Field(default=720, ge=40, le=4000)
+    first_code: int = Field(default=1, ge=1)
+    bit_count: int | None = Field(default=None, ge=1, le=32)
+    blob_radius: int = Field(default=5, ge=1, le=80)
+    led_value: int = Field(default=255, ge=0, le=255)
+    jitter_px: float = Field(default=0.0, ge=0.0, le=4000.0)
+    glare_count: int = Field(default=0, ge=0, le=500)
+    glare_value: int = Field(default=230, ge=0, le=255)
+    missing_frames: list[int] = Field(default_factory=list, max_length=32)
+    perspective: float = Field(default=0.0, ge=0.0, le=0.45)
+    min_hamming_distance: int = Field(default=3, ge=1, le=12)
+    threshold: int = Field(default=180, ge=0, le=255)
+    min_area: int = Field(default=4, ge=1, le=100_000)
+    max_distance: float = Field(default=0.035, gt=0.0, le=1.0)
+
+
+class WifiJoinRequest(BaseModel):
+    ssid: str = Field(min_length=1, max_length=64)
+    password: str = Field(default="", max_length=128)
 
 
 def create_default_conductor() -> ConductorAdapter:
@@ -103,6 +201,7 @@ def create_app(
     conductor: ConductorAdapter | None = None,
     ota_store: OtaArtifactStore | None = None,
     pattern_store: PatternStore | None = None,
+    calibration_store: CalibrationStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -128,7 +227,9 @@ def create_app(
     app.state.conductor = conductor or create_default_conductor()
     app.state.ota_store = ota_store or OtaArtifactStore()
     app.state.pattern_store = pattern_store or PatternStore()
+    app.state.calibration_store = calibration_store or CalibrationStore()
     app.state.ota_install = {"running": False, "complete": False, "error": None}
+    app.state.calibration_previous_pattern = None
     app.state.power_monitor_config = {
         "battery_capacity_wh": float(os.getenv("CONTROL_BATTERY_CAPACITY_WH", DEFAULT_BATTERY_CAPACITY_WH)),
         "full_voltage": float(os.getenv("CONTROL_BATTERY_FULL_VOLTAGE", DEFAULT_FULL_VOLTAGE)),
@@ -319,6 +420,28 @@ def create_app(
         state["recovery"] = recovery_summary(state)
         return state
 
+    def calibration_roster_macs(state: dict[str, Any]) -> list[str]:
+        lanterns = [
+            item
+            for item in state.get("lanterns") or []
+            if item.get("status") == "alive" and item.get("mac")
+        ]
+        lanterns.sort(key=lambda item: str(item.get("mac") or ""))
+        return [str(item["mac"]) for item in lanterns]
+
+    def calibration_positioned_nodes(state: dict[str, Any]) -> list[dict[str, Any]]:
+        nodes = []
+        for item in state.get("lanterns") or []:
+            if item.get("status") != "alive" or not item.get("mac"):
+                continue
+            x = item.get("x")
+            y = item.get("y")
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                continue
+            nodes.append({"mac": str(item["mac"]), "x": float(x), "y": float(y)})
+        nodes.sort(key=lambda item: item["mac"])
+        return nodes
+
     def ota_ready_for_install(state: dict[str, Any]) -> bool:
         ota = state.get("ota") or {}
         if ota.get("ready") is True:
@@ -342,6 +465,9 @@ def create_app(
     async def pattern_store_call(method: str, *args: Any) -> Any:
         return await asyncio.to_thread(getattr(app.state.pattern_store, method), *args)
 
+    async def calibration_store_call(method: str, *args: Any) -> Any:
+        return await asyncio.to_thread(getattr(app.state.calibration_store, method), *args)
+
     async def publish(event: dict[str, Any]) -> None:
         event = {"ts": time.time(), **event}
         dead: list[WebSocket] = []
@@ -360,6 +486,51 @@ def create_app(
             await publish({"type": "error", "action": action, "message": str(error)})
             return
         await publish({"type": "state", "action": action, "state": state})
+
+    def calibration_mode_plan(state: dict[str, Any]) -> dict[str, Any]:
+        return calibration_code_plan(
+            calibration_roster_macs(state),
+            first_code=1,
+            min_hamming_distance=3,
+        )
+
+    async def set_live_calibration_mode(enabled: bool) -> dict[str, Any]:
+        state = await conductor_call("snapshot")
+        if enabled:
+            current = state.get("pattern") or {}
+            if current.get("pattern") != "Calibration":
+                app.state.calibration_previous_pattern = {
+                    "pattern": str(current.get("pattern") or "Glow"),
+                    "brightness": int(current.get("brightness") or 48),
+                    "params": dict(current.get("params") or {}),
+                }
+            plan = calibration_mode_plan(state)
+            ack = await conductor_call(
+                "update_pattern",
+                "Calibration",
+                96,
+                {
+                    "p0": 1000,
+                    "p1": int(plan["bit_count"]),
+                    "p2": int(plan["first_code"]),
+                    "p3": int(plan["min_hamming_distance"]),
+                },
+            )
+            if ack.get("ok"):
+                ack["plan"] = plan
+            return ack
+        previous = app.state.calibration_previous_pattern or {
+            "pattern": "Glow",
+            "brightness": 48,
+            "params": {"hue": 40, "saturation": 100},
+        }
+        app.state.calibration_previous_pattern = None
+        return await conductor_call(
+            "update_pattern",
+            previous["pattern"],
+            previous["brightness"],
+            previous["params"],
+        )
 
     async def infer_ota_complete_nodes(size: int, crc32: int) -> list[dict[str, Any]]:
         for _ in range(4):
@@ -423,6 +594,26 @@ def create_app(
             })
         return augmented
 
+    def mark_incomplete_ota_failures(
+        nodes: list[dict[str, Any]],
+        expected: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        normalized = []
+        verified_macs = set()
+        for node in nodes:
+            item = dict(node)
+            mac = str(item.get("mac") or "")
+            if mac in expected and item.get("phase") == "complete":
+                verified_macs.add(mac)
+            elif mac in expected:
+                item["last_phase"] = item.get("phase")
+                item["phase"] = "failed"
+                if not item.get("error") or item.get("error") == "none":
+                    item["error"] = "performer did not complete"
+                item["source"] = "ota_end_verification"
+            normalized.append(item)
+        return append_unverified_ota_failures(normalized, expected, verified_macs)
+
     async def wait_for_maintenance_settle(state: dict[str, Any]) -> None:
         started_at = app.state.ota_mode_started_at
         if not isinstance(started_at, (int, float)):
@@ -443,6 +634,118 @@ def create_app(
             fresh.append(node)
         return fresh
 
+    def nmcli_path() -> str | None:
+        return shutil.which("nmcli")
+
+    def sudo_command(command: list[str]) -> list[str]:
+        sudo = shutil.which("sudo")
+        if not sudo:
+            return command
+        return [sudo, "-n", *command]
+
+    def wifi_status() -> dict[str, Any]:
+        nmcli = nmcli_path()
+        if not nmcli:
+            return {
+                "available": False,
+                "error": "nmcli is not installed",
+                "device": None,
+                "state": "unavailable",
+                "connection": None,
+                "addresses": [],
+            }
+        try:
+            devices = subprocess.run(
+                [nmcli, "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return {
+                "available": False,
+                "error": str(error),
+                "device": None,
+                "state": "unknown",
+                "connection": None,
+                "addresses": [],
+            }
+
+        wifi = None
+        for line in devices.stdout.splitlines():
+            parts = line.split(":", 3)
+            if len(parts) != 4 or parts[1] != "wifi":
+                continue
+            wifi = {
+                "device": parts[0],
+                "state": parts[2],
+                "connection": parts[3] or None,
+            }
+            if parts[2] == "connected":
+                break
+        if wifi is None:
+            return {
+                "available": False,
+                "error": "no Wi-Fi device found",
+                "device": None,
+                "state": "unavailable",
+                "connection": None,
+                "addresses": [],
+            }
+
+        addresses: list[str] = []
+        try:
+            ip = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show", "dev", str(wifi["device"])],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            for line in ip.stdout.splitlines():
+                fields = line.split()
+                if "inet" in fields:
+                    addresses.append(fields[fields.index("inet") + 1])
+        except (OSError, subprocess.SubprocessError):
+            addresses = []
+
+        return {
+            "available": True,
+            "error": None,
+            "addresses": addresses,
+            **wifi,
+        }
+
+    def run_wifi_join(ssid: str, password: str) -> None:
+        delay_s = float(os.getenv("CONTROL_WIFI_JOIN_DELAY_S", "1.0"))
+        if delay_s > 0:
+            time.sleep(delay_s)
+        helper = os.getenv("CONTROL_WIFI_JOIN_COMMAND", "/usr/local/bin/lightweave-wifi-home")
+        helper_path = shutil.which(helper) if "/" not in helper else helper
+        if helper_path and Path(helper_path).exists():
+            command = [helper_path, ssid]
+            if password:
+                command.append(password)
+        else:
+            nmcli = nmcli_path()
+            if not nmcli:
+                raise RuntimeError("nmcli is not installed")
+            command = sudo_command([nmcli, "dev", "wifi", "connect", ssid])
+            if password:
+                command.extend(["password", password])
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=30)
+
+    def run_hotspot_start() -> None:
+        delay_s = float(os.getenv("CONTROL_WIFI_JOIN_DELAY_S", "1.0"))
+        if delay_s > 0:
+            time.sleep(delay_s)
+        nmcli = nmcli_path()
+        if not nmcli:
+            raise RuntimeError("nmcli is not installed")
+        connection = os.getenv("CONTROL_HOTSPOT_CONNECTION", "BasketsSetup")
+        subprocess.run(sudo_command([nmcli, "con", "up", connection]), check=True, capture_output=True, text=True, timeout=30)
+
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
@@ -460,6 +763,36 @@ def create_app(
             return await conductor_call("lanterns")
         except SerialProtocolError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/api/network/wifi")
+    async def get_wifi_status() -> dict[str, Any]:
+        return {"wifi": await asyncio.to_thread(wifi_status)}
+
+    @app.post("/api/network/wifi")
+    async def join_wifi(request: WifiJoinRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        if not request.ssid.strip():
+            raise HTTPException(status_code=400, detail="SSID is required")
+        if not nmcli_path() and not Path(os.getenv("CONTROL_WIFI_JOIN_COMMAND", "/usr/local/bin/lightweave-wifi-home")).exists():
+            raise HTTPException(status_code=503, detail="Wi-Fi management is not available on this host")
+        background_tasks.add_task(run_wifi_join, request.ssid.strip(), request.password)
+        return {
+            "ok": True,
+            "message": f"joining {request.ssid.strip()}",
+            "note": "The Pi may leave this network and the browser may disconnect.",
+        }
+
+    @app.post("/api/network/hotspot")
+    async def start_hotspot(background_tasks: BackgroundTasks) -> dict[str, Any]:
+        if not nmcli_path():
+            raise HTTPException(status_code=503, detail="Wi-Fi management is not available on this host")
+        connection = os.getenv("CONTROL_HOTSPOT_CONNECTION", "BasketsSetup")
+        background_tasks.add_task(run_hotspot_start)
+        return {
+            "ok": True,
+            "message": "starting Basketnet",
+            "connection": connection,
+            "note": "The Pi may leave this network and the browser may disconnect.",
+        }
 
     @app.get("/api/patterns")
     async def list_patterns() -> dict[str, Any]:
@@ -540,6 +873,166 @@ def create_app(
             raise HTTPException(status_code=400, detail=ack["error"])
         await publish_state("pattern")
         return {"ok": True, "message": ack.get("message", "pattern broadcast"), "pattern": pattern, "ack": ack}
+
+    @app.get("/api/calibration/frames")
+    async def list_calibration_frames() -> dict[str, Any]:
+        return {"frames": await calibration_store_call("list_frames")}
+
+    @app.get("/api/calibration/frames/{frame_id}/image")
+    async def get_calibration_frame_image(frame_id: str) -> FileResponse:
+        frame = app.state.calibration_store.frame(frame_id)
+        if frame is None:
+            raise HTTPException(status_code=404, detail="unknown calibration frame")
+        return FileResponse(frame.path)
+
+    @app.put("/api/calibration/frames")
+    async def upload_calibration_frame(request: Request, filename: str = "calibration.png") -> dict[str, Any]:
+        data = await request.body()
+        try:
+            frame = await calibration_store_call("add_image", filename, data)
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        await publish({"type": "ack", "action": "calibration-frame", "frame": frame})
+        return {"ok": True, "message": "calibration frame uploaded", "frame": frame}
+
+    @app.post("/api/calibration/frames/{frame_id}/detect")
+    async def detect_calibration_frame(frame_id: str, request: CalibrationDetectRequest) -> dict[str, Any]:
+        try:
+            detection = await calibration_store_call("detect", frame_id, request.threshold, request.min_area)
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "frame_id": frame_id, "detection": detection}
+
+    @app.post("/api/calibration/decode")
+    async def decode_calibration_sequence(request: CalibrationDecodeRequest) -> dict[str, Any]:
+        try:
+            decoded = await calibration_store_call(
+                "decode_sequence",
+                request.frame_ids,
+                request.threshold,
+                request.min_area,
+                request.max_distance,
+            )
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "decoded": decoded}
+
+    @app.post("/api/calibration/code-plan")
+    async def calibration_code_plan_endpoint(request: CalibrationCodePlanRequest) -> dict[str, Any]:
+        roster_macs = request.roster_macs
+        if roster_macs is None:
+            try:
+                roster_macs = calibration_roster_macs(await conductor_call("snapshot"))
+            except SerialProtocolError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        try:
+            plan = calibration_code_plan(
+                roster_macs,
+                first_code=request.first_code,
+                bit_count=request.bit_count,
+                min_hamming_distance=request.min_hamming_distance,
+            )
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "plan": plan}
+
+    @app.post("/api/calibration/propose-layout")
+    async def propose_calibration_layout(request: CalibrationProposeRequest) -> dict[str, Any]:
+        roster_macs = request.roster_macs
+        code_map = [item.model_dump() for item in request.code_map] if request.code_map is not None else None
+        if roster_macs is None and code_map is None:
+            try:
+                roster_macs = calibration_roster_macs(await conductor_call("snapshot"))
+            except SerialProtocolError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        elif roster_macs is None:
+            roster_macs = [str(item["mac"]) for item in code_map or []]
+        try:
+            proposal = await calibration_store_call(
+                "propose_layout",
+                request.frame_ids,
+                roster_macs,
+                request.threshold,
+                request.min_area,
+                request.max_distance,
+                request.first_code,
+                code_map,
+            )
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "roster_macs": roster_macs, "proposal": proposal}
+
+    @app.post("/api/calibration/apply-proposal")
+    async def apply_calibration_proposal(request: CalibrationApplyRequest) -> dict[str, Any]:
+        saved = []
+        failed = []
+        for assignment in request.assignments:
+            try:
+                ack = await conductor_call("assign", assignment.mac, assignment.x, assignment.y)
+            except SerialProtocolError as error:
+                failed.append({"mac": assignment.mac, "error": str(error)})
+                continue
+            if ack.get("ok"):
+                saved.append({
+                    "mac": assignment.mac,
+                    "x": assignment.x,
+                    "y": assignment.y,
+                    "code": assignment.code,
+                    "bits": assignment.bits,
+                })
+            else:
+                failed.append({
+                    "mac": assignment.mac,
+                    "error": str(ack.get("error") or "assign failed"),
+                })
+        if saved:
+            await publish_state("calibration-apply")
+        skipped = list(request.missing) + list(request.ambiguous)
+        message = f"saved {len(saved)} lantern location{'s' if len(saved) != 1 else ''}"
+        if skipped:
+            message += f"; {len(skipped)} skipped"
+        if failed:
+            message += f"; {len(failed)} failed"
+        return {
+            "ok": not failed,
+            "message": message,
+            "saved": saved,
+            "skipped": skipped,
+            "failed": failed,
+        }
+
+    @app.post("/api/calibration/simulate")
+    async def simulate_calibration_sequence(request: CalibrationSyntheticRequest) -> dict[str, Any]:
+        if request.nodes is None:
+            try:
+                nodes = calibration_positioned_nodes(await conductor_call("snapshot"))
+            except SerialProtocolError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        else:
+            nodes = [node.model_dump() for node in request.nodes]
+        try:
+            simulation = await calibration_store_call(
+                "add_synthetic_sequence",
+                nodes,
+                request.width,
+                request.height,
+                request.first_code,
+                request.bit_count,
+                request.blob_radius,
+                request.led_value,
+                request.jitter_px,
+                request.glare_count,
+                request.glare_value,
+                request.missing_frames,
+                request.perspective,
+                request.min_hamming_distance,
+                request.threshold,
+                request.min_area,
+                request.max_distance,
+            )
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True, "simulation": simulation}
 
     @app.get("/preview")
     async def preview(
@@ -860,6 +1353,19 @@ def create_app(
         await publish_state("blackout")
         return ack
 
+    @app.post("/api/operations/calibration-mode")
+    async def update_calibration_mode(request: CalibrationModeUpdate) -> dict[str, Any]:
+        try:
+            ack = await set_live_calibration_mode(request.enabled)
+        except CalibrationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not ack["ok"]:
+            raise HTTPException(status_code=400, detail=ack["error"])
+        await publish_state("calibration-mode")
+        return ack
+
     @app.post("/api/operations/power-policy")
     async def update_power_policy(request: PowerPolicyUpdate) -> dict[str, Any]:
         try:
@@ -869,6 +1375,36 @@ def create_app(
         if not ack["ok"]:
             raise HTTPException(status_code=400, detail=ack["error"])
         await publish_state("power-policy")
+        return ack
+
+    @app.post("/api/operations/field-power")
+    async def update_field_power(request: FieldPowerUpdate) -> dict[str, Any]:
+        overrides = {
+            "sleep": {"force_awake": False, "force_sleep": True},
+            "wake": {"force_awake": True, "force_sleep": False},
+            "schedule": {"force_awake": False, "force_sleep": False},
+        }
+        try:
+            ack = await conductor_call("update_power_policy", overrides[request.mode])
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not ack["ok"]:
+            raise HTTPException(status_code=400, detail=ack["error"])
+        ack["mode"] = request.mode
+        await publish_state("field-power")
+        return ack
+
+    @app.post("/api/operations/keepalive")
+    async def update_keepalive(request: KeepAliveUpdate) -> dict[str, Any]:
+        if request.pulse_ms > request.interval_ms:
+            raise HTTPException(status_code=400, detail="pulse duration must be <= interval")
+        try:
+            ack = await conductor_call("update_keepalive", request.model_dump())
+        except SerialProtocolError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not ack["ok"]:
+            raise HTTPException(status_code=400, detail=ack["error"])
+        await publish_state("keepalive")
         return ack
 
     @app.post("/api/operations/power-monitor")
@@ -1078,7 +1614,13 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
         assert ack is not None
         if not ack["ok"]:
-            app.state.ota_install.update({"running": False, "error": ack["error"]})
+            update = {"running": False, "error": ack["error"], "completed_at": time.time()}
+            if ack.get("nodes"):
+                nodes = fresh_ota_nodes(ack.get("nodes") or [])
+                if ack["error"] == "ota performers did not complete":
+                    nodes = mark_incomplete_ota_failures(nodes, expected_lanterns)
+                update["nodes"] = nodes
+            app.state.ota_install.update(update)
             raise HTTPException(status_code=400, detail=ack["error"])
         nodes = [] if ack.get("post_reboot_verify") else fresh_ota_nodes(
             ack.get("nodes") or app.state.ota_install.get("nodes") or []

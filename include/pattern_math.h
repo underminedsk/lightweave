@@ -89,4 +89,66 @@ inline bool heartbeatOn(int64_t synced_us, int64_t half_period_us) {
   return (floorDiv(synced_us, half_period_us) % 2) == 0;
 }
 
+inline uint8_t popcount16(uint16_t value) {
+  uint8_t count = 0;
+  while (value) {
+    count += value & 1u;
+    value >>= 1;
+  }
+  return count;
+}
+
+inline bool calibrationCodeFarEnough(uint16_t value, const uint16_t* selected,
+                                     uint16_t selected_count, uint16_t bit_count,
+                                     uint16_t min_hamming_distance) {
+  uint16_t mask = bit_count >= 16 ? 0xFFFFu : (uint16_t)((1u << bit_count) - 1u);
+  for (uint16_t index = 0; index < selected_count; index++) {
+    uint16_t previous = selected[index];
+    if (popcount16((uint16_t)((value ^ previous) & mask)) < min_hamming_distance) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline uint16_t calibrationCodeValue(uint16_t node_id, uint16_t first_code,
+                                     uint16_t bit_count = 16,
+                                     uint16_t min_hamming_distance = 1) {
+  if (node_id == 0) return 0;
+  uint16_t safe_bits = bit_count == 0 ? 1 : (bit_count > 16 ? 16 : bit_count);
+  uint16_t safe_distance = min_hamming_distance == 0 ? 1 : min_hamming_distance;
+  uint32_t max_value = safe_bits >= 16 ? 65535u : ((1u << safe_bits) - 1u);
+  uint16_t code = first_code ? first_code : 1;
+  uint16_t selected[256];
+  uint16_t found = 0;
+  while ((uint32_t)code <= max_value) {
+    if (calibrationCodeFarEnough(code, selected, found, safe_bits, safe_distance)) {
+      if (found < 256) selected[found] = code;
+      found++;
+      if (found == node_id) return code;
+      if (found >= 256) return 0;
+    }
+    if (code == 65535u) break;
+    code++;
+  }
+  return 0;
+}
+
+inline bool calibrationBitOn(int64_t synced_us, uint16_t node_id,
+                             uint16_t slot_ms, uint16_t bit_count,
+                             uint16_t first_code,
+                             uint16_t min_hamming_distance = 1) {
+  if (node_id == 0 || bit_count == 0) return false;
+  uint16_t safe_slot_ms = slot_ms ? slot_ms : 1000;
+  uint16_t safe_bits = bit_count > 16 ? 16 : bit_count;
+  int64_t slot_us = (int64_t)safe_slot_ms * 1000;
+  int64_t slot = floorDiv(synced_us, slot_us);
+  uint16_t index = (uint16_t)(slot % safe_bits);
+  uint16_t code = calibrationCodeValue(
+      node_id, first_code ? first_code : 1, safe_bits, min_hamming_distance);
+  if (code == 0) return false;
+  uint16_t shift = (uint16_t)(safe_bits - 1 - index);
+  return ((code >> shift) & 1u) != 0;
+}
+
 }  // namespace pmath

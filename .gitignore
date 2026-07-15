@@ -31,4 +31,8 @@ __pycache__/
 # Secrets / local config
 secrets.h
 *.local
+.env
 .gstack/
+
+# Local / personal (not for the repo)
+receipts/

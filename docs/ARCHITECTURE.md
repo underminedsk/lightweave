@@ -364,6 +364,15 @@ window and rerun the same staged firmware after nodes check back in.
 ## 8. Resilience model
 
 - Missed beacon → free-run on last offset; re-lock on next. **[done]**
+- Late/bogus beacon → **the offset is disciplined, not set.** A beacon whose implied
+  offset jumps more than `SYNC_DEFAULT.gate_us` (100 ms) past the coasting clock is
+  gated out (it's a congestion-delayed or stray packet, not real drift — which is
+  sub-ms between beacons); trusted corrections *slew* at ≤2 ms/beacon so animations
+  never step. A genuine conductor jump (reboot / master change) trips every node's
+  gate together and force-re-locks after `relock_after` (8) rejects, so the field
+  moves to the new timeline in lockstep rather than one node lurching at a time. This
+  is what keeps a single delayed packet from yanking a node off the shared clock.
+  Diagnostics: the performer status line's `rej=` counter. **[done]** (`sync.h`)
 - Cold boot → read role/identity/position from NVS + MAC from efuse, lock within
   ~1–2 s, resume. **[done — role/pos/MAC; table-assigned position is cached to the
   same NVS pos keys, so it survives a reboot without re-hearing the table]**
@@ -399,14 +408,16 @@ The primary calendar-life policy is now conductor-authoritative schedule, not
 photodiode sensing. The conductor persists a `PowerPolicy` and includes it in
 every beacon: light-sleep/radio check interval, deep-sleep check interval,
 LED-on start/end minutes, current minute-of-day, schedule-enabled, and
-force-awake. Performers apply that policy directly. Outside the LED window they
-clear LEDs and deep-sleep for the configured check interval; inside the window
-they render normally. The Operations UI sends the current local minute whenever
-the policy is saved, so the conductor can keep evaluating the wall-clock schedule
-without NTP.
+force-awake/force-sleep overrides. Performers apply that policy directly. Outside
+the LED window, or under forced sleep, they clear LEDs and deep-sleep for the
+configured check interval; inside the window they render normally. The Operations
+UI sends the current local minute whenever the policy is saved, so the conductor
+can keep evaluating the wall-clock schedule without NTP.
 
 The `wake on|off` concept is now the same force-awake bit as the UI override.
 It keeps boards on for debugging/field testing and wins over the schedule. The
+one-click Field power controls preserve the schedule: Sleep field sets the
+force-sleep bit, Wake field sets force-awake, and Follow schedule clears both.
 old photodiode/dusk path remains off by default as a fallback/experiment; it is
 not required for the main installation behavior.
 

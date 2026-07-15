@@ -84,6 +84,11 @@ static constexpr int64_t REGISTER_INTERVAL_US = 10000000;  // 10s
 // radio is provably on, and retried for free by its next REGISTER.
 static constexpr int64_t TABLE_INTERVAL_US = 60000000;  // 60s steady-state backstop
 
+// While the live calibration locator is active, the conductor rebroadcasts the
+// sorted MAC roster frequently so duty-cycled, freshly flashed nodes can learn
+// their dense calibration rank without USB serial provisioning.
+static constexpr int64_t CAL_ROSTER_INTERVAL_US = 1000000;  // 1s
+
 // ---- Performer radio duty-cycle (Milestone 3, Lever 1, Stage A) --------------
 // A performer free-runs f(x,y,t) from the synced clock, so it does not need the
 // radio on continuously — only periodic beacons for drift correction and pattern/

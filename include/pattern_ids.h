@@ -14,8 +14,9 @@ enum PatternId : uint16_t {
   SWEEP = 2,         // brightness wave that travels across the field by position
   SOLID = 3,         // every pixel full RGBW at `brightness` — the worst-case
                      // power draw, for bench-measuring the per-node ceiling
-  GLOW = 4           // steady solid color at a fixed hue (no time term): the
+  GLOW = 4,          // steady solid color at a fixed hue (no time term): the
                      // field holds one calm warm color, flat (non-pulsing) draw
+  CALIBRATION = 5    // identity blink sequence for camera-based positioning
 };
 
 // True when f(x,y,t) has no time term: the rendered color never changes until

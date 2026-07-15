@@ -95,6 +95,30 @@ inline bool otaStatusUpsert(OtaStatusTable& t, const uint8_t mac[6],
   return true;
 }
 
+inline bool otaStatusEntryComplete(const OtaNodeStatusEntry& e,
+                                   uint32_t expected_size,
+                                   uint32_t expected_crc32,
+                                   int64_t now_us,
+                                   int64_t max_age_us) {
+  if (e.phase != OTA_PHASE_COMPLETE || e.error != OTA_ERR_NONE) return false;
+  if (e.offset != expected_size || e.crc32 != expected_crc32) return false;
+  if (max_age_us <= 0) return true;
+  if (e.last_us <= 0 || now_us < e.last_us) return false;
+  return (now_us - e.last_us) <= max_age_us;
+}
+
+inline bool otaStatusCompleteForMac(const OtaStatusTable& t,
+                                    const uint8_t mac[6],
+                                    uint32_t expected_size,
+                                    uint32_t expected_crc32,
+                                    int64_t now_us,
+                                    int64_t max_age_us) {
+  int i = otaStatusFind(t, mac);
+  if (i < 0) return false;
+  return otaStatusEntryComplete(t.entries[i], expected_size, expected_crc32,
+                                now_us, max_age_us);
+}
+
 inline const char* otaPhaseName(uint8_t phase) {
   switch (phase) {
     case OTA_PHASE_BEGIN: return "begin";
