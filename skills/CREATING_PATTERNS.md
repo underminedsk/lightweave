@@ -4,9 +4,9 @@ Use this guide when an agent is asked to author, compare, review, save, or
 broadcast show patterns for Do Baskets Dream.
 
 This is a control-plane workflow for the current compiled pattern vocabulary:
-`Pulse`, `Glow`, `Sweep`, and `Palette Drift`. It does not create arbitrary new
-firmware pattern functions. New C++ pattern functions still belong in
-`include/pattern_math.h` with host tests.
+`Pulse`, `Glow`, `Sweep`, `Palette Drift`, `Firefly`, and `Ocean Wave`. It does
+not create arbitrary new firmware pattern functions. New C++ pattern functions
+still belong in `include/pattern_math.h` with host tests.
 
 ## Preconditions
 
@@ -70,6 +70,46 @@ because it maps to firmware `params[1]`.
 ```
 
 For `Palette Drift`, `spatial` is hue offset in hundredths of a cycle per x unit.
+
+`Firefly`
+
+```json
+{"pattern":"Firefly","brightness":56,"params":{"p0":7000,"p1":58,"p2":100,"p3":85}}
+```
+
+`Firefly` ("hotaru") uses **positional** params — each node swells up, shimmers,
+and fades on its own cycle, staggered across the field by position so the
+lanterns twinkle. Its four knobs would collide on the shared `hue`/`period`
+aliases, so send them as `p0..p3`:
+
+- `p0` = full cycle period in ms (flash + dark gap), default 7000.
+- `p1` = hue in degrees (0-359), default 58 (warm gold-green, like a real firefly).
+- `p2` = scatter, 20-100: how spread out the per-node flash timing is. High =
+  scattered twinkle (Heike-like); low = the field flashes closer to unison
+  (Genji-like). Default 100.
+- `p3` = saturation percent (1-100), default 85.
+
+Preview/review also accept the friendly names (`period`, `hue`, `scatter`,
+`saturation`) as a convenience, but a **live broadcast must send `p0..p3`** so the
+firmware places them in the right slots.
+
+`Ocean Wave`
+
+```json
+{"pattern":"Ocean Wave","brightness":64,"params":{"p0":9000,"p1":100,"p2":45,"p3":205}}
+```
+
+`Ocean Wave` is a soft 2-D swell of light rolling across the field — a sum of
+three traveling sine wavefronts (dispersion-detuned so it never quite repeats),
+deep blue in the troughs with foam-capped cyan-white crests. Also **positional**:
+
+- `p0` = primary swell period in ms (a crest crosses the field), default 9000.
+- `p1` = wavelength ×100 (coord units); ~100 (=1.0) keeps 1-2 crests on the field
+  for a calm swell. Shorter = more, tighter waves. Default 100.
+- `p2` = travel direction in degrees. A diagonal (≈45) avoids row-by-row
+  "chase"; straight axis angles read mechanical. Default 45.
+- `p3` = base (mid-water) hue in degrees; the ramp runs indigo→azure→cyan around
+  it. Default 205 (ocean blue). ~180-220 reads as water.
 
 ## Draft Review Loop
 

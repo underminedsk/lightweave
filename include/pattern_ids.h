@@ -16,7 +16,11 @@ enum PatternId : uint16_t {
                      // power draw, for bench-measuring the per-node ceiling
   GLOW = 4,          // steady solid color at a fixed hue (no time term): the
                      // field holds one calm warm color, flat (non-pulsing) draw
-  CALIBRATION = 5    // identity blink sequence for camera-based positioning
+  CALIBRATION = 5,   // identity blink sequence for camera-based positioning
+  FIREFLY = 6,       // "hotaru": each node swells up, shimmers, and fades on its
+                     // own position-staggered cycle, like fireflies in a meadow
+  OCEAN_WAVE = 7     // soft 2-D ocean swell: summed sine wavefronts travel across
+                     // the field, deep blue in the troughs with foam-capped crests
 };
 
 // True when f(x,y,t) has no time term: the rendered color never changes until

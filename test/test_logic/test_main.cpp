@@ -338,6 +338,145 @@ void test_drift_hue_unison_by_default_but_travels_with_spatial() {
   TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.25f, at1 - at0);
 }
 
+// ---- Firefly ("hotaru") flash --------------------------------------------
+
+void test_firefly_intensity_stays_in_gamut() {
+  // Sweep time and a spread of positions; intensity must never leave [0,1].
+  for (int64_t us = 0; us < 14'000'000; us += 37'000) {
+    for (float x = 0.0f; x <= 1.0f; x += 0.13f) {
+      for (float y = 0.0f; y <= 1.0f; y += 0.17f) {
+        float v = pmath::fireflyIntensity(us, x, y, 7.0f, 1.0f);
+        TEST_ASSERT_TRUE(v >= 0.0f && v <= 1.0f);
+      }
+    }
+  }
+}
+
+void test_firefly_dark_for_most_of_cycle() {
+  // With a 7 s period and a 0.45 flash fraction, a node is dark (exactly 0) for
+  // more than half of every cycle — the long gap between flashes.
+  const float period = 7.0f;
+  int dark = 0, total = 0;
+  for (int64_t us = 0; us < (int64_t)(period * 1e6); us += 20'000) {
+    total++;
+    if (pmath::fireflyIntensity(us, 0.0f, 0.0f, period, 0.0f) == 0.0f) dark++;
+  }
+  TEST_ASSERT_TRUE(dark > total / 2);
+}
+
+void test_firefly_flash_has_a_single_peak_that_reaches_full() {
+  // Across one flash the envelope should climb to ~1.0 (the shimmer only dips
+  // slightly below full at the very peak) and return to dark.
+  float peak = 0.0f;
+  for (int64_t us = 0; us < 7'000'000; us += 5'000) {
+    peak = fmaxf(peak, pmath::fireflyIntensity(us, 0.0f, 0.0f, 7.0f, 0.0f));
+  }
+  TEST_ASSERT_TRUE(peak > 0.85f);
+}
+
+void test_firefly_attack_is_faster_than_decay() {
+  // The flash peaks at u=0.28 of the lit window (node 0, scatter 0). Sample two
+  // points the same u-distance from that peak — one on the rise, one on the
+  // fade. Because the fade is slower (it spans the wider 72% of the window), the
+  // point just after the peak stays brighter than the mirror point just before.
+  const float period = 7.0f;
+  const float flash_us = 0.45f * period * 1e6f;  // lit window length
+  const float peak_u = 0.28f, d = 0.10f;
+  float before = pmath::fireflyIntensity((int64_t)((peak_u - d) * flash_us), 0.0f, 0.0f, period, 0.0f);
+  float after = pmath::fireflyIntensity((int64_t)((peak_u + d) * flash_us), 0.0f, 0.0f, period, 0.0f);
+  TEST_ASSERT_TRUE(before > 0.0f && after > 0.0f);
+  TEST_ASSERT_TRUE(after > before);
+}
+
+void test_firefly_scatter_staggers_nodes_but_unison_locks_them() {
+  // scatter=0: every node flashes together, so position is irrelevant.
+  int64_t t = 1'000'000;
+  float a = pmath::fireflyIntensity(t, 0.0f, 0.0f, 7.0f, 0.0f);
+  float b = pmath::fireflyIntensity(t, 0.6f, 0.4f, 7.0f, 0.0f);
+  TEST_ASSERT_FLOAT_WITHIN(1e-5, a, b);
+  // scatter=1: distinct positions get distinct phase offsets, so at least one
+  // pair of nodes differs at some sampled instant (the field twinkles).
+  bool any_differ = false;
+  for (int64_t us = 0; us < 7'000'000 && !any_differ; us += 100'000) {
+    float p0 = pmath::fireflyIntensity(us, 0.10f, 0.20f, 7.0f, 1.0f);
+    float p1 = pmath::fireflyIntensity(us, 0.80f, 0.70f, 7.0f, 1.0f);
+    if (fabsf(p0 - p1) > 0.05f) any_differ = true;
+  }
+  TEST_ASSERT_TRUE(any_differ);
+}
+
+void test_firefly_stagger_in_unit_range() {
+  for (float x = -2.0f; x <= 2.0f; x += 0.31f) {
+    for (float y = -2.0f; y <= 2.0f; y += 0.29f) {
+      float s = pmath::fireflyStagger(x, y, 1.0f);
+      TEST_ASSERT_TRUE(s >= 0.0f && s < 1.0f);
+    }
+  }
+}
+
+// ---- Ocean wave -----------------------------------------------------------
+
+void test_ocean_component_bounds() {
+  for (int64_t us = 0; us < 20'000'000; us += 61'000)
+    for (float x = 0.0f; x <= 1.0f; x += 0.19f) {
+      float v = pmath::oceanComponent(us, x, 0.3f, 0.8f, 0.6f, 9.0f, 1.0f);
+      TEST_ASSERT_TRUE(v >= -1.0001f && v <= 1.0001f);
+    }
+}
+
+void test_ocean_component_travels_along_direction() {
+  // A wavefront traveling in +x reaches a downstream node delayed by exactly
+  // period * dx / wavelength — the same waveform, time-shifted.
+  const float P = 9.0f, L = 1.0f, dx = 0.3f;
+  int64_t delay_us = (int64_t)((double)P * dx / L * 1e6);
+  for (int64_t t = 0; t < 9'000'000; t += 250'000) {
+    float a = pmath::oceanComponent(t, 0.0f, 0.0f, 1.0f, 0.0f, P, L);
+    float b = pmath::oceanComponent(t + delay_us, dx, 0.0f, 1.0f, 0.0f, P, L);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, a, b);
+  }
+}
+
+void test_ocean_intensity_in_unit_range() {
+  for (int64_t us = 0; us < 20'000'000; us += 53'000)
+    for (float x = 0.0f; x <= 1.0f; x += 0.17f)
+      for (float y = 0.0f; y <= 1.0f; y += 0.23f) {
+        float n = pmath::oceanIntensity(us, x, y, 9.0f, 1.0f, 0.7f);
+        TEST_ASSERT_TRUE(n >= 0.0f && n <= 1.0f);
+      }
+}
+
+void test_ocean_intensity_swells_over_time() {
+  // A fixed node should rise and fall as the swell passes — real motion.
+  float lo = 2.0f, hi = -1.0f;
+  for (int64_t us = 0; us < 12'000'000; us += 40'000) {
+    float n = pmath::oceanIntensity(us, 0.4f, 0.6f, 9.0f, 1.0f, 0.7f);
+    lo = fminf(lo, n);
+    hi = fmaxf(hi, n);
+  }
+  TEST_ASSERT_TRUE(hi - lo > 0.3f);
+}
+
+void test_ocean_intensity_varies_across_field() {
+  // One instant, different positions differ: a wave, not a uniform wash.
+  int64_t t = 2'000'000;
+  float lo = 2.0f, hi = -1.0f;
+  for (float x = 0.0f; x <= 1.0f; x += 0.1f)
+    for (float y = 0.0f; y <= 1.0f; y += 0.1f) {
+      float n = pmath::oceanIntensity(t, x, y, 9.0f, 0.6f, 0.7f);
+      lo = fminf(lo, n);
+      hi = fmaxf(hi, n);
+    }
+  TEST_ASSERT_TRUE(hi - lo > 0.2f);
+}
+
+void test_ocean_angle_changes_propagation() {
+  // An off-axis node sees a different phase when the travel direction changes.
+  int64_t t = 1'500'000;
+  float a = pmath::oceanIntensity(t, 0.2f, 0.8f, 9.0f, 1.0f, 0.0f);
+  float b = pmath::oceanIntensity(t, 0.2f, 0.8f, 9.0f, 1.0f, pmath::kPi / 2.0f);
+  TEST_ASSERT_TRUE(fabsf(a - b) > 0.02f);
+}
+
 // ---- Roster: conductor's MAC-keyed node list --------------------------------
 
 // Distinct MAC per index, so tests can fabricate nodes cheaply.
@@ -1717,6 +1856,18 @@ int main(int, char**) {
   RUN_TEST(test_hsv_wraps_and_stays_in_gamut);
   RUN_TEST(test_drift_hue_cycles_in_range);
   RUN_TEST(test_drift_hue_unison_by_default_but_travels_with_spatial);
+  RUN_TEST(test_firefly_intensity_stays_in_gamut);
+  RUN_TEST(test_firefly_dark_for_most_of_cycle);
+  RUN_TEST(test_firefly_flash_has_a_single_peak_that_reaches_full);
+  RUN_TEST(test_firefly_attack_is_faster_than_decay);
+  RUN_TEST(test_firefly_scatter_staggers_nodes_but_unison_locks_them);
+  RUN_TEST(test_firefly_stagger_in_unit_range);
+  RUN_TEST(test_ocean_component_bounds);
+  RUN_TEST(test_ocean_component_travels_along_direction);
+  RUN_TEST(test_ocean_intensity_in_unit_range);
+  RUN_TEST(test_ocean_intensity_swells_over_time);
+  RUN_TEST(test_ocean_intensity_varies_across_field);
+  RUN_TEST(test_ocean_angle_changes_propagation);
   RUN_TEST(test_roster_starts_empty);
   RUN_TEST(test_roster_appends_distinct_macs);
   RUN_TEST(test_roster_dedup_updates_in_place);

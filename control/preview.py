@@ -189,9 +189,9 @@ def review_preview(
         issues.append(_issue("error", "no_lit_lanterns", "No positioned lantern is lit in the sampled window."))
     if metrics["avg_luma_mean"] < 2 and brightness > 0:
         issues.append(_issue("warn", "mostly_dark", "Average luma is near black across the sampled window."))
-    if normalized in {"sweep", "palette_drift", "pulse"} and metrics["temporal_luma_range"] < 1:
+    if normalized in {"sweep", "palette_drift", "pulse", "firefly", "ocean_wave"} and metrics["temporal_luma_range"] < 1:
         issues.append(_issue("warn", "no_temporal_change", "The sampled window has almost no visible temporal change."))
-    if normalized in {"sweep", "palette_drift"} and metrics["max_contrast"] < 0.02:
+    if normalized in {"sweep", "palette_drift", "ocean_wave"} and metrics["max_contrast"] < 0.02:
         issues.append(_issue("warn", "low_spatial_contrast", "The field has little spatial variation at the sampled times."))
     if normalized == "solid":
         issues.append(_issue("warn", "bench_pattern", "SOLID is a bench power pattern, not a show pattern."))
@@ -230,6 +230,10 @@ def _normalize_pattern(pattern: str) -> str:
         "sweep": "sweep",
         "solid": "solid",
         "glow": "glow",
+        "firefly": "firefly",
+        "hotaru": "firefly",
+        "ocean wave": "ocean_wave",
+        "ocean": "ocean_wave",
     }
     try:
         return aliases[key]
@@ -260,6 +264,34 @@ def _pattern_color(pattern: str, brightness: int, params: dict[str, Any], synced
         hue = _number(params, "hue", "p0", default=40) % 360
         saturation = _saturation(params)
         return _hsv_color(brightness, 1.0, hue, saturation)
+    if pattern == "firefly":
+        # Firefly params are positional on the wire (p0..p3) to avoid the
+        # hue/period collision on params[0]; accept the friendly names too.
+        period_s = _number(params, "p0", "period", default=7000) / 1000.0
+        hue = _number(params, "p1", "hue", default=58) % 360
+        scatter = _number(params, "p2", "scatter", default=100)
+        scatter = (100 if scatter <= 0 else min(scatter, 100)) / 100.0
+        saturation = _number(params, "p3", "saturation", default=85)
+        saturation = (85 if saturation <= 0 else min(saturation, 100)) / 100.0
+        intensity = _firefly_intensity(synced_us, x, y, period_s, scatter)
+        r, g, b = _hsv_to_rgb(hue / 360.0, saturation, intensity)
+        return Rgbw(round(r * brightness), round(g * brightness), round(b * brightness), 0)
+    if pattern == "ocean_wave":
+        # Positional params (p0..p3); accept the friendly names too.
+        period_s = _number(params, "p0", "period", default=9000) / 1000.0
+        wavelength = _number(params, "p1", "wavelength", default=100) / 100.0
+        angle_rad = math.radians(_number(params, "p2", "angle", default=45) % 360)
+        hue_base = _number(params, "p3", "hue", default=205)
+        hue_base = 205 if hue_base == 0 else hue_base % 360
+        n = _ocean_intensity(synced_us, x, y, period_s, wavelength, angle_rad)
+        foam = max(0.0, min(1.0, (n - 0.72) / 0.28))
+        foam *= foam
+        value = 0.14 + 0.86 * (n ** 1.3)
+        hue = (hue_base + 10.0 - 27.0 * n - 8.0 * foam) / 360.0
+        saturation = max(0.06, min(1.0, (0.98 - 0.15 * n) - 0.70 * foam))
+        r, g, b = _hsv_to_rgb(hue, saturation, value)
+        w = round(foam * value * 0.55 * brightness)
+        return Rgbw(round(r * brightness), round(g * brightness), round(b * brightness), w)
     raise ValueError(f"unknown pattern: {pattern}")
 
 
@@ -321,6 +353,8 @@ def _recommendations(normalized: str, issues: list[dict[str, str]], metrics: dic
         recommendations.append("Increase spatial spread if the field should show a color gradient.")
     if "low_spatial_contrast" in codes and normalized == "sweep":
         recommendations.append("Reduce wavelength if the field should show a visible moving wave.")
+    if "low_spatial_contrast" in codes and normalized == "ocean_wave":
+        recommendations.append("Shorten the wavelength or change the angle so the swell reads across the field.")
     if metrics["avg_luma_mean"] > 90:
         recommendations.append("Average luma is high; check battery and glare before running this for long periods.")
     if not recommendations:
@@ -362,6 +396,60 @@ def _sweep_intensity(synced_us: int, x: float, period_s: float, wavelength: floa
     ph = synced_us / 1_000_000.0 / period_s - x / wavelength
     p = ph - math.floor(ph)
     return 0.5 * (1.0 - math.cos(2.0 * math.pi * p))
+
+
+def _smoothstep01(x: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _firefly_stagger(x: float, y: float, scatter: float) -> float:
+    h = x * 0.7548 + y * 0.5698 + x * y * 0.3821
+    return (h - math.floor(h)) * scatter
+
+
+def _firefly_intensity(synced_us: int, x: float, y: float, period_s: float, scatter: float) -> float:
+    if period_s <= 0:
+        raise ValueError("period must be positive")
+    p = _phase(synced_us, period_s) + _firefly_stagger(x, y, scatter)
+    p -= math.floor(p)
+    flash_frac = 0.45
+    if p >= flash_frac:
+        return 0.0
+    u = p / flash_frac
+    attack = 0.28
+    if u < attack:
+        env = _smoothstep01(u / attack)
+    else:
+        env = 1.0 - _smoothstep01((u - attack) / (1.0 - attack))
+    shimmer = 1.0 - 0.12 * (0.5 - 0.5 * math.cos(2.0 * math.pi * 6.0 * u))
+    return max(0.0, min(1.0, env * shimmer))
+
+
+def _ocean_component(synced_us: int, x: float, y: float, cx: float, cy: float, period_s: float, wavelength: float) -> float:
+    if period_s <= 0 or wavelength <= 0:
+        raise ValueError("period and wavelength must be positive")
+    secs = synced_us / 1_000_000.0
+    proj = x * cx + y * cy
+    ph = secs / period_s - proj / wavelength
+    return math.sin(2.0 * math.pi * ph)
+
+
+def _ocean_intensity(synced_us: int, x: float, y: float, period_s: float, wavelength: float, angle_rad: float) -> float:
+    c1, s1 = math.cos(angle_rad), math.sin(angle_rad)
+    c2, s2 = math.cos(angle_rad + 0.40), math.sin(angle_rad + 0.40)
+    c3, s3 = math.cos(angle_rad - 0.30), math.sin(angle_rad - 0.30)
+    w1, w2, w3 = 0.60, 0.22, 0.34
+    h = (
+        w1 * _ocean_component(synced_us, x, y, c1, s1, period_s, wavelength)
+        + w2 * _ocean_component(synced_us, x, y, c2, s2, period_s * 0.74, wavelength * 0.55)
+        + w3 * _ocean_component(synced_us, x, y, c3, s3, period_s * 1.38, wavelength * 1.90)
+    )
+    n = 0.5 * (h / (w1 + w2 + w3)) + 0.5
+    return max(0.0, min(1.0, n))
 
 
 def _drift_hue(synced_us: int, x: float, period_s: float, spatial: float) -> float:

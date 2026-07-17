@@ -1091,6 +1091,8 @@ static const char* patternName(uint16_t id) {
     case patterns::SWEEP: return "Sweep";
     case patterns::SOLID: return "Solid";
     case patterns::GLOW: return "Glow";
+    case patterns::FIREFLY: return "Firefly";
+    case patterns::OCEAN_WAVE: return "Ocean Wave";
     case patterns::CALIBRATION: return "Calibration";
     default: return "Unknown";
   }
