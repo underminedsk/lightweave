@@ -137,6 +137,8 @@ inline float oceanComponent(int64_t synced_us, float x, float y, float cx,
   double secs = (double)synced_us / 1e6;
   double proj = (double)x * cx + (double)y * cy;
   double ph = secs / (double)period_s - proj / (double)wavelength;
+  ph -= floor(ph);  // reduce to [0,1) in double so the float cast keeps full
+                    // phase precision even when ph grows large on long runs
   return sinf(2.0f * kPi * (float)ph);
 }
 

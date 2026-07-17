@@ -446,6 +446,7 @@ def _ocean_component(synced_us: int, x: float, y: float, cx: float, cy: float, p
     secs = synced_us / 1_000_000.0
     proj = x * cx + y * cy
     ph = secs / period_s - proj / wavelength
+    ph -= math.floor(ph)  # reduce to [0,1); mirrors the firmware precision guard
     return math.sin(2.0 * math.pi * ph)
 
 
