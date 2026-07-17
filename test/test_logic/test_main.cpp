@@ -352,16 +352,25 @@ void test_firefly_intensity_stays_in_gamut() {
   }
 }
 
-void test_firefly_dark_for_most_of_cycle() {
-  // With a 7 s period and a 0.45 flash fraction, a node is dark (exactly 0) for
-  // more than half of every cycle — the long gap between flashes.
+void test_firefly_lit_most_of_cycle() {
+  // The lantern is lit for most of each cycle now, dark only briefly.
   const float period = 7.0f;
-  int dark = 0, total = 0;
+  int lit = 0, total = 0;
   for (int64_t us = 0; us < (int64_t)(period * 1e6); us += 20'000) {
     total++;
-    if (pmath::fireflyIntensity(us, 0.0f, 0.0f, period, 0.0f) == 0.0f) dark++;
+    if (pmath::fireflyIntensity(us, 0.0f, 0.0f, period, 0.0f) > 0.0f) lit++;
   }
-  TEST_ASSERT_TRUE(dark > total / 2);
+  TEST_ASSERT_TRUE(lit > total * 3 / 5);  // lit more than 60% of the cycle
+  TEST_ASSERT_TRUE(lit < total);          // but there is still a dark gap
+}
+
+void test_firefly_dark_gap_shrinks_for_longer_periods() {
+  // Longer periods spend a *smaller* fraction of the cycle dark (the extra
+  // seconds become glow), and even the default 7 s stays lit past half.
+  TEST_ASSERT_TRUE(pmath::fireflyFlashFrac(10.0f) > pmath::fireflyFlashFrac(6.0f));
+  TEST_ASSERT_TRUE(pmath::fireflyFlashFrac(7.0f) > 0.5f);
+  // At the 5 s baseline the dark gap is ~25% shorter than the old flat 55% off.
+  TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.59f, pmath::fireflyFlashFrac(5.0f));
 }
 
 void test_firefly_flash_has_a_single_peak_that_reaches_full() {
@@ -1857,7 +1866,8 @@ int main(int, char**) {
   RUN_TEST(test_drift_hue_cycles_in_range);
   RUN_TEST(test_drift_hue_unison_by_default_but_travels_with_spatial);
   RUN_TEST(test_firefly_intensity_stays_in_gamut);
-  RUN_TEST(test_firefly_dark_for_most_of_cycle);
+  RUN_TEST(test_firefly_lit_most_of_cycle);
+  RUN_TEST(test_firefly_dark_gap_shrinks_for_longer_periods);
   RUN_TEST(test_firefly_flash_has_a_single_peak_that_reaches_full);
   RUN_TEST(test_firefly_attack_is_faster_than_decay);
   RUN_TEST(test_firefly_scatter_staggers_nodes_but_unison_locks_them);

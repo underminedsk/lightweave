@@ -82,8 +82,25 @@ inline float fireflyStagger(float x, float y, float scatter) {
   return h * scatter;
 }
 
-// Firefly ("hotaru") flash intensity in [0,1]. Each node is dark for most of the
-// cycle, then emits a single soft flash: a fast-ish swell up to a peak that
+// Fraction of each firefly cycle the lantern is lit (the rest is the dark gap
+// between flashes). The lantern stays lit for most of the cycle and dark only
+// briefly: the dark gap is ~25% shorter than a flat 55% off at the 5 s baseline,
+// and for longer periods it grows only slowly (~0.21 s per extra second past
+// 5 s) so the added seconds become glow, not darkness — a 7-10 s firefly is on
+// most of the time, off sparingly.
+inline float fireflyFlashFrac(float period_s) {
+  if (period_s <= 0.0f) return 0.45f;
+  float dark_gap_s = 0.41f * period_s;
+  if (period_s > 5.0f) dark_gap_s = 0.41f * 5.0f + 0.21f * (period_s - 5.0f);
+  if (dark_gap_s < 0.6f) dark_gap_s = 0.6f;  // always keep a brief blink-off
+  float frac = 1.0f - dark_gap_s / period_s;
+  if (frac < 0.05f) frac = 0.05f;
+  if (frac > 0.95f) frac = 0.95f;
+  return frac;
+}
+
+// Firefly ("hotaru") flash intensity in [0,1]. Each node is lit for most of the
+// cycle, then settles into a brief dark gap: a fast-ish swell up to a peak that
 // gently shimmers, followed by a slower fade back to dark — the asymmetric
 // attack/decay envelope real fireflies show. Nodes are staggered by position
 // (see fireflyStagger) so the field flickers like a meadow of fireflies.
@@ -92,8 +109,8 @@ inline float fireflyStagger(float x, float y, float scatter) {
 inline float fireflyIntensity(int64_t synced_us, float x, float y,
                               float period_s, float scatter) {
   float p = phase(synced_us, period_s) + fireflyStagger(x, y, scatter);
-  p -= floorf(p);                  // wrap to [0,1)
-  const float flash_frac = 0.45f;  // fraction of the cycle that is lit
+  p -= floorf(p);                             // wrap to [0,1)
+  float flash_frac = fireflyFlashFrac(period_s);  // most of the cycle is lit
   if (p >= flash_frac) return 0.0f;
   float u = p / flash_frac;        // 0..1 across the flash
   const float attack = 0.28f;      // quick swell, then a slower fade

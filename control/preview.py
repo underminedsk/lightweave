@@ -411,12 +411,23 @@ def _firefly_stagger(x: float, y: float, scatter: float) -> float:
     return (h - math.floor(h)) * scatter
 
 
+def _firefly_flash_frac(period_s: float) -> float:
+    if period_s <= 0:
+        return 0.45
+    dark_gap_s = 0.41 * period_s
+    if period_s > 5.0:
+        dark_gap_s = 0.41 * 5.0 + 0.21 * (period_s - 5.0)
+    if dark_gap_s < 0.6:
+        dark_gap_s = 0.6
+    return max(0.05, min(0.95, 1.0 - dark_gap_s / period_s))
+
+
 def _firefly_intensity(synced_us: int, x: float, y: float, period_s: float, scatter: float) -> float:
     if period_s <= 0:
         raise ValueError("period must be positive")
     p = _phase(synced_us, period_s) + _firefly_stagger(x, y, scatter)
     p -= math.floor(p)
-    flash_frac = 0.45
+    flash_frac = _firefly_flash_frac(period_s)
     if p >= flash_frac:
         return 0.0
     u = p / flash_frac
