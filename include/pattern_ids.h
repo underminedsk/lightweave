@@ -16,7 +16,8 @@ enum PatternId : uint16_t {
                      // power draw, for bench-measuring the per-node ceiling
   GLOW = 4,          // steady solid color at a fixed hue (no time term): the
                      // field holds one calm warm color, flat (non-pulsing) draw
-  CALIBRATION = 5    // identity blink sequence for camera-based positioning
+  CALIBRATION = 5,   // identity blink sequence for camera-based positioning
+  WHITE = 6          // steady neutral white using only the SK6812 white channel
 };
 
 // True when f(x,y,t) has no time term: the rendered color never changes until
@@ -26,7 +27,7 @@ enum PatternId : uint16_t {
 // same pixels. An unknown/future pattern id must return false (assume animated —
 // the safe direction: it only costs power, never a frozen show).
 inline bool patternIsStatic(uint16_t pattern_id) {
-  return pattern_id == SOLID || pattern_id == GLOW;
+  return pattern_id == SOLID || pattern_id == GLOW || pattern_id == WHITE;
 }
 
 // Boot guard: SOLID (full-white worst case) is a live-only bench pattern,

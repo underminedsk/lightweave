@@ -71,14 +71,26 @@
             <button data-pattern="Palette Drift">Drift</button>
             <button data-pattern="Sweep">Sweep</button>
             <button data-pattern="Glow">Glow</button>
+            <button data-pattern="White">White</button>
+            <button data-pattern="Solid">Solid</button>
           </div>
           <label class="control-label" for="brightness">Brightness <span id="brightness-value">48</span> / 192</label>
           <input id="brightness" type="range" min="0" max="192" value="48">
-          <div class="segmented" id="hue-picker">
-            <button data-hue="30">Orange</button>
-            <button data-hue="40">Amber</button>
-            <button data-hue="50">Yellow</button>
-            <button data-hue="180">Cyan</button>
+          <div class="color-controls" id="color-controls">
+            <div class="color-param">
+              <label class="control-label" for="pattern-hue">Hue <span id="hue-value">40</span>°</label>
+              <div class="range-with-number">
+                <input id="pattern-hue" type="range" min="0" max="359" step="1" value="40">
+                <input id="pattern-hue-number" type="number" min="0" max="359" step="1" value="40" aria-label="Hue degrees">
+              </div>
+            </div>
+            <div class="color-param">
+              <label class="control-label" for="pattern-saturation">Saturation <span id="saturation-value">100</span>%</label>
+              <div class="range-with-number">
+                <input id="pattern-saturation" type="range" min="1" max="100" step="1" value="100">
+                <input id="pattern-saturation-number" type="number" min="1" max="100" step="1" value="100" aria-label="Saturation percent">
+              </div>
+            </div>
           </div>
           <div class="pattern-param" data-param-group="period">
             <label class="control-label" for="pattern-period">Period <span id="period-value">4.0</span>s</label>

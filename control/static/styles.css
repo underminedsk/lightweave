@@ -276,7 +276,30 @@ tr.selected { background: rgba(240, 179, 90, .08); }
 .muted-inline { color: var(--muted); font-size: .82em; font-weight: 500; }
 .segmented { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
 .pattern-param { margin-top: 12px; }
-.pattern-param[hidden], .segmented[hidden] { display: none; }
+.pattern-param[hidden], .segmented[hidden], .color-controls[hidden] { display: none; }
+.color-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.range-with-number {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+}
+.range-with-number input[type="number"] {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0b0f0c;
+  color: var(--text);
+  padding: 0 8px;
+  font-variant-numeric: tabular-nums;
+}
 .saved-patterns { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(38, 48, 42, .72); }
 .saved-pattern-list { border: 1px solid rgba(38, 48, 42, .72); border-radius: 8px; overflow: hidden; background: #0b0f0c; }
 .saved-pattern-row { display: grid; grid-template-columns: minmax(0, 1fr) 86px 78px 78px 106px 82px; gap: 8px; align-items: center; min-height: 58px; padding: 9px 10px; border-bottom: 1px solid rgba(38, 48, 42, .72); }
@@ -573,6 +596,7 @@ input[type="number"], input[type="time"], input[type="text"], input[type="passwo
   .summary .tile:last-child { grid-column: 1 / -1; }
   .toolbar { align-items: stretch; flex-direction: column; }
   .actions, .segmented { grid-template-columns: 1fr 1fr; }
+  .color-controls { grid-template-columns: 1fr; }
   .saved-pattern-row {
     grid-template-columns: 1fr 1fr;
   }

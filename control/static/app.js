@@ -29,14 +29,22 @@ const MAX_ZOOM = 3;
 const DEFAULT_TIMEZONE = "America/Los_Angeles";
 const TIMEZONE_STORAGE_KEY = "baskets.sleepTimezone";
 const PATTERN_DEFAULTS = {
-  Pulse: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  Glow: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  Sweep: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  "Palette Drift": { hue: 40, period: 8000, wavelength: 300, spatial: 0 },
+  Pulse: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0 },
+  Glow: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0 },
+  White: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0 },
+  Solid: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0 },
+  Sweep: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0 },
+  "Palette Drift": { hue: 40, saturation: 100, period: 8000, wavelength: 300, spatial: 0 },
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -190,6 +198,15 @@ function patternHueFromState() {
   return 40;
 }
 
+function patternSaturationFromState() {
+  const params = state.pattern.params || {};
+  if (params.saturation !== undefined) return Number(params.saturation);
+  if ((state.pattern.pattern === "Glow" || state.pattern.pattern === "Pulse") && params.p1 !== undefined) {
+    return Number(params.p1 || 100);
+  }
+  return 100;
+}
+
 function patternPeriodFromState() {
   const params = state.pattern.params || {};
   if (params.period !== undefined) return Number(params.period);
@@ -219,6 +236,7 @@ function patternDraftFromState() {
     pattern: state.pattern.pattern,
     brightness: Number(state.pattern.brightness),
     hue: patternHueFromState(),
+    saturation: patternSaturationFromState(),
     period: patternPeriodFromState() || defaults.period,
     wavelength: patternWavelengthFromState() || defaults.wavelength,
     spatial: patternSpatialFromState(),
@@ -231,6 +249,7 @@ function patternDraftForSelection(pattern) {
     pattern,
     brightness: Number(patternDraft?.brightness ?? state?.pattern?.brightness ?? 48),
     hue: Number(defaults.hue),
+    saturation: Number(defaults.saturation),
     period: Number(defaults.period),
     wavelength: Number(defaults.wavelength),
     spatial: Number(defaults.spatial),
@@ -239,7 +258,7 @@ function patternDraftForSelection(pattern) {
 
 function patternParams(draft) {
   if (draft.pattern === "Pulse" || draft.pattern === "Glow") {
-    return { hue: Number(draft.hue), saturation: 100 };
+    return { hue: Number(draft.hue), saturation: Number(draft.saturation) };
   }
   if (draft.pattern === "Sweep") {
     return { period: Number(draft.period), spatial: Number(draft.wavelength) };
@@ -262,7 +281,7 @@ function patternStateParams(draft) {
 }
 
 function relevantPatternFields(pattern) {
-  if (pattern === "Pulse" || pattern === "Glow") return ["pattern", "brightness", "hue"];
+  if (pattern === "Pulse" || pattern === "Glow") return ["pattern", "brightness", "hue", "saturation"];
   if (pattern === "Sweep") return ["pattern", "brightness", "period", "wavelength"];
   if (pattern === "Palette Drift") return ["pattern", "brightness", "period", "spatial"];
   return ["pattern", "brightness"];
@@ -287,11 +306,17 @@ function renderPatternControls() {
   $("#wavelength-value").textContent = (Number(patternDraft.wavelength) / 100).toFixed(1);
   $("#pattern-spatial").value = patternDraft.spatial;
   $("#spatial-value").textContent = (Number(patternDraft.spatial) / 100).toFixed(2);
-  const hue = String(patternDraft.hue);
-  $$("#hue-picker button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.hue === hue);
-  });
-  $("#hue-picker").hidden = !(patternDraft.pattern === "Pulse" || patternDraft.pattern === "Glow");
+  const hue = clampNumber(patternDraft.hue, 0, 359);
+  const saturation = clampNumber(patternDraft.saturation, 1, 100);
+  patternDraft.hue = hue;
+  patternDraft.saturation = saturation;
+  $("#pattern-hue").value = hue;
+  $("#pattern-hue-number").value = hue;
+  $("#hue-value").textContent = hue;
+  $("#pattern-saturation").value = saturation;
+  $("#pattern-saturation-number").value = saturation;
+  $("#saturation-value").textContent = saturation;
+  $("#color-controls").hidden = !(patternDraft.pattern === "Pulse" || patternDraft.pattern === "Glow");
   $('[data-param-group="period"]').hidden = !(patternDraft.pattern === "Sweep" || patternDraft.pattern === "Palette Drift");
   $('[data-param-group="wavelength"]').hidden = patternDraft.pattern !== "Sweep";
   $('[data-param-group="spatial"]').hidden = patternDraft.pattern !== "Palette Drift";
@@ -1998,14 +2023,20 @@ $("#pattern-picker").addEventListener("click", (event) => {
   }
 });
 
-$("#hue-picker").addEventListener("click", (event) => {
-  if (event.target.dataset.hue) {
-    if (!patternDraft && state) patternDraft = patternDraftFromState();
-    if (patternDraft) {
-      patternDraft.hue = Number(event.target.dataset.hue);
-      renderPatternControls();
-    }
-  }
+function updateColorDraft(field, value) {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (!patternDraft) return;
+  const limits = field === "hue" ? [0, 359] : [1, 100];
+  patternDraft[field] = clampNumber(value, limits[0], limits[1]);
+  renderPatternControls();
+}
+
+["#pattern-hue", "#pattern-hue-number"].forEach((selector) => {
+  $(selector).addEventListener("input", (event) => updateColorDraft("hue", event.target.value));
+});
+
+["#pattern-saturation", "#pattern-saturation-number"].forEach((selector) => {
+  $(selector).addEventListener("input", (event) => updateColorDraft("saturation", event.target.value));
 });
 
 $("#pattern-period").addEventListener("input", (event) => {

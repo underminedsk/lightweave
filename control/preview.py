@@ -230,6 +230,7 @@ def _normalize_pattern(pattern: str) -> str:
         "sweep": "sweep",
         "solid": "solid",
         "glow": "glow",
+        "white": "white",
     }
     try:
         return aliases[key]
@@ -256,6 +257,8 @@ def _pattern_color(pattern: str, brightness: int, params: dict[str, Any], synced
         return Rgbw(0, 0, 0, round(intensity * brightness))
     if pattern == "solid":
         return Rgbw(brightness, brightness, brightness, brightness)
+    if pattern == "white":
+        return Rgbw(0, 0, 0, brightness)
     if pattern == "glow":
         hue = _number(params, "hue", "p0", default=40) % 360
         saturation = _saturation(params)
