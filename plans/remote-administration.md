@@ -418,13 +418,13 @@ systemd runtime.
 
 | Lane | Dispatch issue | Phases | One-line scope | Marker mode | Status |
 |---|---|---|---|---|---|
-| Implementation lane | Pending split | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | approved |
+| Implementation lane | #6 | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | ready |
 
-**Lanes:** Split runs only after plan approval. The expected shape is one lane:
-the OTA API/UI contract, deployment safety settings, systemd contract, and
-documentation are tightly coupled and small enough that splitting them would
-duplicate integration verification rather than shorten wall-clock time. Phase 4
-is a subsequent human-owned rollout gate, not a parallel builder lane.
+**Lanes:** One solo lane owns the OTA API/UI contract, authentication and
+deployment safety settings, systemd contract, documentation, and all phase 1-3
+gates. Splitting those coupled changes would duplicate integration verification
+rather than shorten wall-clock time. Phase 4 is a subsequent human-owned rollout
+gate, not a parallel builder lane.
 
 ## Amendments
 
@@ -440,6 +440,8 @@ is a subsequent human-owned rollout gate, not a parallel builder lane.
 - **2026-07-23** (Codex, Moda Review): Re-ran the Ready rubric with every
   questionable resolved, concrete phase gates, verified file/behavior claims, and
   one coherent code lane; approved the plan for merge and split.
+- **2026-07-23** (Codex, Moda Split): Split the approved plan into one solo
+  implementation lane, #6; retained phase 4 as a human-owned rollout gate.
 
 ## Notes
 
