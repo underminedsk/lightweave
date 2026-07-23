@@ -1,6 +1,6 @@
 # Remote administration
 
-> **Status:** In review
+> **Status:** Approved
 > **Tracking issue:** underminedsk/lightweave#3 · **Created:** 2026-07-22 · **Last amended:** 2026-07-23 (see Amendments)
 >
 > Markers: `[ ]` idle · `[wip]` in progress · `[x]` done · `[f]` failed/blocked (always with a note)
@@ -507,7 +507,7 @@ installed systemd runtime.
 
 | Lane | Dispatch issue | Phases | One-line scope | Marker mode | Status |
 |---|---|---|---|---|---|
-| Implementation lane | #6 | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | needs amendment merge |
+| Implementation lane | #6 | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | ready |
 
 **Lanes:** One solo lane owns the OTA API/UI contract, authentication and
 deployment safety settings, systemd contract, documentation, and all phase 1-3
@@ -535,6 +535,9 @@ gate, not a parallel builder lane.
   exposed verified HTTPS, route-inventory, WebSocket-expiry, password-resource,
   proxy-header, test-harness, OTA-reload, and deployment ambiguities. Folded the
   mechanical fixes into an amendment and returned the plan to In review.
+- **2026-07-23** (Codex, Moda Amendment review): Red-team and integration review
+  returned LANDABLE, and the implementer Ready rubric returned READY after the
+  shared-password contracts were made exact; restored Approved/ready status.
 
 ## Notes
 
