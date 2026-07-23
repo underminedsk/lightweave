@@ -1,7 +1,7 @@
 # Remote administration
 
 > **Status:** In review
-> **Tracking issue:** underminedsk/lightweave#3 · **Created:** 2026-07-22 · **Last amended:** 2026-07-22 (see Amendments)
+> **Tracking issue:** underminedsk/lightweave#3 · **Created:** 2026-07-22 · **Last amended:** 2026-07-23 (see Amendments)
 >
 > Markers: `[ ]` idle · `[wip]` in progress · `[x]` done · `[f]` failed/blocked (always with a note)
 
@@ -10,9 +10,9 @@
 Give authorized operators a stable, browser-accessible control-plane URL over
 Starlink without making the Raspberry Pi, internet connection, or cloud service
 part of the show runtime. The simplest whole solution is a named Cloudflare
-Tunnel plus Cloudflare Access in front of the existing FastAPI service; building
-custom public ingress, identity, or firmware networking would cost more and
-weaken the installation's existing offline resilience.
+Tunnel plus one shared-password session gate in the existing FastAPI service;
+building custom public ingress, user management, or firmware networking would
+cost more and weaken the installation's existing offline resilience.
 
 ## Problem
 
@@ -24,7 +24,10 @@ is still absent: there is no `deploy/pi/` service definition or runbook, and the
 documented launch command binds Uvicorn only for local development
 (`control/README.md`).
 
-Three current behaviors need explicit handling before publishing the service:
+Current behaviors need explicit handling before publishing the service:
+
+- The FastAPI control plane has no authentication. Every UI, API, and WebSocket
+  action is available to any client that can reach the listener.
 
 - `control/app.py:install_ota_artifact` holds one HTTP request open for the
   complete field transfer, while `control/static/app.js:pollOtaInstallWhile`
@@ -39,9 +42,9 @@ Three current behaviors need explicit handling before publishing the service:
   NetworkManager is present. On the single-radio Pi Zero 2 W deployment, either
   operation can disconnect the Starlink client and strand remote administration.
 - The FastAPI app has no cross-origin mutation check, and `/ws` accepts a browser
-  connection without validating its `Origin`. Cloudflare Access authenticates
-  the public hostname, but the application should still reject requests initiated
-  by an unrelated site in an already-authenticated browser.
+  connection without validating its `Origin`. Once the application issues an
+  authenticated browser session, it must still reject requests initiated by an
+  unrelated site.
 - `create_app` constructs the OTA, pattern, and calibration stores under relative
   `.control_*` paths. A field service therefore needs an explicit writable state
   directory separate from the read-only application checkout.
@@ -54,16 +57,21 @@ Pi or upstream connectivity (`docs/ARCHITECTURE.md` sections 5.2 and 8).
 
 Run the Pi Zero 2 W as a normal client of Starlink Wi-Fi. Install a remotely
 managed named `cloudflared` tunnel that maps one public hostname to
-`http://127.0.0.1:8000`. Create and verify the Cloudflare Access application
-before publishing the route. When Access is selected in Q1, enable
-cloudflared's `Protect with Access` validation (`access.required`, team name,
-and application audience) so a missing or invalid Access token is rejected at
-the connector as well as at Cloudflare's edge. Uvicorn remains loopback-only,
-so the public route has no Pi IP, dynamic DNS, router port-forward, or direct
-Starlink-LAN origin to bypass.
+`http://127.0.0.1:8000`. The application verifies one salted password hash from
+the required root-owned service environment, then issues a random, process-local,
+expiring browser session. There is no user database or separate password service.
+Uvicorn remains loopback-only, so the public route has no Pi IP, dynamic DNS,
+router port-forward, or direct Starlink-LAN origin to bypass.
 
 Within the existing control plane:
 
+- Gate the UI, HTTP API, and WebSocket behind the same application session.
+  Store only an encoded slow password hash in `CONTROL_PASSWORD_HASH`; never
+  store or log the plaintext password or commit a deployment hash to the repo.
+- Issue an opaque random `__Host-lightweave_session` cookie with `Secure`,
+  `HttpOnly`, `SameSite=Strict`, `Path=/`, and a bounded lifetime. Keep sessions
+  in process memory, rate-limit failed logins, support logout, and invalidate all
+  sessions on service restart or password rotation.
 - Convert field OTA to one server-owned `asyncio.Task`. The POST performs bounded
   preflight, reserves one job, and returns `202`; GET remains the authoritative
   status/result surface. During that reservation, fail other serial-backed work
@@ -81,8 +89,8 @@ Within the existing control plane:
 - Store mutable control-plane data under `/var/lib/lightweave`, separate from the
   read-only checkout under `/opt/lightweave`.
 - Add a hardened systemd unit, non-secret environment example, and Pi runbook.
-  Cloudflare owns the tunnel service and credentials separately from the FastAPI
-  service.
+  Cloudflare owns the tunnel service and token separately from the FastAPI
+  password configuration.
 
 Alternatives considered:
 
@@ -94,9 +102,16 @@ Alternatives considered:
 - A second Wi-Fi adapter or Ethernet uplink was rejected because the accepted
   operating model allows a physical visit when upstream connectivity fails; an
   always-on Basketnet AP is not a first-release requirement.
-- A custom Python JWT verifier is rejected for the first release because
-  cloudflared's connector-side Protect with Access check provides the required
-  second validation without adding application crypto/key-rotation code.
+- Cloudflare Access was rejected for the first release because the operator chose
+  one shared application password over individual identities or an external
+  identity policy.
+- Browser Basic Auth at a reverse proxy was rejected because an application login
+  and same-origin session cookie cover HTTP and WebSocket consistently without a
+  second web service.
+- A literal password or deployment hash in Python source was rejected because it
+  couples credential rotation to a code change and publishes the offline-cracking
+  target to every source checkout. The existing required root-owned environment
+  file is configuration, not a separate password store.
 
 ## Relevant files
 
@@ -132,6 +147,10 @@ Alternatives considered:
 
 - `plans/remote-administration.md` - the single living execution artifact for
   this initiative.
+- `control/auth.py` - dependency-free password-hash verification, login
+  throttling, and process-local session lifecycle logic.
+- `control/tests/test_auth.py` - deterministic unit coverage for password parsing,
+  verification outcomes, throttling, expiry, logout, and restart.
 - `docs/REMOTE_ADMIN.md` - stable architecture and operator guidance derived
   from this plan; it contains no phase markers or duplicate execution status.
 - `deploy/pi/lightweave-control.service` - boots the loopback FastAPI process as
@@ -139,7 +158,7 @@ Alternatives considered:
 - `deploy/pi/lightweave.env.example` - defines the non-secret deployment contract
   for serial, origin, and network-mutation settings.
 - `deploy/pi/README.md` - installs and verifies Raspberry Pi OS dependencies,
-  Starlink Wi-Fi, stable serial naming, systemd, Cloudflare Tunnel/Access, logs,
+  Starlink Wi-Fi, stable serial naming, systemd, Cloudflare Tunnel, login, logs,
   upgrades, and physical recovery.
 
 ## Questionables
@@ -150,6 +169,10 @@ Alternatives considered:
   password at a loopback reverse proxy behind the tunnel. Recommendation: (a)
   because it adds no application password store, supports individual revocation,
   and records operator login identity while remaining usable from any browser.
+  **Decision (2026-07-23, Zach):** Use one shared password verified by the backend,
+  with no separate password database or service. Implement this as a salted hash
+  in required deployment configuration plus a secure application session so HTTP
+  and WebSocket share one login.
 
 - **Q:** What authorization boundary should remote firmware installation use?
   Options: (a) treat every allowlisted control-plane operator as a fully trusted
@@ -159,13 +182,15 @@ Alternatives considered:
   Recommendation: (b) for the first release because it is small, separates routine
   show control from arbitrary firmware execution, and keeps signature verification
   available if unsigned-firmware residual risk is unacceptable.
+  **Decision (2026-07-23, Zach):** Every operator who can authenticate to the web
+  UI may install firmware. Firmware signatures and a narrower OTA role are out of
+  scope for this trust model.
 
-- **Q:** Does the first release require per-action operator audit, beyond
-  Cloudflare Access login history? Options: (a) accept login-level attribution
-  only / (b) append a local mutation audit containing validated operator identity,
-  action, result, and timestamp. Recommendation: (b) because blackout, force-sleep,
-  layout deletion, and OTA have materially different consequences and a small
-  append-only audit makes remote incidents reconstructable.
+- **Q:** Does the first release require an action audit? A shared credential cannot
+  identify which person acted. Options: (a) keep no mutation audit / (b) append a
+  local log containing session identifier, action, result, and timestamp.
+  Recommendation: (a) for the stated minimal trust model; standard service logs
+  still retain failures, but they are not presented as operator attribution.
 
 - **Q:** Must OTA job state survive a Pi process restart? Options: (a) keep the
   task process-local and treat a mid-install restart as an explicit recovery state
@@ -175,10 +200,34 @@ Alternatives considered:
   updater already treats mixed firmware as recovery and does not support safely
   resuming an arbitrary in-flight serial call; the plan must not claim restart
   survival if this option is chosen.
+  **Decision (2026-07-23, Zach):** Keep OTA job state process-local and use the
+  persisted artifact plus live firmware consistency for interruption recovery.
 
 ## Phases
 
-### Phase 1 - Lock the public request boundary
+### Phase 1 - Authenticate and lock the public request boundary
+
+- [ ] Add dependency-free `control/auth.py` using an encoded, salted slow hash
+  supported by Python's standard library, constant-time comparison, bounded input
+  length, and a `python -m control.auth hash-password` command that reads through
+  `getpass`. Start from an OWASP-listed scrypt parameter set, benchmark it on the
+  Pi, and document the strongest listed set that keeps one login practical; do
+  not use a fast SHA hash.
+- [ ] Add strict `CONTROL_PASSWORD_HASH` parsing. Field/serial startup requires a
+  valid hash, while tests and explicit local mock development may inject or
+  disable auth without weakening the production default.
+- [ ] Add login, logout, and session-status endpoints plus a compact password
+  screen. On success create a cryptographically random opaque session with a
+  12-hour absolute lifetime and set `__Host-lightweave_session` as `Secure`,
+  `HttpOnly`, `SameSite=Strict`, `Path=/`, with no `Domain`. Return one generic
+  authentication failure for a wrong password or malformed hash.
+- [ ] Require a live session for every control API route and for `/ws` before
+  acceptance. Allow only the login surface and its required static assets without
+  a session. Rate-limit to five failed attempts per trusted tunnel client address
+  and 30 globally in a rolling five-minute window, returning `429` above either
+  bound. Trust `CF-Connecting-IP` only when the direct peer is loopback; otherwise
+  use the peer address. Prune expired sessions, support logout, and keep no session
+  on disk so process restart invalidates every login.
 
 - [ ] Add strict environment parsing for `CONTROL_ALLOWED_ORIGINS` and
   `CONTROL_ALLOW_NETWORK_CHANGES` in `control/app.py`. Parse the comma-separated
@@ -197,14 +246,15 @@ Alternatives considered:
   `X-Frame-Options: DENY` on UI/API responses.
 - [ ] Include `allow_changes` in `GET /api/network/wifi`, return `403` from both
   network mutation endpoints when disabled, and hide or disable their UI actions.
-- [ ] Add API tests for allowed, disallowed, absent, malformed, null, and missing
-  field-origin configuration; WebSocket origins; strict boolean parsing;
-  clickjacking headers; and enabled/disabled network mutation.
+- [ ] Add unit/API tests for correct and incorrect passwords, malformed/missing
+  field hash, generic failures, throttling, cookie flags, expiry, logout, service
+  restart, and authenticated/unauthenticated HTTP and WebSocket access; also cover
+  all Origin, strict boolean, clickjacking-header, and network-mutation cases.
 
 **Validation gate** - do not exit this phase until every line passes; if a
 command fails, fix the cause and re-run.
 
-- [ ] `.venv/bin/python -m pytest control/tests/test_api.py -k 'origin or websocket or wifi or hotspot'`
+- [ ] `.venv/bin/python -m pytest control/tests/test_auth.py control/tests/test_api.py -k 'auth or origin or websocket or wifi or hotspot'`
 - [ ] `.venv/bin/python -m pytest control/tests`
 - [ ] With a mock Uvicorn server, a configured same-origin browser can load state
   and WebSocket updates, while a foreign Origin cannot mutate or read `/ws`.
@@ -232,11 +282,10 @@ command fails, fix the cause and re-run.
 - [ ] Disable serial-backed actions and artifact/OTA mode controls in the UI while
   the job is active; continue polling state and render the explicit busy response
   if another browser has already reserved the conductor.
-- [ ] Implement the process-restart behavior selected in Q4. Under recommended
-  option (a), cancel and await the task on graceful shutdown, mark the in-memory
-  job interrupted, and document that an abrupt process restart returns to the
-  existing persisted-artifact/live-firmware recovery flow rather than restoring
-  or resuming the job.
+- [ ] Keep OTA job state process-local. Cancel and await the task on graceful
+  shutdown, mark the in-memory job interrupted, and document that an abrupt
+  process restart returns to the existing persisted-artifact/live-firmware
+  recovery flow rather than restoring or resuming the job.
 - [ ] Change the UI to start once and poll GET until a terminal state independent
   of the POST connection; surface the recorded terminal message/error.
 - [ ] Run every OTA test inside a lifespan-managed `with TestClient(app)` block
@@ -275,16 +324,17 @@ command fails, fix the cause and re-run.
 - [ ] Add `deploy/pi/lightweave.env.example` with
   `CONTROL_CONDUCTOR=serial`, a `/dev/serial/by-path` conductor path,
   `CONTROL_SERIAL_RESET_ON_OPEN=0`, `CONTROL_DATA_DIR=/var/lib/lightweave`, exact
-  field origin, and disabled network mutation; do not commit tunnel credentials,
-  operator emails, or tokens.
+  field origin, a placeholder `CONTROL_PASSWORD_HASH`, and disabled network
+  mutation; do not commit the deployment hash, tunnel credentials, or tokens.
 - [ ] Add `deploy/pi/README.md` with install/upgrade/rollback commands, Starlink
-  client setup, stable serial discovery, Cloudflare named-tunnel and Access
-  policy setup, service/log inspection, and recovery through a local console or
-  SSH from the Starlink LAN during a physical visit.
-- [ ] In the Cloudflare sequence, create an Access self-hosted application and
-  exact operator policy before publishing the tunnel route; prohibit Everyone and
-  Bypass policies. Enable connector-side Protect with Access using the team name
-  and application audience selected by the chosen auth/OTA policy.
+  client setup, stable serial discovery, Cloudflare named-tunnel route setup,
+  password-hash generation and rotation, service/log inspection, and recovery
+  through a local console or SSH from the Starlink LAN during a physical visit.
+  Rotation replaces the hash and restarts the service, invalidating every session.
+- [ ] Before publishing the Cloudflare route, verify locally that unauthenticated
+  HTTP and WebSocket requests are denied and that valid login/logout works. The
+  tunnel publishes only the authenticated loopback service; no Cloudflare Access
+  policy is part of this release.
 - [ ] Install the remotely managed tunnel token through cloudflared's
   `--token-file` using a root/service-only file, not argv, shell history, or the
   application environment. Document routine and compromise rotation, connector
@@ -305,7 +355,7 @@ command fails, fix the cause and re-run.
 - [ ] On Raspberry Pi OS, `systemd-analyze verify deploy/pi/lightweave-control.service`
   passes and a reboot brings both FastAPI and `cloudflared` back without login.
 - [ ] From another Starlink Wi-Fi client, port 8000 is not reachable directly;
-  the public hostname is reachable only after the configured Access login.
+  the public hostname exposes no control state or action before password login.
 
 ### Phase 4 - Human-owned field rollout and recovery proof
 
@@ -323,11 +373,11 @@ account credentials or claim physical verification.
 - [ ] On the 3-board bench, stage firmware, enter maintenance, start OTA, close
   the browser after transfer begins, reconnect, and verify the same job completes
   with every expected performer firmware-consistent.
-- [ ] Exercise the Q2 firmware authorization choice and the Q3 audit choice with
-  distinct authorized/unauthorized operators; retain only redacted evidence.
-- [ ] If Q4 selects persisted job state, restart the Pi process during an OTA and
-  verify startup reconciliation. If it selects process-local state, verify the
-  documented recovery flow after interruption without claiming job resumption.
+- [ ] Verify a logged-out browser cannot stage or install firmware and any
+  logged-in session can; retain only redacted evidence and never record the
+  password.
+- [ ] Restart the Pi process during a bench OTA and verify the documented
+  persisted-artifact/live-firmware recovery flow without claiming job resumption.
 - [ ] Confirm the field deployment cannot remotely join Wi-Fi or start hotspot
   mode, and record the deployed hostname and service verification in
   `docs/HANDOFF.md` without storing credentials.
@@ -335,7 +385,8 @@ account credentials or claim physical verification.
 **Validation gate**
 
 - [ ] An unauthenticated request to the public hostname does not receive a `200`;
-  an authenticated browser receives the UI, `/api/state`, and `/ws` updates.
+  a browser with a valid password session receives the UI, `/api/state`, and `/ws`
+  updates; wrong-password and expired sessions receive no control data.
 - [ ] From the Starlink LAN,
   `! curl --connect-timeout 3 http://$PI_STARLINK_IP:8000/api/state` confirms the
   loopback-only origin is not directly reachable.
@@ -355,10 +406,11 @@ them to polling is not permission to reduce coverage.
 
 No new browser-test framework is required for this narrow vanilla-JS change.
 Browser proof is still required: run the mock control plane through the public
-hostname to verify Access, WebSocket reconnection, disabled serial actions during
-OTA, hidden network actions, and detached OTA polling, then repeat the interruption
-path on the 3-board bench. The Pi service gate is executed on Raspberry Pi OS
-because macOS cannot validate the installed systemd runtime.
+hostname to verify password login/logout, session expiry, WebSocket reconnection,
+disabled serial actions during OTA, hidden network actions, and detached OTA
+polling, then repeat the interruption path on the 3-board bench. The Pi service
+gate is executed on Raspberry Pi OS because macOS cannot validate the installed
+systemd runtime.
 
 ## Lane map
 
@@ -380,20 +432,25 @@ is a subsequent human-owned rollout gate, not a parallel builder lane.
   test-lifecycle, persistent-state, systemd, tunnel-token, and rollout findings
   into the plan; retained four policy choices for operator resolution and moved
   status to In review.
+- **2026-07-23** (Zach, decisions relayed by Codex): Selected one shared backend
+  password, authorized every logged-in operator for OTA, and selected process-local
+  OTA state with explicit interruption recovery. Action-audit policy remains open.
 
 ## Notes
 
 - Cloudflare Tunnel setup:
   https://developers.cloudflare.com/tunnel/setup/
-- Cloudflare Access application model:
-  https://developers.cloudflare.com/cloudflare-one/access-controls/applications/choose-application-type/
 - Cloudflare proxy read timeout:
   https://developers.cloudflare.com/fundamentals/reference/connection-limits/
 - Cloudflare Tunnel supports WebSockets:
   https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/
+- OWASP password storage guidance:
+  https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+- MDN secure cookie guidance:
+  https://developer.mozilla.org/en-US/docs/Web/Security/Practical_implementation_guides/Cookies
 - The domain and final hostname are deployment parameters, not source-controlled
   decisions. Use `control.example.com` only as a redacted example in repository
   files.
-- Tunnel creation, DNS, Access policy configuration, Starlink credentials, and
-  the final hardware acceptance drill require human-owned accounts or physical
-  access; builders document and verify them but never commit their secrets.
+- Tunnel creation, DNS, password selection, Starlink credentials, and the final
+  hardware acceptance drill require human-owned accounts or physical access;
+  builders document and verify them but never commit their secrets.
