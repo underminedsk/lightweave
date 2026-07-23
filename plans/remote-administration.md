@@ -1,6 +1,6 @@
 # Remote administration
 
-> **Status:** In review
+> **Status:** Approved
 > **Tracking issue:** underminedsk/lightweave#3 · **Created:** 2026-07-22 · **Last amended:** 2026-07-23 (see Amendments)
 >
 > Markers: `[ ]` idle · `[wip]` in progress · `[x]` done · `[f]` failed/blocked (always with a note)
@@ -191,6 +191,8 @@ Alternatives considered:
   local log containing session identifier, action, result, and timestamp.
   Recommendation: (a) for the stated minimal trust model; standard service logs
   still retain failures, but they are not presented as operator attribution.
+  **Decision (2026-07-23, Zach):** Add no action-audit feature. Normal service
+  logging remains operational diagnostics only.
 
 - **Q:** Must OTA job state survive a Pi process restart? Options: (a) keep the
   task process-local and treat a mid-install restart as an explicit recovery state
@@ -416,7 +418,7 @@ systemd runtime.
 
 | Lane | Dispatch issue | Phases | One-line scope | Marker mode | Status |
 |---|---|---|---|---|---|
-| Pending approval | Not created | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | blocked on approval |
+| Implementation lane | Pending split | 1-3 | Control-plane contract, tests, and Pi deployment artifacts | solo | approved |
 
 **Lanes:** Split runs only after plan approval. The expected shape is one lane:
 the OTA API/UI contract, deployment safety settings, systemd contract, and
@@ -434,7 +436,10 @@ is a subsequent human-owned rollout gate, not a parallel builder lane.
   status to In review.
 - **2026-07-23** (Zach, decisions relayed by Codex): Selected one shared backend
   password, authorized every logged-in operator for OTA, and selected process-local
-  OTA state with explicit interruption recovery. Action-audit policy remains open.
+  OTA state with explicit interruption recovery; declined action auditing.
+- **2026-07-23** (Codex, Moda Review): Re-ran the Ready rubric with every
+  questionable resolved, concrete phase gates, verified file/behavior claims, and
+  one coherent code lane; approved the plan for merge and split.
 
 ## Notes
 
