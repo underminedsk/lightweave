@@ -217,9 +217,9 @@ Alternatives considered:
 - [ ] Add dependency-free `control/auth.py` using `hashlib.scrypt` with
   `n=131072`, `r=8`, `p=1`, `dklen=32`, `maxmem=268435456`, a random 16-byte
   salt, at most 1024 UTF-8 password bytes, and `hmac.compare_digest`. Encode only
-  `scrypt$n=131072,r=8,p=1$<base64url-salt>$<base64url-digest>` and reject every
-  other algorithm, parameter set, salt/digest length, or malformed encoding at
-  startup.
+  `scrypt$n=131072,r=8,p=1$<unpadded-base64url-salt>$<unpadded-base64url-digest>`
+  and reject every other algorithm, parameter set, salt/digest length, padding,
+  or malformed encoding at startup.
 - [ ] Implement `python -m control.auth hash-password` with two matching
   `getpass` prompts and a 12-character generation minimum. Never accept a
   password on argv/stdin, use a fast general-purpose hash, log the password/hash,
@@ -406,10 +406,11 @@ command fails, fix the cause and re-run.
   `ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file
   /etc/cloudflared/lightweave.token`. Never place the token in argv, shell history,
   or the application environment.
-- [ ] Before exposing the route, create a host-specific Cloudflare HTTP-to-HTTPS
-  redirect (or zone-wide Always Use HTTPS on a dedicated zone) and verify it at
-  the edge. Document tunnel token routine/compromise rotation, connector deletion,
-  and verification that only the expected connector is active.
+- [ ] Document that rollout must create a host-specific Cloudflare HTTP-to-HTTPS
+  redirect (or zone-wide Always Use HTTPS on a dedicated zone) before exposing
+  the route. Include tunnel token routine/compromise rotation, connector deletion,
+  and verification that only the expected connector is active; actual account
+  configuration and proof belong to Phase 4.
 - [ ] Create `docs/REMOTE_ADMIN.md` as stable architecture and operator guidance
   that links this plan for execution status and contains no phase/status copy.
 - [ ] Update `control/README.md`, `docs/CONTROLPLANE.md`, and
@@ -437,6 +438,9 @@ account credentials or claim physical verification.
 - [ ] Install the documented Raspberry Pi OS Lite 64-bit Trixie image on the Pi
   Zero 2 W, create the Python 3.13 virtualenv, install every pinned requirement,
   and run the complete control test suite.
+- [ ] Create the named tunnel route and its required host-specific HTTP-to-HTTPS
+  redirect before sharing the hostname; install the token file without exposing
+  it in shell history and verify only the expected connector is active.
 - [ ] Verify both installed unit files with `systemd-analyze verify`, confirm
   `cloudflared --version` is at least 2025.4.0, and reboot to prove FastAPI and the
   tunnel return without login.
