@@ -302,8 +302,9 @@ command fails, fix the cause and re-run.
 - [ ] `.venv/bin/python -m pytest control/tests/test_auth.py control/tests/test_api.py -k 'auth or origin or websocket or wifi or hotspot'`
 - [ ] `.venv/bin/python -m pytest control/tests`
 - [ ] With a mock Uvicorn server, a configured same-origin browser can load state
-  and WebSocket updates, while a foreign Origin cannot mutate or read `/ws`; HTTP
-  login is rejected and the same public hostname over HTTPS succeeds.
+  and WebSocket updates through an HTTPS `TestClient`, while a foreign Origin
+  cannot mutate or read `/ws`; a mock HTTP request proves field login is rejected.
+  Public-hostname browser proof belongs exclusively to Phase 4.
 
 ### Phase 2 - Detach OTA from the browser request
 
@@ -397,20 +398,23 @@ command fails, fix the cause and re-run.
   through a local console or SSH from the Starlink LAN during a physical visit.
   Rotation replaces the hash and restarts the service, invalidating every session.
 - [ ] Before publishing the Cloudflare route, verify locally that unauthenticated
-  HTTP and WebSocket requests are denied and that valid login/logout works. The
-  tunnel publishes only the authenticated loopback service; no Cloudflare Access
-  policy is part of this release.
+  HTTP and WebSocket requests are denied and, through an HTTPS `TestClient`, that
+  valid login/logout works. The tunnel publishes only the authenticated loopback
+  service; no Cloudflare Access policy is part of this release.
 - [ ] Require `cloudflared >= 2025.4.0`. Store the remotely managed tunnel token
-  at `/etc/cloudflared/lightweave.token`, root-owned mode 0600, and install the
-  reviewed service as `cloudflared.service` with exact
+  at `/etc/cloudflared/lightweave.token`, owned `root:cloudflared` mode 0640, and
+  install the reviewed service as `cloudflared.service` with exact
   `ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file
-  /etc/cloudflared/lightweave.token`. Never place the token in argv, shell history,
-  or the application environment.
+  /etc/cloudflared/lightweave.token`. Run as `User=cloudflared`,
+  `Group=cloudflared` with `Restart=on-failure`, `RestartSec=5`,
+  `NoNewPrivileges=true`, `ProtectSystem=strict`, `ProtectHome=true`, and
+  `PrivateTmp=true`. Never place the token in argv, shell history, or the
+  application environment.
 - [ ] Document that rollout must create a host-specific Cloudflare HTTP-to-HTTPS
-  redirect (or zone-wide Always Use HTTPS on a dedicated zone) before exposing
-  the route. Include tunnel token routine/compromise rotation, connector deletion,
-  and verification that only the expected connector is active; actual account
-  configuration and proof belong to Phase 4.
+  redirect for `$CONTROL_HOST` before exposing the route; zone-wide Always Use
+  HTTPS is not part of this release. Include tunnel token routine/compromise
+  rotation, connector deletion, and verification that only the expected connector
+  is active; actual account configuration and proof belong to Phase 4.
 - [ ] Create `docs/REMOTE_ADMIN.md` as stable architecture and operator guidance
   that links this plan for execution status and contains no phase/status copy.
 - [ ] Update `control/README.md`, `docs/CONTROLPLANE.md`, and
@@ -492,12 +496,12 @@ assertions after the endpoint changes; converting them to polling is not
 permission to reduce coverage.
 
 No new browser-test framework is required for this narrow vanilla-JS change.
-Browser proof is still required: run the mock control plane through the public
-hostname to verify password login/logout, session expiry, WebSocket reconnection,
-disabled serial actions during OTA, hidden network actions, and detached OTA
-polling, then repeat the interruption path on the 3-board bench. The Pi service
-gate is executed on Raspberry Pi OS because macOS cannot validate the installed
-systemd runtime.
+Local proof uses HTTPS `TestClient` plus mock Uvicorn requests for password
+login/logout, session expiry, WebSocket reconnection, disabled serial actions
+during OTA, hidden network actions, and detached OTA polling. Public-hostname
+browser and 3-board interruption proof belong exclusively to Phase 4. The Pi
+service gate is executed on Raspberry Pi OS because macOS cannot validate the
+installed systemd runtime.
 
 ## Lane map
 
@@ -544,8 +548,8 @@ gate, not a parallel builder lane.
   https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 - MDN secure cookie guidance:
   https://developer.mozilla.org/en-US/docs/Web/Security/Practical_implementation_guides/Cookies
-- Cloudflare HTTP-to-HTTPS redirect:
-  https://developers.cloudflare.com/ssl/edge-certificates/additional-options/always-use-https/
+- Cloudflare host-specific Single Redirects:
+  https://developers.cloudflare.com/rules/url-forwarding/single-redirects/
 - Cloudflare visitor headers:
   https://developers.cloudflare.com/fundamentals/reference/http-headers/
 - Cloudflare tunnel run parameters:
