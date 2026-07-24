@@ -29,11 +29,67 @@ const MAX_ZOOM = 3;
 const DEFAULT_TIMEZONE = "America/Los_Angeles";
 const TIMEZONE_STORAGE_KEY = "baskets.sleepTimezone";
 const PATTERN_DEFAULTS = {
-  Pulse: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  Glow: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  Sweep: { hue: 40, period: 4000, wavelength: 300, spatial: 0 },
-  "Palette Drift": { hue: 40, period: 8000, wavelength: 300, spatial: 0 },
+  Pulse: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0, scatter: 100, angle: 45 },
+  Glow: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0, scatter: 100, angle: 45 },
+  Sweep: { hue: 40, saturation: 100, period: 4000, wavelength: 300, spatial: 0, scatter: 100, angle: 45 },
+  "Palette Drift": { hue: 40, saturation: 100, period: 8000, wavelength: 300, spatial: 0, scatter: 100, angle: 45 },
+  Firefly: { hue: 58, saturation: 85, period: 7000, wavelength: 300, spatial: 0, scatter: 100, angle: 45 },
+  "Ocean Wave": { hue: 205, saturation: 100, period: 9000, wavelength: 100, spatial: 0, scatter: 100, angle: 45 },
 };
+
+// Hue/saturation is the color model the firmware actually renders (see
+// pmath::hsvToRgb) — value/lightness isn't part of it, since overall
+// intensity is always the separate Brightness slider. So hex input only
+// ever needs to recover hue + saturation; the swatch is rendered at full
+// value to show exactly the hue/chroma that will hit the LEDs.
+function parseHexColor(input) {
+  const trimmed = (input || "").trim().replace(/^#/, "");
+  let expanded = trimmed;
+  if (/^[0-9a-fA-F]{3}$/.test(trimmed)) {
+    expanded = trimmed.split("").map((c) => c + c).join("");
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(expanded)) return null;
+  return {
+    r: parseInt(expanded.slice(0, 2), 16),
+    g: parseInt(expanded.slice(2, 4), 16),
+    b: parseInt(expanded.slice(4, 6), 16),
+  };
+}
+
+function rgbToHueSaturation(r, g, b) {
+  const rf = r / 255, gf = g / 255, bf = b / 255;
+  const max = Math.max(rf, gf, bf);
+  const min = Math.min(rf, gf, bf);
+  const delta = max - min;
+  let hue = 0;
+  if (delta !== 0) {
+    if (max === rf) hue = ((gf - bf) / delta) % 6;
+    else if (max === gf) hue = (bf - rf) / delta + 2;
+    else hue = (rf - gf) / delta + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+  const saturation = max === 0 ? 0 : (delta / max) * 100;
+  return { hue: Math.round(hue) % 360, saturation: Math.round(saturation) };
+}
+
+function hueSaturationToHex(hue, saturation) {
+  const h = ((Number(hue) % 360) + 360) % 360;
+  const s = Math.min(100, Math.max(0, Number(saturation))) / 100;
+  const hf = h / 60;
+  const c = s; // value is always full (1.0), so chroma == saturation
+  const x = c * (1 - Math.abs((hf % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hf < 1) [r, g, b] = [c, x, 0];
+  else if (hf < 2) [r, g, b] = [x, c, 0];
+  else if (hf < 3) [r, g, b] = [0, c, x];
+  else if (hf < 4) [r, g, b] = [0, x, c];
+  else if (hf < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = 1 - c;
+  const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -183,6 +239,14 @@ function render() {
 
 function patternHueFromState() {
   const params = state.pattern.params || {};
+  // Firefly is positional: hue lives in p1 (p0 is the period).
+  if (state.pattern.pattern === "Firefly") {
+    return params.p1 !== undefined ? Number(params.p1) : PATTERN_DEFAULTS.Firefly.hue;
+  }
+  // Ocean Wave is positional: base water hue lives in p3.
+  if (state.pattern.pattern === "Ocean Wave") {
+    return params.p3 !== undefined ? Number(params.p3) : PATTERN_DEFAULTS["Ocean Wave"].hue;
+  }
   if (params.hue !== undefined) return Number(params.hue);
   if ((state.pattern.pattern === "Glow" || state.pattern.pattern === "Pulse") && params.p0 !== undefined) {
     return Number(params.p0);
@@ -190,20 +254,44 @@ function patternHueFromState() {
   return 40;
 }
 
+function patternSaturationFromState() {
+  const params = state.pattern.params || {};
+  if (state.pattern.pattern === "Firefly") {
+    return params.p3 !== undefined ? Number(params.p3) : PATTERN_DEFAULTS.Firefly.saturation;
+  }
+  if (params.saturation !== undefined) return Number(params.saturation);
+  if ((state.pattern.pattern === "Glow" || state.pattern.pattern === "Pulse") && params.p1 !== undefined) {
+    return Number(params.p1);
+  }
+  return 100;
+}
+
 function patternPeriodFromState() {
   const params = state.pattern.params || {};
   if (params.period !== undefined) return Number(params.period);
-  if ((state.pattern.pattern === "Sweep" || state.pattern.pattern === "Palette Drift") && params.p0 !== undefined) {
+  if ((state.pattern.pattern === "Sweep" || state.pattern.pattern === "Palette Drift" || state.pattern.pattern === "Firefly" || state.pattern.pattern === "Ocean Wave") && params.p0 !== undefined) {
     return Number(params.p0);
   }
   return PATTERN_DEFAULTS[state.pattern.pattern]?.period || 4000;
 }
 
+function patternScatterFromState() {
+  const params = state.pattern.params || {};
+  if (state.pattern.pattern === "Firefly" && params.p2 !== undefined) return Number(params.p2);
+  return PATTERN_DEFAULTS.Firefly.scatter;
+}
+
+function patternAngleFromState() {
+  const params = state.pattern.params || {};
+  if (state.pattern.pattern === "Ocean Wave" && params.p2 !== undefined) return Number(params.p2);
+  return PATTERN_DEFAULTS["Ocean Wave"].angle;
+}
+
 function patternWavelengthFromState() {
   const params = state.pattern.params || {};
   if (params.wavelength !== undefined) return Number(params.wavelength);
-  if (state.pattern.pattern === "Sweep" && params.p1 !== undefined) return Number(params.p1);
-  return PATTERN_DEFAULTS.Sweep.wavelength;
+  if ((state.pattern.pattern === "Sweep" || state.pattern.pattern === "Ocean Wave") && params.p1 !== undefined) return Number(params.p1);
+  return PATTERN_DEFAULTS[state.pattern.pattern]?.wavelength ?? PATTERN_DEFAULTS.Sweep.wavelength;
 }
 
 function patternSpatialFromState() {
@@ -219,9 +307,12 @@ function patternDraftFromState() {
     pattern: state.pattern.pattern,
     brightness: Number(state.pattern.brightness),
     hue: patternHueFromState(),
+    saturation: patternSaturationFromState(),
     period: patternPeriodFromState() || defaults.period,
     wavelength: patternWavelengthFromState() || defaults.wavelength,
     spatial: patternSpatialFromState(),
+    scatter: patternScatterFromState(),
+    angle: patternAngleFromState(),
   };
 }
 
@@ -231,21 +322,43 @@ function patternDraftForSelection(pattern) {
     pattern,
     brightness: Number(patternDraft?.brightness ?? state?.pattern?.brightness ?? 48),
     hue: Number(defaults.hue),
+    saturation: Number(defaults.saturation),
     period: Number(defaults.period),
     wavelength: Number(defaults.wavelength),
     spatial: Number(defaults.spatial),
+    scatter: Number(defaults.scatter),
+    angle: Number(defaults.angle),
   };
 }
 
 function patternParams(draft) {
   if (draft.pattern === "Pulse" || draft.pattern === "Glow") {
-    return { hue: Number(draft.hue), saturation: 100 };
+    return { hue: Number(draft.hue), saturation: Number(draft.saturation ?? 100) };
   }
   if (draft.pattern === "Sweep") {
     return { period: Number(draft.period), spatial: Number(draft.wavelength) };
   }
   if (draft.pattern === "Palette Drift") {
     return { period: Number(draft.period), spatial: Number(draft.spatial) };
+  }
+  if (draft.pattern === "Firefly") {
+    // Positional on the wire: p0=period, p1=hue, p2=scatter, p3=saturation.
+    // (The hue/period aliases would both land on params[0], so send indices.)
+    return {
+      p0: Number(draft.period),
+      p1: Number(draft.hue),
+      p2: Number(draft.scatter ?? 100),
+      p3: Number(draft.saturation ?? 85),
+    };
+  }
+  if (draft.pattern === "Ocean Wave") {
+    // Positional: p0=period, p1=wavelength, p2=angle, p3=base water hue.
+    return {
+      p0: Number(draft.period),
+      p1: Number(draft.wavelength),
+      p2: Number(draft.angle ?? 45),
+      p3: Number(draft.hue),
+    };
   }
   return {};
 }
@@ -262,9 +375,11 @@ function patternStateParams(draft) {
 }
 
 function relevantPatternFields(pattern) {
-  if (pattern === "Pulse" || pattern === "Glow") return ["pattern", "brightness", "hue"];
+  if (pattern === "Pulse" || pattern === "Glow") return ["pattern", "brightness", "hue", "saturation"];
   if (pattern === "Sweep") return ["pattern", "brightness", "period", "wavelength"];
   if (pattern === "Palette Drift") return ["pattern", "brightness", "period", "spatial"];
+  if (pattern === "Firefly") return ["pattern", "brightness", "period", "hue", "saturation", "scatter"];
+  if (pattern === "Ocean Wave") return ["pattern", "brightness", "period", "wavelength", "angle", "hue"];
   return ["pattern", "brightness"];
 }
 
@@ -287,14 +402,31 @@ function renderPatternControls() {
   $("#wavelength-value").textContent = (Number(patternDraft.wavelength) / 100).toFixed(1);
   $("#pattern-spatial").value = patternDraft.spatial;
   $("#spatial-value").textContent = (Number(patternDraft.spatial) / 100).toFixed(2);
+  $("#pattern-scatter").value = patternDraft.scatter ?? 100;
+  $("#scatter-value").textContent = String(Number(patternDraft.scatter ?? 100));
+  $("#pattern-angle").value = patternDraft.angle ?? 45;
+  $("#angle-value").textContent = String(Number(patternDraft.angle ?? 45));
   const hue = String(patternDraft.hue);
+  const isFullSaturation = Number(patternDraft.saturation ?? 100) === 100;
   $$("#hue-picker button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.hue === hue);
+    button.classList.toggle("active", isFullSaturation && button.dataset.hue === hue);
   });
-  $("#hue-picker").hidden = !(patternDraft.pattern === "Pulse" || patternDraft.pattern === "Glow");
-  $('[data-param-group="period"]').hidden = !(patternDraft.pattern === "Sweep" || patternDraft.pattern === "Palette Drift");
-  $('[data-param-group="wavelength"]').hidden = patternDraft.pattern !== "Sweep";
+  const isColorPattern = patternDraft.pattern === "Pulse" || patternDraft.pattern === "Glow" || patternDraft.pattern === "Firefly" || patternDraft.pattern === "Ocean Wave";
+  $("#hue-picker").hidden = !isColorPattern;
+  $("#hex-color-row").hidden = !isColorPattern;
+  if (isColorPattern) {
+    const hex = hueSaturationToHex(patternDraft.hue, patternDraft.saturation ?? 100);
+    if (document.activeElement !== $("#pattern-hex")) $("#pattern-hex").value = hex;
+    $("#pattern-hex").classList.remove("invalid");
+    $("#pattern-color-picker").value = hex;
+    $("#color-swatch").style.backgroundColor = hex;
+    $("#hex-error").hidden = true;
+  }
+  $('[data-param-group="period"]').hidden = !(patternDraft.pattern === "Sweep" || patternDraft.pattern === "Palette Drift" || patternDraft.pattern === "Firefly" || patternDraft.pattern === "Ocean Wave");
+  $('[data-param-group="wavelength"]').hidden = !(patternDraft.pattern === "Sweep" || patternDraft.pattern === "Ocean Wave");
   $('[data-param-group="spatial"]').hidden = patternDraft.pattern !== "Palette Drift";
+  $('[data-param-group="scatter"]').hidden = patternDraft.pattern !== "Firefly";
+  $('[data-param-group="angle"]').hidden = patternDraft.pattern !== "Ocean Wave";
   const changeButton = $('[data-action="broadcast"]');
   changeButton.disabled = !isPatternDirty();
   changeButton.ariaDisabled = String(changeButton.disabled);
@@ -2003,9 +2135,34 @@ $("#hue-picker").addEventListener("click", (event) => {
     if (!patternDraft && state) patternDraft = patternDraftFromState();
     if (patternDraft) {
       patternDraft.hue = Number(event.target.dataset.hue);
+      patternDraft.saturation = 100;
       renderPatternControls();
     }
   }
+});
+
+function applyHexColor(hex) {
+  const rgb = parseHexColor(hex);
+  if (!rgb) {
+    $("#pattern-hex").classList.add("invalid");
+    $("#hex-error").textContent = "Enter a hex color like #ff8800 or #f80.";
+    $("#hex-error").hidden = false;
+    return;
+  }
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (!patternDraft) return;
+  const { hue, saturation } = rgbToHueSaturation(rgb.r, rgb.g, rgb.b);
+  patternDraft.hue = hue;
+  patternDraft.saturation = saturation;
+  renderPatternControls();
+}
+
+$("#pattern-hex").addEventListener("input", (event) => {
+  applyHexColor(event.target.value);
+});
+
+$("#pattern-color-picker").addEventListener("input", (event) => {
+  applyHexColor(event.target.value);
 });
 
 $("#pattern-period").addEventListener("input", (event) => {
@@ -2028,6 +2185,22 @@ $("#pattern-spatial").addEventListener("input", (event) => {
   if (!patternDraft && state) patternDraft = patternDraftFromState();
   if (patternDraft) {
     patternDraft.spatial = Number(event.target.value);
+    renderPatternControls();
+  }
+});
+
+$("#pattern-scatter").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) {
+    patternDraft.scatter = Number(event.target.value);
+    renderPatternControls();
+  }
+});
+
+$("#pattern-angle").addEventListener("input", (event) => {
+  if (!patternDraft && state) patternDraft = patternDraftFromState();
+  if (patternDraft) {
+    patternDraft.angle = Number(event.target.value);
     renderPatternControls();
   }
 });

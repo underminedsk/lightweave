@@ -61,6 +61,119 @@ inline float driftHue(int64_t synced_us, float x, float period_s, float spatial)
   return (float)(h - floor(h));
 }
 
+// Smoothstep 0->1 with zero slope at both ends (the classic cubic). Clamps
+// outside [0,1]. Used to give the firefly flash a soft, gentle swell/fade.
+inline float smoothstep01(float x) {
+  if (x <= 0.0f) return 0.0f;
+  if (x >= 1.0f) return 1.0f;
+  return x * x * (3.0f - 2.0f * x);
+}
+
+// Deterministic per-node phase offset in [0,1) derived from position, so each
+// lantern flashes on its own schedule and the field twinkles instead of blinking
+// in unison. Kept to a linear combination plus one cross term (no sin-hash) so it
+// is numerically stable in float — the host preview and the device agree. The
+// cross term breaks the diagonal gradient a purely linear offset would produce.
+// `scatter` in [0,1] scales how far positions push the phase apart (smaller =>
+// the flashes cluster/synchronize; 1 => fully spread).
+inline float fireflyStagger(float x, float y, float scatter) {
+  float h = x * 0.7548f + y * 0.5698f + x * y * 0.3821f;
+  h -= floorf(h);
+  return h * scatter;
+}
+
+// Fraction of each firefly cycle the lantern is lit (the rest is the dark gap
+// between flashes). The lantern stays lit for most of the cycle and dark only
+// briefly: the dark gap is ~25% shorter than a flat 55% off at the 5 s baseline,
+// and for longer periods it grows only slowly (~0.21 s per extra second past
+// 5 s) so the added seconds become glow, not darkness — a 7-10 s firefly is on
+// most of the time, off sparingly.
+inline float fireflyFlashFrac(float period_s) {
+  if (period_s <= 0.0f) return 0.45f;
+  float dark_gap_s = 0.41f * period_s;
+  if (period_s > 5.0f) dark_gap_s = 0.41f * 5.0f + 0.21f * (period_s - 5.0f);
+  if (dark_gap_s < 0.6f) dark_gap_s = 0.6f;  // always keep a brief blink-off
+  float frac = 1.0f - dark_gap_s / period_s;
+  if (frac < 0.05f) frac = 0.05f;
+  if (frac > 0.95f) frac = 0.95f;
+  return frac;
+}
+
+// Firefly ("hotaru") flash intensity in [0,1]. Each node is lit for most of the
+// cycle, then settles into a brief dark gap: a fast-ish swell up to a peak that
+// gently shimmers, followed by a slower fade back to dark — the asymmetric
+// attack/decay envelope real fireflies show. Nodes are staggered by position
+// (see fireflyStagger) so the field flickers like a meadow of fireflies.
+//   period_s  full cycle length (one flash + the dark gap after it)
+//   scatter   0..1 position stagger (0 => whole field flashes in unison)
+inline float fireflyIntensity(int64_t synced_us, float x, float y,
+                              float period_s, float scatter) {
+  float p = phase(synced_us, period_s) + fireflyStagger(x, y, scatter);
+  p -= floorf(p);                             // wrap to [0,1)
+  float flash_frac = fireflyFlashFrac(period_s);  // most of the cycle is lit
+  if (p >= flash_frac) return 0.0f;
+  float u = p / flash_frac;        // 0..1 across the flash
+  const float attack = 0.28f;      // quick swell, then a slower fade
+  float env;
+  if (u < attack) {
+    env = smoothstep01(u / attack);
+  } else {
+    env = 1.0f - smoothstep01((u - attack) / (1.0f - attack));
+  }
+  // A small, fast ripple riding on the envelope so the peak "glimmers" rather
+  // than sitting flat — subtle (12% depth), not a strobe.
+  float shimmer = 1.0f - 0.12f * (0.5f - 0.5f * cosf(2.0f * kPi * 6.0f * u));
+  float v = env * shimmer;
+  if (v < 0.0f) v = 0.0f;
+  if (v > 1.0f) v = 1.0f;
+  return v;
+}
+
+// One traveling sine wavefront sampled at (x,y): sin(2π (t/T - proj/λ)), where
+// proj is the position projected onto the travel direction (cx,cy). Returns
+// [-1,1]. Double-precision phase accumulation so long runs don't lose precision.
+inline float oceanComponent(int64_t synced_us, float x, float y, float cx,
+                            float cy, float period_s, float wavelength) {
+  double secs = (double)synced_us / 1e6;
+  double proj = (double)x * cx + (double)y * cy;
+  double ph = secs / (double)period_s - proj / (double)wavelength;
+  ph -= floor(ph);  // reduce to [0,1) in double so the float cast keeps full
+                    // phase precision even when ph grows large on long runs
+  return sinf(2.0f * kPi * (float)ph);
+}
+
+// Ocean swell height in [0,1]: a 2-D plane wave traveling across the field at
+// `angle_rad`, built from three summed sine components with different
+// wavelengths, speeds, and slightly fanned directions. The superposition makes
+// the swell organic and slowly non-repeating instead of a single mechanical
+// sine (the standard sum-of-sines water technique). A dominant primary swell
+// carries the visible traveling crest; a shorter/faster component adds chop and
+// a longer/slower one adds a ground-swell roll. 0 = trough, 1 = crest.
+//   period_s    time for the primary swell to advance one wavelength
+//   wavelength  spatial wavelength of the primary swell (same units as x,y)
+//   angle_rad   travel direction across the field
+inline float oceanIntensity(int64_t synced_us, float x, float y, float period_s,
+                            float wavelength, float angle_rad) {
+  // Three components sharing a dominant direction, each fanned within ~±25°
+  // (narrow spread => long-crested swell, not choppy sea). Periods follow the
+  // deep-water dispersion T ∝ √λ (longer waves travel faster), so the swell is
+  // dominant, the short component adds subtle chop, the long one a slow roll —
+  // and the incommensurate speeds keep the pattern from ever exactly repeating.
+  float c1 = cosf(angle_rad), s1 = sinf(angle_rad);
+  float c2 = cosf(angle_rad + 0.40f), s2 = sinf(angle_rad + 0.40f);
+  float c3 = cosf(angle_rad - 0.30f), s3 = sinf(angle_rad - 0.30f);
+  const float w1 = 0.60f, w2 = 0.22f, w3 = 0.34f;
+  float h = w1 * oceanComponent(synced_us, x, y, c1, s1, period_s, wavelength) +
+            w2 * oceanComponent(synced_us, x, y, c2, s2, period_s * 0.74f,
+                                wavelength * 0.55f) +
+            w3 * oceanComponent(synced_us, x, y, c3, s3, period_s * 1.38f,
+                                wavelength * 1.90f);
+  float n = 0.5f * (h / (w1 + w2 + w3)) + 0.5f;  // -> [0,1]
+  if (n < 0.0f) n = 0.0f;
+  if (n > 1.0f) n = 1.0f;
+  return n;
+}
+
 // HSV -> RGB, all components in [0,1]. Standard six-sextant conversion; hue wraps
 // so any real hue is valid. Kept pure (no LED type) so it is host-testable; the
 // patterns layer scales the result into RGBW pixels.
